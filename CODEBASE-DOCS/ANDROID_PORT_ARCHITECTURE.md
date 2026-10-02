@@ -62,7 +62,7 @@ sequenceDiagram
 - **`d3d11_bridge.cpp`**:
   - Đóng vai trò cầu nối đồ họa Direct3D 11 cho engine game gốc:
     - Bắt chặn hàm nhập `D3D11CreateDevice` từ bảng IAT.
-    - Cấp phát mock Direct3D 11 Device và DeviceContext với virtual table chuẩn Windows x64 (128 slots), hỗ trợ QueryInterface (COM IUnknown), AddRef, Release, IDXGI GetParent và fallback generic stubs để xử lý các truy vấn interface không gây crash.
+    - Cấp phát mock Direct3D 11 Device và DeviceContext với virtual table chuẩn Windows x64 (128 slots), hỗ trợ QueryInterface (COM IUnknown), AddRef, Release, IDXGIDevice::GetAdapter, IDXGIObject::GetParent, IDXGIFactory::CreateSwapChain, CreateTexture2D, CreateBuffer, CreateRenderTargetView và fallback generic stubs để xử lý toàn bộ chuỗi khởi tạo DXGI/D3D11 không gây crash.
     - Xác lập `D3D_FEATURE_LEVEL_11_0` (0xb000) và mã kết quả `S_OK` (0) để engine đồ họa game kích hoạt thành công mà không phụ thuộc vào `d3d11.dll` native của Windows.
 - **`steam_hook.cpp`**:
   - Giả lập chuẩn 9 hàm API Steamworks mà game yêu cầu từ IAT:
