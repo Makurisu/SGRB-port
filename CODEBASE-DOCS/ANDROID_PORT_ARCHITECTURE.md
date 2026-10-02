@@ -60,9 +60,20 @@ sequenceDiagram
   - **Windows TEB & PEB Subsystem**: Cấp phát cấu trúc 64-bit Thread Environment Block (`TEB`), Process Environment Block (`PEB`), và `RTL_USER_PROCESS_PARAMETERS`. Tự động gắn địa chỉ cơ sở vào thanh ghi phân đoạn `GS` qua syscall `arch_prctl(ARCH_SET_GS, teb)` của nhân Linux x86_64, đảm bảo các chỉ lệnh truy cập `gs:[0x30]` và `[rax + 0x60]` của Windows CRT/Game engine thực thi mượt mà không bị lỗi `SEGV_MAPERR`.
   - Khởi tạo thành công điểm vào thực thi `EntryPoint` (RVA: `0x56EACC`, Virtual: `0x7638727f6acc`) trong không gian nhớ của tiến trình Android.
 - **`d3d11_bridge.cpp`**:
-  - Đóng vai trò cầu nối đồ họa Direct3D 11 cho engine game gốc:
+  - Đóng vai trò cầu nối đồ họa Direct3D 11 và DXGI cho engine game gốc:
     - Bắt chặn hàm nhập `D3D11CreateDevice` từ bảng IAT.
-    - Cấp phát mock Direct3D 11 Device và DeviceContext với virtual table chuẩn Windows x64 (128 slots), hỗ trợ QueryInterface (COM IUnknown), AddRef, Release, IDXGIDevice::GetAdapter, IDXGIObject::GetParent, IDXGIFactory::CreateSwapChain, CreateTexture2D, CreateBuffer, CreateRenderTargetView và fallback generic stubs để xử lý toàn bộ chuỗi khởi tạo DXGI/D3D11 không gây crash.
+    - **Hệ thống Đa Vtable COM Chuyên Biệt (Dedicated Multi-Interface COM Vtables)**: Thay vì dùng chung một vtable đơn lẻ gây xung đột tham số gọi hàm (call-signature mismatch), kiến trúc triển khai 9 vtable và đối tượng COM riêng biệt:
+      - `ID3D11Device` / `ID3D11Device1` (128 slots)
+      - `ID3D11DeviceContext` / `ID3D11DeviceContext1` (128 slots, hỗ trợ `Map` với 16MB scratch buffer và `Unmap`)
+      - `ID3D11Multithread` (16 slots, hỗ trợ `SetMultithreadProtected`, `GetMultithreadProtected`)
+      - `IDXGIDevice` / `IDXGIDevice1` (32 slots, `GetAdapter`, `SetMaximumFrameLatency`)
+      - `IDXGIAdapter` / `IDXGIAdapter1` (32 slots, `GetParent`)
+      - `IDXGIFactory` / `IDXGIFactory2` (32 slots, `MakeWindowAssociation`, `CreateSwapChain`, `CreateSwapChainForHwnd`)
+      - `IDXGISwapChain` / `IDXGISwapChain1` (32 slots, `GetBuffer`, `Present`, `ResizeBuffers`, `GetDevice`)
+      - `ID3D11Texture2D` (32 slots, `GetDesc` thiết lập độ phân giải 1920x1080 và định dạng RGBA8)
+      - `ID3D11GenericResource` (32 slots cho Views/Buffers/Shaders)
+    - **COM QueryInterface GUID Dispatcher**: Tự động bóc tách và phân giải chính xác 16-byte COM GUIDs chuẩn Microsoft (`IID_ID3D11Multithread`, `IID_IDXGIDevice1`, `IID_IDXGIFactory2`, `IID_IDXGISwapChain`, `IID_ID3D11Texture2D`...), chuyển hướng chính xác đến từng đối tượng mock tương ứng.
+    - Fallback generic stub an toàn tuyệt đối (không đọc/ghi con trỏ bừa bãi), loại bỏ hoàn toàn nguy cơ ghi đè bộ nhớ không hợp lệ (`SEGV_MAPERR`).
     - Xác lập `D3D_FEATURE_LEVEL_11_0` (0xb000) và mã kết quả `S_OK` (0) để engine đồ họa game kích hoạt thành công mà không phụ thuộc vào `d3d11.dll` native của Windows.
 - **`steam_hook.cpp`**:
   - Giả lập chuẩn 9 hàm API Steamworks mà game yêu cầu từ IAT:

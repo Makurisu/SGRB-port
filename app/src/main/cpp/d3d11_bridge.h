@@ -1,11 +1,7 @@
 #pragma once
 #include <cstdint>
 
-struct SGRE_D3D11_DeviceMock {
-    void* vtable;
-};
-
-struct SGRE_D3D11_DeviceContextMock {
+struct SGRE_COM_Mock {
     void* vtable;
 };
 
