@@ -176,14 +176,95 @@ static int64_t WINAPI mock_DXGI_GetMaximumFrameLatency(void*, uint32_t* pMaxLate
     return 0;
 }
 
+// Các cấu trúc mô phỏng DXGI SwapChain và Direct3D 11 Texture
+struct MockDXGIRational {
+    uint32_t numerator;
+    uint32_t denominator;
+};
+
+struct MockDXGIModeDesc {
+    uint32_t width;
+    uint32_t height;
+    MockDXGIRational refreshRate;
+    uint32_t format;
+    uint32_t scanlineOrdering;
+    uint32_t scaling;
+};
+
+struct MockDXGISampleDesc {
+    uint32_t count;
+    uint32_t quality;
+};
+
+struct MockSwapChainDesc {
+    MockDXGIModeDesc bufferDesc;     // 0x00 - 0x1C (28 bytes)
+    MockDXGISampleDesc sampleDesc;   // 0x1C - 0x24 (8 bytes)
+    uint32_t bufferUsage;            // 0x24 - 0x28 (4 bytes)
+    uint32_t bufferCount;            // 0x28 - 0x2C (4 bytes) -> offset 0x28 (40)
+    void* outputWindow;              // 0x30 - 0x38 (8 bytes)
+    int32_t windowed;                // 0x38 - 0x3C (4 bytes)
+    uint32_t swapEffect;             // 0x3C - 0x40 (4 bytes)
+    uint32_t flags;                  // 0x40 - 0x44 (4 bytes)
+};
+
+struct MockSwapChainDesc1 {
+    uint32_t width;                  // 0x00
+    uint32_t height;                 // 0x04
+    uint32_t format;                 // 0x08
+    int32_t stereo;                  // 0x0C
+    MockDXGISampleDesc sampleDesc;   // 0x10 - 0x18
+    uint32_t bufferUsage;            // 0x18
+    uint32_t bufferCount;            // 0x1C
+    uint32_t scaling;                // 0x20
+    uint32_t swapEffect;             // 0x24
+    uint32_t alphaMode;              // 0x28
+    uint32_t flags;                  // 0x2C
+};
+
+struct MockSwapChainFullscreenDesc {
+    MockDXGIRational refreshRate;    // 0x00
+    uint32_t scanlineOrdering;       // 0x08
+    uint32_t scaling;                // 0x0C
+    int32_t windowed;                // 0x10
+};
+
+struct MockTexture2DDesc {
+    uint32_t width;
+    uint32_t height;
+    uint32_t mipLevels;
+    uint32_t arraySize;
+    uint32_t format;
+    uint32_t sampleCount;
+    uint32_t sampleQuality;
+    uint32_t usage;
+    uint32_t bindFlags;
+    uint32_t cpuAccessFlags;
+    uint32_t miscFlags;
+};
+
+// Thông số SwapChain và Texture2D hiện tại
+static uint32_t gCurrentWidth = 1920;
+static uint32_t gCurrentHeight = 1080;
+static uint32_t gCurrentFormat = 28; // DXGI_FORMAT_R8G8B8A8_UNORM
+static uint32_t gCurrentBufferCount = 2; // Tối thiểu 2 buffers để tránh FPE_INTDIV
+
 // IDXGIFactory methods
 static int64_t WINAPI mock_Factory_MakeWindowAssociation(void*, void*, uint32_t) {
     LOGI("IDXGIFactory::MakeWindowAssociation called");
     return 0;
 }
 
-static int64_t WINAPI mock_Factory_CreateSwapChain(void*, void*, const void*, void** ppSwapChain) {
+static int64_t WINAPI mock_Factory_CreateSwapChain(void*, void*, const void* pDesc, void** ppSwapChain) {
     LOGI("IDXGIFactory::CreateSwapChain called");
+    if (pDesc) {
+        const auto* desc = reinterpret_cast<const MockSwapChainDesc*>(pDesc);
+        if (desc->bufferDesc.width > 0) gCurrentWidth = desc->bufferDesc.width;
+        if (desc->bufferDesc.height > 0) gCurrentHeight = desc->bufferDesc.height;
+        if (desc->bufferDesc.format > 0) gCurrentFormat = desc->bufferDesc.format;
+        if (desc->bufferCount > 0) gCurrentBufferCount = desc->bufferCount;
+        LOGI("  SwapChainDesc: %ux%u, format=%u, bufferCount=%u",
+             gCurrentWidth, gCurrentHeight, gCurrentFormat, gCurrentBufferCount);
+    }
     if (ppSwapChain) {
         *ppSwapChain = &gMockSwapChain;
     }
@@ -191,9 +272,18 @@ static int64_t WINAPI mock_Factory_CreateSwapChain(void*, void*, const void*, vo
 }
 
 static int64_t WINAPI mock_Factory_CreateSwapChainForHwnd(
-    void*, void*, void*, const void*, const void*, void*, void** ppSwapChain
+    void*, void*, void* hWnd, const void* pDesc, const void*, void*, void** ppSwapChain
 ) {
-    LOGI("IDXGIFactory2::CreateSwapChainForHwnd called");
+    LOGI("IDXGIFactory2::CreateSwapChainForHwnd called with hWnd=%p", hWnd);
+    if (pDesc) {
+        const auto* desc1 = reinterpret_cast<const MockSwapChainDesc1*>(pDesc);
+        if (desc1->width > 0) gCurrentWidth = desc1->width;
+        if (desc1->height > 0) gCurrentHeight = desc1->height;
+        if (desc1->format > 0) gCurrentFormat = desc1->format;
+        if (desc1->bufferCount > 0) gCurrentBufferCount = desc1->bufferCount;
+        LOGI("  SwapChainDesc1: %ux%u, format=%u, bufferCount=%u",
+             gCurrentWidth, gCurrentHeight, gCurrentFormat, gCurrentBufferCount);
+    }
     if (ppSwapChain) {
         *ppSwapChain = &gMockSwapChain;
     }
@@ -206,21 +296,133 @@ static int64_t WINAPI mock_SwapChain_GetDevice(void*, const void*, void** ppDevi
     return 0;
 }
 
-static int64_t WINAPI mock_SwapChain_Present(void*, uint32_t, uint32_t) {
-    // Sẽ kết nối với egSwapBuffers() hoặc Vulkan Present sau này
+static int64_t WINAPI mock_SwapChain_Present(void*, uint32_t syncInterval, uint32_t flags) {
+    static uint32_t frameCount = 0;
+    if (++frameCount % 60 == 1) {
+        LOGI("IDXGISwapChain::Present: frame %u, syncInterval=%u, flags=0x%x", frameCount, syncInterval, flags);
+    }
     return 0;
 }
 
-static int64_t WINAPI mock_SwapChain_GetBuffer(void*, uint32_t, const void*, void** ppSurface) {
-    LOGI("IDXGISwapChain::GetBuffer called");
+static int64_t WINAPI mock_SwapChain_GetBuffer(void*, uint32_t bufferIndex, const void*, void** ppSurface) {
+    LOGI("IDXGISwapChain::GetBuffer called for buffer %u", bufferIndex);
     if (ppSurface) {
         *ppSurface = &gMockTexture2D;
     }
     return 0;
 }
 
-static int64_t WINAPI mock_SwapChain_ResizeBuffers(void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {
+static int64_t WINAPI mock_SwapChain_SetFullscreenState(void*, int32_t fullscreen, void*) {
+    LOGI("IDXGISwapChain::SetFullscreenState(%d)", fullscreen);
     return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_GetFullscreenState(void*, int32_t* pFullscreen, void** ppTarget) {
+    if (pFullscreen) *pFullscreen = 0; // Android luôn windowed trong View
+    if (ppTarget) *ppTarget = nullptr;
+    return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_GetDesc(void*, void* pDesc) {
+    LOGI("IDXGISwapChain::GetDesc called, returning %ux%u, format=%u, bufferCount=%u",
+         gCurrentWidth, gCurrentHeight, gCurrentFormat, gCurrentBufferCount);
+    if (pDesc) {
+        auto* desc = reinterpret_cast<MockSwapChainDesc*>(pDesc);
+        memset(desc, 0, sizeof(MockSwapChainDesc));
+        desc->bufferDesc.width = gCurrentWidth;
+        desc->bufferDesc.height = gCurrentHeight;
+        desc->bufferDesc.refreshRate.numerator = 60;
+        desc->bufferDesc.refreshRate.denominator = 1;
+        desc->bufferDesc.format = gCurrentFormat;
+        desc->bufferDesc.scanlineOrdering = 0;
+        desc->bufferDesc.scaling = 0;
+        desc->sampleDesc.count = 1;
+        desc->sampleDesc.quality = 0;
+        desc->bufferUsage = 0x20 | 0x40; // DXGI_USAGE_RENDER_TARGET_OUTPUT
+        desc->bufferCount = gCurrentBufferCount; // BẮT BUỘC >= 1 để tránh lỗi chia cho 0 FPE_INTDIV
+        desc->outputWindow = nullptr;
+        desc->windowed = 1;
+        desc->swapEffect = 0; // DXGI_SWAP_EFFECT_DISCARD
+        desc->flags = 0;
+    }
+    return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_ResizeBuffers(void*, uint32_t bufferCount, uint32_t width, uint32_t height, uint32_t newFormat, uint32_t) {
+    LOGI("IDXGISwapChain::ResizeBuffers called: %ux%u, bufferCount=%u, format=%u", width, height, bufferCount, newFormat);
+    if (width > 0) gCurrentWidth = width;
+    if (height > 0) gCurrentHeight = height;
+    if (bufferCount > 0) gCurrentBufferCount = bufferCount;
+    if (newFormat > 0) gCurrentFormat = newFormat;
+    return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_ResizeTarget(void*, const void*) {
+    return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_GetContainingOutput(void*, void** ppOutput) {
+    if (ppOutput) *ppOutput = nullptr;
+    return 0x887A0002; // DXGI_ERROR_NOT_FOUND
+}
+
+static int64_t WINAPI mock_SwapChain_GetFrameStatistics(void*, void*) {
+    return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_GetLastPresentCount(void*, uint32_t* pCount) {
+    if (pCount) *pCount = 0;
+    return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_GetDesc1(void*, void* pDesc) {
+    LOGI("IDXGISwapChain1::GetDesc1 called");
+    if (pDesc) {
+        auto* desc1 = reinterpret_cast<MockSwapChainDesc1*>(pDesc);
+        memset(desc1, 0, sizeof(MockSwapChainDesc1));
+        desc1->width = gCurrentWidth;
+        desc1->height = gCurrentHeight;
+        desc1->format = gCurrentFormat;
+        desc1->stereo = 0;
+        desc1->sampleDesc.count = 1;
+        desc1->sampleDesc.quality = 0;
+        desc1->bufferUsage = 0x20 | 0x40;
+        desc1->bufferCount = gCurrentBufferCount;
+        desc1->scaling = 0;
+        desc1->swapEffect = 0;
+        desc1->alphaMode = 0;
+        desc1->flags = 0;
+    }
+    return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_GetFullscreenDesc(void*, void* pDesc) {
+    if (pDesc) {
+        auto* fDesc = reinterpret_cast<MockSwapChainFullscreenDesc*>(pDesc);
+        memset(fDesc, 0, sizeof(MockSwapChainFullscreenDesc));
+        fDesc->refreshRate.numerator = 60;
+        fDesc->refreshRate.denominator = 1;
+        fDesc->windowed = 1;
+    }
+    return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_GetHwnd(void*, void** pHwnd) {
+    if (pHwnd) *pHwnd = nullptr;
+    return 0;
+}
+
+static int64_t WINAPI mock_SwapChain_Present1(void*, uint32_t syncInterval, uint32_t flags, const void*) {
+    static uint32_t frameCount1 = 0;
+    if (++frameCount1 % 60 == 1) {
+        LOGI("IDXGISwapChain1::Present1: frame %u, syncInterval=%u, flags=0x%x", frameCount1, syncInterval, flags);
+    }
+    return 0;
+}
+
+// ID3D11Resource::GetType
+static void WINAPI mock_Resource_GetType(void*, uint32_t* pDim) {
+    if (pDim) *pDim = 4; // D3D11_RESOURCE_DIMENSION_TEXTURE2D
 }
 
 // ID3D11DeviceChild::GetDevice
@@ -231,25 +433,12 @@ static void WINAPI mock_Resource_GetDevice(void*, void** ppDevice) {
 // ID3D11Texture2D::GetDesc
 static void WINAPI mock_Texture2D_GetDesc(void*, void* pDesc) {
     if (pDesc) {
-        struct MockTexture2DDesc {
-            uint32_t width;
-            uint32_t height;
-            uint32_t mipLevels;
-            uint32_t arraySize;
-            uint32_t format;
-            uint32_t sampleCount;
-            uint32_t sampleQuality;
-            uint32_t usage;
-            uint32_t bindFlags;
-            uint32_t cpuAccessFlags;
-            uint32_t miscFlags;
-        } *desc = reinterpret_cast<MockTexture2DDesc*>(pDesc);
-
-        desc->width = 1920;
-        desc->height = 1080;
+        auto* desc = reinterpret_cast<MockTexture2DDesc*>(pDesc);
+        desc->width = gCurrentWidth;
+        desc->height = gCurrentHeight;
         desc->mipLevels = 1;
         desc->arraySize = 1;
-        desc->format = 28; // DXGI_FORMAT_R8G8B8A8_UNORM
+        desc->format = gCurrentFormat;
         desc->sampleCount = 1;
         desc->sampleQuality = 0;
         desc->usage = 0; // D3D11_USAGE_DEFAULT
@@ -416,10 +605,22 @@ static void initVtablesOnce() {
     gSwapChainVtable[7] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetDevice);
     gSwapChainVtable[8] = reinterpret_cast<uint64_t>(&mock_SwapChain_Present);
     gSwapChainVtable[9] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetBuffer);
+    gSwapChainVtable[10] = reinterpret_cast<uint64_t>(&mock_SwapChain_SetFullscreenState);
+    gSwapChainVtable[11] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetFullscreenState);
+    gSwapChainVtable[12] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetDesc);
     gSwapChainVtable[13] = reinterpret_cast<uint64_t>(&mock_SwapChain_ResizeBuffers);
+    gSwapChainVtable[14] = reinterpret_cast<uint64_t>(&mock_SwapChain_ResizeTarget);
+    gSwapChainVtable[15] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetContainingOutput);
+    gSwapChainVtable[16] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetFrameStatistics);
+    gSwapChainVtable[17] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetLastPresentCount);
+    gSwapChainVtable[18] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetDesc1);
+    gSwapChainVtable[19] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetFullscreenDesc);
+    gSwapChainVtable[20] = reinterpret_cast<uint64_t>(&mock_SwapChain_GetHwnd);
+    gSwapChainVtable[22] = reinterpret_cast<uint64_t>(&mock_SwapChain_Present1);
 
     // 8. ID3D11Texture2D slots
     gTexture2DVtable[3] = reinterpret_cast<uint64_t>(&mock_Resource_GetDevice);
+    gTexture2DVtable[7] = reinterpret_cast<uint64_t>(&mock_Resource_GetType);
     gTexture2DVtable[10] = reinterpret_cast<uint64_t>(&mock_Texture2D_GetDesc);
 
     // 9. ID3D11GenericResource slots

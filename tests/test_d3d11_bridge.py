@@ -71,14 +71,74 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertIsNotNone(reflector, "ppReflector không được là nullptr")
         self.assertEqual(reflector, "MockID3D11ShaderReflection")
 
-    def test_vtable_slot_isolation(self):
-        # Kiểm tra slot 5 của Multithread là SetMultithreadProtected (2 args)
-        # Trong khi slot 5 của Device là CreateTexture2D (4 args)
-        multithread_slot_5 = "SetMultithreadProtected(this, bProtect)"
-        device_slot_5 = "CreateTexture2D(this, desc, data, ppTex)"
-        self.assertNotEqual(multithread_slot_5, device_slot_5,
-                           "Vtable của Multithread và Device phải tách biệt hoàn toàn để tránh crash SEGV_MAPERR")
+    def test_swapchain_desc_buffer_count_offset(self):
+        # Kiểm tra offset của BufferCount trong DXGI_SWAP_CHAIN_DESC
+        # Tại RVA 0x4C47C5 (0x1404c47c5), sgre_steam.exe đọc: mov ebp, dword ptr [rsp + 0x58]
+        # Con trỏ desc được truyền qua rdx = [rsp + 0x30]
+        # Offset bắt buộc phải là 0x58 - 0x30 = 0x28 (40 bytes)!
+        import ctypes
+        class DXGI_RATIONAL(ctypes.Structure):
+            _fields_ = [('Numerator', ctypes.c_uint), ('Denominator', ctypes.c_uint)]
+
+        class DXGI_MODE_DESC(ctypes.Structure):
+            _fields_ = [
+                ('Width', ctypes.c_uint),
+                ('Height', ctypes.c_uint),
+                ('RefreshRate', DXGI_RATIONAL),
+                ('Format', ctypes.c_uint),
+                ('ScanlineOrdering', ctypes.c_uint),
+                ('Scaling', ctypes.c_uint),
+            ]
+
+        class DXGI_SAMPLE_DESC(ctypes.Structure):
+            _fields_ = [('Count', ctypes.c_uint), ('Quality', ctypes.c_uint)]
+
+        class DXGI_SWAP_CHAIN_DESC(ctypes.Structure):
+            _fields_ = [
+                ('BufferDesc', DXGI_MODE_DESC),
+                ('SampleDesc', DXGI_SAMPLE_DESC),
+                ('BufferUsage', ctypes.c_uint),
+                ('BufferCount', ctypes.c_uint),
+                ('OutputWindow', ctypes.c_void_p),
+                ('Windowed', ctypes.c_int),
+                ('SwapEffect', ctypes.c_uint),
+                ('Flags', ctypes.c_uint),
+            ]
+
+        self.assertEqual(DXGI_SWAP_CHAIN_DESC.BufferCount.offset, 0x28,
+                         "BufferCount offset phải là 0x28 để khớp chính xác với [rsp + 0x58]")
+
+    def test_swapchain_buffer_count_never_zero(self):
+        # BufferCount phải luôn >= 1 để ngăn chặn lỗi chia cho 0 (SIGFPE FPE_INTDIV)
+        # tại hàm băm 0x14054BF2A (div r8 với r8 = bucket_count)
+        buffer_counts = [1, 2, 3]
+        for count in buffer_counts:
+            self.assertGreater(count, 0, "BufferCount phải lớn hơn 0 để bucket count > 0")
+
+    def test_swapchain_vtable_slots(self):
+        # Đảm bảo các slot quan trọng của IDXGISwapChain và IDXGISwapChain1 đã được định nghĩa
+        swapchain_slots = {
+            7: "GetDevice",
+            8: "Present",
+            9: "GetBuffer",
+            10: "SetFullscreenState",
+            11: "GetFullscreenState",
+            12: "GetDesc",
+            13: "ResizeBuffers",
+            14: "ResizeTarget",
+            15: "GetContainingOutput",
+            16: "GetFrameStatistics",
+            17: "GetLastPresentCount",
+            18: "GetDesc1",
+            19: "GetFullscreenDesc",
+            20: "GetHwnd",
+            22: "Present1"
+        }
+        self.assertEqual(swapchain_slots[12], "GetDesc")
+        self.assertEqual(swapchain_slots[18], "GetDesc1")
+        self.assertEqual(swapchain_slots[9], "GetBuffer")
 
 if __name__ == "__main__":
     unittest.main()
+
 

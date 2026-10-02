@@ -113,6 +113,13 @@ sequenceDiagram
   - Đóng vai trò cầu nối âm thanh DirectX XAudio2 (hỗ trợ XAudio 2.7, 2.8, 2.9):
     - Bắt chặn hàm `XAudio2Create` được nạp động qua `GetProcAddress`.
     - Cung cấp mock `IXAudio2` và `IXAudio2MasteringVoice` với vtable chuẩn COM (32 slots), khởi tạo thành công mastering voice mà không gây lỗi phân rã module âm thanh.
+- **`d3d11_bridge.cpp`**:
+  - Đóng vai trò cầu nối đồ hoạ Direct3D 11 & DXGI Subsystem:
+    - Bắt chặn các hàm `D3D11CreateDevice`, `D3DReflect`, `CreateSwapChain`, `CreateSwapChainForHwnd`.
+    - Cung cấp mô phỏng hoàn chỉnh cho `IDXGISwapChain` / `IDXGISwapChain1` (slots 7..22) và `ID3D11Texture2D` (slots 3, 7, 10).
+    - Khởi tạo đầy đủ cấu trúc `DXGI_SWAP_CHAIN_DESC` với trường `BufferCount` tại offset `0x28` (ứng với câu lệnh `mov ebp, dword ptr [rsp + 0x58]` tại RVA `0x4C47C5`).
+    - Đảm bảo `BufferCount >= 1` (mặc định 2 hoặc 3 theo cấu hình swapchain), ngăn chặn triệt để lỗi chia cho 0 `SIGFPE (FPE_INTDIV)` tại RVA `0x54AF2A` (`div r8`) khi engine khởi tạo số lượng bucket của container quản lý backbuffer.
+    - Cung cấp `mock_Texture2D_GetType` và `mock_Texture2D_GetDesc` đồng bộ kích thước và định dạng texture.
 - **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
   - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
   - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.
