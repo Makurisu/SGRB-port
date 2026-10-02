@@ -25,6 +25,9 @@ static void* const DUMMY_MODULE = reinterpret_cast<void*>(0x20002000);
 static void* const DUMMY_WINDOW = reinterpret_cast<void*>(0x30003000);
 static void* const DUMMY_DC = reinterpret_cast<void*>(0x40004000);
 
+// Generic fallback stub cho các hàm chưa dùng tới
+int64_t WINAPI stub_GenericSuccess() { return 0; } // S_OK hoặc return 0 / NULL
+
 // Các hàm Stub KERNEL32
 const wchar_t* WINAPI stub_GetCommandLineW() { return gCmdLineW; }
 const char* WINAPI stub_GetCommandLineA() { return gCmdLineA; }
@@ -166,9 +169,6 @@ int32_t WINAPI stub_TranslateMessage(const void*) { return 1; }
 int64_t WINAPI stub_DispatchMessageA(const void*) { return 0; }
 int64_t WINAPI stub_DefWindowProcA(void*, uint32_t, uint64_t, int64_t) { return 0; }
 void WINAPI stub_PostQuitMessage(int32_t) {}
-
-// Generic fallback stub cho các hàm chưa dùng tới
-int64_t WINAPI stub_GenericSuccess() { return 0; } // S_OK hoặc return 0 / NULL
 
 // Bảng ánh xạ hàm API
 static std::unordered_map<std::string, void*> gFunctionMap;
