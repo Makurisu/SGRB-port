@@ -70,7 +70,7 @@ sequenceDiagram
     - `SteamAPI_Shutdown()`: Dọn dẹp an toàn.
     - `SteamAPI_RestartAppIfNecessary()`: Trả về `false` để ngăn chặn việc game tự restart qua client Steam.
     - `SteamAPI_RunCallbacks()`: Duy trì chu kỳ xử lý sự kiện.
-    - `SteamInternal_SteamAPI_Init()`: Xác thực khởi tạo thành công (`true`).
+    - `SteamInternal_SteamAPI_Init()`: Xác thực khởi tạo thành công chuẩn `ESteamAPIInitResult` (trả về `0 = k_ESteamAPIInitResult_OK`).
     - `SteamInternal_FindOrCreateUserInterface()`: Trả về dummy vtable an toàn.
     - `SteamAPI_RegisterCallback()` & `SteamAPI_UnregisterCallback()`.
     - `SteamInternal_ContextInit()`.

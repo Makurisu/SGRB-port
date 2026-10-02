@@ -31,9 +31,9 @@ void WINAPI SteamAPI_RunCallbacks() {
     // Giữ callbacks loop hoạt động bình thường
 }
 
-bool WINAPI SteamInternal_SteamAPI_Init(void* /* pOutErrMsg */, int /* nOutErrMsgSize */) {
-    LOGI("SteamInternal_SteamAPI_Init called -> Mock Success");
-    return true;
+int32_t WINAPI SteamInternal_SteamAPI_Init(void* /* pOutErrMsg */, int /* nOutErrMsgSize */) {
+    LOGI("SteamInternal_SteamAPI_Init called -> Mock Success (0 = k_ESteamAPIInitResult_OK)");
+    return 0; // 0 = k_ESteamAPIInitResult_OK
 }
 
 void* WINAPI SteamInternal_FindOrCreateUserInterface(int32_t /* hSteamUser */, const char* pszVersion) {

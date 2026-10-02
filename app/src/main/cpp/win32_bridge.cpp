@@ -505,8 +505,14 @@ void* WINAPI stub_RtlPcToFileHeader(void*, void** baseOfImage) {
 void WINAPI stub_RaiseException(uint32_t, uint32_t, uint32_t, const uint64_t*) {}
 void WINAPI stub_RtlUnwind(void*, void*, void*, void*) {}
 void WINAPI stub_RtlUnwindEx(void*, void*, void*, void*, void*, void*) {}
-void WINAPI stub_TerminateProcess(void*, uint32_t) {}
-void WINAPI stub_ExitProcess(uint32_t) {}
+void WINAPI stub_TerminateProcess(void*, uint32_t uExitCode) {
+    LOGW("stub_TerminateProcess gọi với mã thoát: %u", uExitCode);
+    pthread_exit(nullptr);
+}
+void WINAPI stub_ExitProcess(uint32_t uExitCode) {
+    LOGW("stub_ExitProcess gọi với mã thoát: %u", uExitCode);
+    pthread_exit(nullptr);
+}
 
 // Các hàm Stub USER32
 void* WINAPI stub_CreateWindowExA(uint32_t, const char*, const char*, uint32_t, int, int, int, int, void*, void*, void*, void*) { return DUMMY_WINDOW; }
