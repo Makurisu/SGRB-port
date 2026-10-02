@@ -55,13 +55,19 @@ sequenceDiagram
   - Phân tích bảng Import Directory (`0x9627A0`, kích thước `0x168`) và nhận diện toàn bộ 17 DLL phụ thuộc (`steam_api64.dll`, `d3d11.dll`, `D3DCOMPILER_47.dll`, `XINPUT1_4.dll`, `KERNEL32.dll`, `USER32.dll`...).
   - Cấp phát không gian địa chỉ ảo 64-bit ẩn danh (`mmap` ~11.05 MB) và ánh xạ từng Section (`.text`, `.rodata`, `.rdata`, `.data`, `.pdata`, `.fptable`, `.rsrc`, `.reloc`) theo đúng toạ độ `VirtualAddress`.
   - Thực thi thuật toán **64-bit Base Relocation Engine** (`IMAGE_REL_BASED_DIR64` fixup qua 103 blocks): Tự động tính độ lệch delta và tái định vị chuẩn xác **10,692 con trỏ bộ nhớ 64-bit** trong RAM để code x86_64 của game chạy đúng địa chỉ không bị crash.
+  - Phân giải và liên kết động trực tiếp bảng **Import Address Table (IAT)** trong RAM: Gắn chính xác 9 con trỏ hàm API của Steamworks vào binary gốc.
   - Khởi tạo thành công điểm vào thực thi `EntryPoint` trong không gian nhớ của tiến trình Android.
 - **`steam_hook.cpp`**:
-  - Giả lập các hàm API tối thiểu của Steamworks SDK:
-    - `SteamAPI_Init()`: Luôn trả về `true`.
-    - `SteamAPI_IsSteamRunning()`: Trả về `true`.
-    - `SteamAPI_Shutdown()`: Giải phóng an toàn.
-  - Vượt qua kiểm tra bản quyền Steam mà không làm crash game.
+  - Giả lập chuẩn 9 hàm API Steamworks mà game yêu cầu từ IAT:
+    - `SteamAPI_GetHSteamUser()`: Trả về Mock User ID 1.
+    - `SteamAPI_Shutdown()`: Dọn dẹp an toàn.
+    - `SteamAPI_RestartAppIfNecessary()`: Trả về `false` để ngăn chặn việc game tự restart qua client Steam.
+    - `SteamAPI_RunCallbacks()`: Duy trì chu kỳ xử lý sự kiện.
+    - `SteamInternal_SteamAPI_Init()`: Xác thực khởi tạo thành công (`true`).
+    - `SteamInternal_FindOrCreateUserInterface()`: Trả về dummy vtable an toàn.
+    - `SteamAPI_RegisterCallback()` & `SteamAPI_UnregisterCallback()`.
+    - `SteamInternal_ContextInit()`.
+  - Vượt qua toàn bộ kiểm tra Steam DRM mà không phụ thuộc vào `steam_api64.dll` của Windows.
 
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).
