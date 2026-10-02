@@ -67,8 +67,18 @@ bool PayloadLoader::verifyPEHeader(const std::string& filePath, GamePayloadInfo&
     file.seekg(peOffset + 24 + 24, std::ios::beg);
     file.read(reinterpret_cast<char*>(&imageBase), sizeof(imageBase));
 
+    // SizeOfImage tại offset peOffset + 24 + 56 (4 bytes)
+    // SizeOfHeaders tại offset peOffset + 24 + 60 (4 bytes)
+    uint32_t sizeOfImage = 0;
+    uint32_t sizeOfHeaders = 0;
+    file.seekg(peOffset + 24 + 56, std::ios::beg);
+    file.read(reinterpret_cast<char*>(&sizeOfImage), sizeof(sizeOfImage));
+    file.read(reinterpret_cast<char*>(&sizeOfHeaders), sizeof(sizeOfHeaders));
+
     outInfo.entryPointRva = entryPoint;
     outInfo.imageBase = imageBase;
+    outInfo.sizeOfImage = sizeOfImage;
+    outInfo.sizeOfHeaders = sizeOfHeaders;
 
     // Đọc DataDirectory[1] (Import Table) tại offset peOffset + 24 + 120 (trong PE32+ 64-bit)
     file.seekg(peOffset + 24 + 120, std::ios::beg);
@@ -215,9 +225,12 @@ void* PayloadLoader::mapImageToMemory(const GamePayloadInfo& info) {
         return nullptr;
     }
 
-    // Tính toán kích thước ảnh ảo tổng thể từ section cuối cùng
-    const auto& lastSection = info.sections.back();
-    size_t totalImageSize = lastSection.virtualAddress + lastSection.virtualSize;
+    // Tính toán kích thước ảnh ảo tổng thể từ sizeOfImage của PE header hoặc section cuối cùng
+    size_t totalImageSize = info.sizeOfImage;
+    if (totalImageSize == 0 && !info.sections.empty()) {
+        const auto& lastSection = info.sections.back();
+        totalImageSize = lastSection.virtualAddress + lastSection.virtualSize;
+    }
     // Căn chỉnh theo trang bộ nhớ 4KB
     totalImageSize = (totalImageSize + 4095) & ~4095;
 
@@ -242,6 +255,12 @@ void* PayloadLoader::mapImageToMemory(const GamePayloadInfo& info) {
 
     uint8_t* basePtr = static_cast<uint8_t*>(baseAddr);
 
+    // Nạp DOS/PE Header vào đầu Image (từ 0 đến sizeOfHeaders) để CRT/GetModuleHandle có thể đọc được PE header
+    uint32_t headerSizeToCopy = info.sizeOfHeaders > 0 ? info.sizeOfHeaders : 0x1000;
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char*>(basePtr), headerSizeToCopy);
+    LOGI("Đã nạp DOS và PE Headers (%u bytes) vào vùng nhớ tại %p", headerSizeToCopy, baseAddr);
+
     // Sao chép từng Section từ file vào đúng toạ độ ảo VirtualAddress trong RAM
     for (const auto& sec : info.sections) {
         if (sec.rawSize == 0 || sec.rawOffset == 0) continue;
@@ -254,7 +273,8 @@ void* PayloadLoader::mapImageToMemory(const GamePayloadInfo& info) {
              sec.name.c_str(), sec.virtualAddress, sec.rawSize);
     }
 
-    LOGI("Toàn bộ 8 sections của game đã được nạp vào RAM thành công tại địa chỉ cơ sở: %p", baseAddr);
+    LOGI("Toàn bộ %zu sections và PE headers của game đã được nạp vào RAM thành công tại địa chỉ cơ sở: %p",
+         info.sections.size(), baseAddr);
     return baseAddr;
 }
 
@@ -432,6 +452,14 @@ bool PayloadLoader::protectSections(void* baseAddress, const GamePayloadInfo& in
     if (baseAddress == nullptr) return false;
 
     uint8_t* basePtr = static_cast<uint8_t*>(baseAddress);
+
+    // Bảo vệ vùng DOS/PE Header ở đầu image bằng PROT_READ (thường là 4KB đầu tiên trước section 0)
+    uintptr_t firstSecVa = info.sections.empty() ? 0x1000 : info.sections[0].virtualAddress;
+    size_t headerPageSize = (firstSecVa + 4095ULL) & ~4095ULL;
+    if (headerPageSize > 0) {
+        mprotect(baseAddress, headerPageSize, PROT_READ);
+        LOGI("Thiết lập bảo vệ trang cho [DOS/PE Headers]: Prot=0x1 (PROT_READ), Size=%zu", headerPageSize);
+    }
 
     for (const auto& sec : info.sections) {
         int prot = PROT_READ;

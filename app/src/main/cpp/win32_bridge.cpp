@@ -25,6 +25,14 @@ static void* const DUMMY_MODULE = reinterpret_cast<void*>(0x20002000);
 static void* const DUMMY_WINDOW = reinterpret_cast<void*>(0x30003000);
 static void* const DUMMY_DC = reinterpret_cast<void*>(0x40004000);
 
+// Biến lưu ImageBase thực tế trong RAM
+static void* gLoadedImageBase = nullptr;
+
+void Win32Bridge_SetLoadedImageBase(void* imageBase) {
+    gLoadedImageBase = imageBase;
+    LOGI("Win32Bridge đã thiết lập Loaded ImageBase: %p", imageBase);
+}
+
 // Generic fallback stub cho các hàm chưa dùng tới
 int64_t WINAPI stub_GenericSuccess() { return 0; } // S_OK hoặc return 0 / NULL
 
@@ -48,13 +56,33 @@ size_t WINAPI stub_HeapSize(void*, uint32_t, const void*) { return 0; }
 uint32_t WINAPI stub_GetCurrentProcessId() { return static_cast<uint32_t>(getpid()); }
 uint32_t WINAPI stub_GetCurrentThreadId() { return static_cast<uint32_t>(pthread_self()); }
 void* WINAPI stub_GetCurrentProcess() { return reinterpret_cast<void*>(-1); }
-void* WINAPI stub_GetModuleHandleA(const char*) { return DUMMY_MODULE; }
-void* WINAPI stub_GetModuleHandleW(const wchar_t*) { return DUMMY_MODULE; }
-void* WINAPI stub_GetModuleHandleExW(uint32_t, const wchar_t*, void**) { return DUMMY_MODULE; }
+
+void* WINAPI stub_GetModuleHandleA(const char* lpModuleName) {
+    if (!lpModuleName || lpModuleName[0] == '\0') {
+        return gLoadedImageBase ? gLoadedImageBase : DUMMY_MODULE;
+    }
+    return DUMMY_MODULE;
+}
+
+void* WINAPI stub_GetModuleHandleW(const wchar_t* lpModuleName) {
+    if (!lpModuleName || lpModuleName[0] == L'\0') {
+        return gLoadedImageBase ? gLoadedImageBase : DUMMY_MODULE;
+    }
+    return DUMMY_MODULE;
+}
+
+void* WINAPI stub_GetModuleHandleExW(uint32_t, const wchar_t* lpModuleName, void** phModule) {
+    void* hMod = stub_GetModuleHandleW(lpModuleName);
+    if (phModule) *phModule = hMod;
+    return hMod;
+}
+
 void* WINAPI stub_LoadLibraryA(const char*) { return DUMMY_MODULE; }
 void* WINAPI stub_LoadLibraryExW(const wchar_t*, void*, uint32_t) { return DUMMY_MODULE; }
+int32_t WINAPI stub_FreeLibrary(void*) { return 1; }
+
 void* WINAPI stub_GetProcAddress(void*, const char* lpProcName) {
-    if (!lpProcName) return reinterpret_cast<void*>(&stub_GenericSuccess);
+    if (!lpProcName) return nullptr;
     LOGI("GetProcAddress dynamic query: %s", lpProcName);
     return Win32Bridge_ResolveSymbol(nullptr, lpProcName);
 }
@@ -88,7 +116,22 @@ void WINAPI stub_Sleep(uint32_t dwMilliseconds) {
     usleep(dwMilliseconds * 1000);
 }
 
-void WINAPI stub_GetSystemTimeAsFileTime(void*) {}
+void WINAPI stub_GetSystemTimeAsFileTime(void* lpSystemTimeAsFileTime) {
+    if (lpSystemTimeAsFileTime) {
+        // Chuyển đổi timestamp Unix (1970) sang Windows FILETIME (1601), đơn vị 100ns
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        uint64_t t = (static_cast<uint64_t>(ts.tv_sec) * 10000000ULL) +
+                     (static_cast<uint64_t>(ts.tv_nsec) / 100ULL) +
+                     116444736000000000ULL;
+        *reinterpret_cast<uint64_t*>(lpSystemTimeAsFileTime) = t;
+    }
+}
+
+void WINAPI stub_GetSystemTimePreciseAsFileTime(void* lpSystemTimeAsFileTime) {
+    stub_GetSystemTimeAsFileTime(lpSystemTimeAsFileTime);
+}
+
 int32_t WINAPI stub_SystemTimeToFileTime(const void*, void*) { return 1; }
 int32_t WINAPI stub_FileTimeToSystemTime(const void*, void*) { return 1; }
 int32_t WINAPI stub_FileTimeToLocalFileTime(const void*, void*) { return 1; }
@@ -116,7 +159,15 @@ void WINAPI stub_WakeAllConditionVariable(void*) {}
 int32_t WINAPI stub_SleepConditionVariableSRW(void*, void*, uint32_t, uint32_t) { return 1; }
 
 void WINAPI stub_InitializeSListHead(void*) {}
-int32_t WINAPI stub_IsProcessorFeaturePresent(uint32_t) { return 1; }
+
+int32_t WINAPI stub_IsProcessorFeaturePresent(uint32_t processorFeature) {
+    // PF_FASTFAIL_AVAILABLE = 23 (0x17) -> Trả về 0 để CRT không gọi __fastfail!
+    if (processorFeature == 23) {
+        return 0;
+    }
+    return 1;
+}
+
 int32_t WINAPI stub_IsDebuggerPresent() { return 0; }
 
 uint32_t WINAPI stub_TlsAlloc() { return 1; }
@@ -136,6 +187,15 @@ void WINAPI stub_OutputDebugStringW(const wchar_t*) {}
 void WINAPI stub_GetStartupInfoW(void* lpStartupInfo) {
     if (lpStartupInfo) memset(lpStartupInfo, 0, 68);
 }
+
+// Exception Filter stubs
+void* WINAPI stub_SetUnhandledExceptionFilter(void*) { return nullptr; }
+int32_t WINAPI stub_UnhandledExceptionFilter(void*) { return 0; }
+void WINAPI stub_RtlCaptureContext(void*) {}
+void* WINAPI stub_RtlLookupFunctionEntry(uint64_t, void*, void*) { return nullptr; }
+void* WINAPI stub_RtlVirtualUnwind(uint32_t, uint64_t, uint64_t, void*, void*, void*, void*, void*) { return nullptr; }
+void WINAPI stub_TerminateProcess(void*, uint32_t) {}
+void WINAPI stub_ExitProcess(uint32_t) {}
 
 // Các hàm Stub USER32
 void* WINAPI stub_CreateWindowExA(uint32_t, const char*, const char*, uint32_t, int, int, int, int, void*, void*, void*, void*) { return DUMMY_WINDOW; }
@@ -260,6 +320,15 @@ void Win32Bridge_Init() {
     gFunctionMap["DispatchMessageA"] = reinterpret_cast<void*>(&stub_DispatchMessageA);
     gFunctionMap["DefWindowProcA"] = reinterpret_cast<void*>(&stub_DefWindowProcA);
     gFunctionMap["PostQuitMessage"] = reinterpret_cast<void*>(&stub_PostQuitMessage);
+    gFunctionMap["FreeLibrary"] = reinterpret_cast<void*>(&stub_FreeLibrary);
+    gFunctionMap["GetSystemTimePreciseAsFileTime"] = reinterpret_cast<void*>(&stub_GetSystemTimePreciseAsFileTime);
+    gFunctionMap["SetUnhandledExceptionFilter"] = reinterpret_cast<void*>(&stub_SetUnhandledExceptionFilter);
+    gFunctionMap["UnhandledExceptionFilter"] = reinterpret_cast<void*>(&stub_UnhandledExceptionFilter);
+    gFunctionMap["RtlCaptureContext"] = reinterpret_cast<void*>(&stub_RtlCaptureContext);
+    gFunctionMap["RtlLookupFunctionEntry"] = reinterpret_cast<void*>(&stub_RtlLookupFunctionEntry);
+    gFunctionMap["RtlVirtualUnwind"] = reinterpret_cast<void*>(&stub_RtlVirtualUnwind);
+    gFunctionMap["TerminateProcess"] = reinterpret_cast<void*>(&stub_TerminateProcess);
+    gFunctionMap["ExitProcess"] = reinterpret_cast<void*>(&stub_ExitProcess);
 
     LOGI("Bảng Win32 Bridge đã khởi tạo thành công %zu hàm stub native!", gFunctionMap.size());
 }
@@ -274,6 +343,13 @@ void* Win32Bridge_ResolveSymbol(const char* dllName, const char* funcName) {
         return it->second;
     }
 
-    // Fallback: Nếu chưa mock chi tiết nhưng game cần con trỏ hàm để tránh crash null-pointer dereference
+    // Nếu đây là truy vấn từ stub_GetProcAddress (dllName == nullptr), trả về nullptr
+    // để CRT Windows biết API không được hỗ trợ và tự động fallback về API cũ
+    if (dllName == nullptr) {
+        LOGW("GetProcAddress: API '%s' chưa được triển khai, trả về nullptr cho caller", funcName);
+        return nullptr;
+    }
+
+    // Fallback cho IAT resolving tĩnh: Trả về stub_GenericSuccess để tránh crash null-pointer dereference
     return reinterpret_cast<void*>(&stub_GenericSuccess);
 }

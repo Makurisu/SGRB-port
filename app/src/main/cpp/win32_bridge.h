@@ -11,6 +11,9 @@
 extern "C" {
 #endif
 
+// Thiết lập ImageBase thực tế của binary game trong RAM
+void Win32Bridge_SetLoadedImageBase(void* imageBase);
+
 // Khởi tạo bảng Win32 Stub Table & Universal Function Resolver
 void Win32Bridge_Init();
 

@@ -139,6 +139,7 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
 
         void* loadedBase = PayloadLoader::mapImageToMemory(payloadInfo);
         if (loadedBase != nullptr) {
+            Win32Bridge_SetLoadedImageBase(loadedBase);
             bool relocSuccess = PayloadLoader::applyRelocations(loadedBase, payloadInfo);
             bool importSuccess = PayloadLoader::resolveImports(loadedBase, payloadInfo);
             bool protectSuccess = PayloadLoader::protectSections(loadedBase, payloadInfo);
