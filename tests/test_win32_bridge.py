@@ -139,6 +139,36 @@ class TestWin32BridgeLogic(unittest.TestCase):
         self.assertEqual(mock_sh_get_folder(CSIDL_PERSONAL), "C:\\saves")
         self.assertEqual(mock_sh_get_folder(CSIDL_APPDATA), "C:\\saves")
 
+    def test_message_queue_and_pump(self):
+        # Giả lập hàng đợi thông điệp Win32 và PeekMessage
+        queue = []
+
+        def post_message(msg_id, wparam, lparam):
+            queue.append({"msg": msg_id, "wParam": wparam, "lParam": lparam})
+
+        def peek_message(remove=True):
+            if not queue:
+                return None
+            msg = queue[0]
+            if remove:
+                queue.pop(0)
+            return msg
+
+        # Đẩy sự kiện chuột WM_LBUTTONDOWN (0x0201)
+        post_message(0x0201, 1, 0x01680300)
+        self.assertEqual(len(queue), 1)
+
+        # Peek không xoá
+        msg_peek = peek_message(remove=False)
+        self.assertIsNotNone(msg_peek)
+        self.assertEqual(msg_peek["msg"], 0x0201)
+        self.assertEqual(len(queue), 1)
+
+        # Peek có xoá (PM_REMOVE)
+        msg_pop = peek_message(remove=True)
+        self.assertEqual(msg_pop["msg"], 0x0201)
+        self.assertEqual(len(queue), 0)
+
 if __name__ == "__main__":
     unittest.main()
 

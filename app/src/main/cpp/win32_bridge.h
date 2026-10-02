@@ -23,6 +23,9 @@ void Win32Bridge_Init();
 // Hàm trả về con trỏ hàm Win32 API stub dựa theo tên DLL và tên hàm
 void* Win32Bridge_ResolveSymbol(const char* dllName, const char* funcName);
 
+// Đẩy thông điệp Win32 vào hàng đợi thông điệp của game
+void Win32Bridge_PostMessage(uint32_t message, uint64_t wParam, int64_t lParam);
+
 #ifdef __cplusplus
 }
 #endif

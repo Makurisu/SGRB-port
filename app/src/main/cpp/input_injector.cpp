@@ -1,4 +1,5 @@
 #include "input_injector.h"
+#include "win32_bridge.h"
 #include <android/log.h>
 #include <algorithm>
 
@@ -21,12 +22,15 @@ namespace {
 
 void InputInjector::sendWin32Mouse(uint32_t msg, int32_t x, int32_t y) {
     LOGI("Dispatched Win32 Mouse Msg: 0x%X at (%d, %d)", msg, x, y);
-    // Ánh xạ trực tiếp vào WndProc queue của game x86
+    int64_t lParam = (static_cast<int64_t>(y) << 16) | (x & 0xFFFF);
+    uint64_t wParam = (msg == WM_LBUTTONDOWN) ? 1 : 0;
+    Win32Bridge_PostMessage(msg, wParam, lParam);
 }
 
 void InputInjector::sendWin32Key(uint32_t virtualKey, bool isDown) {
     LOGI("Dispatched Win32 Key: 0x%X, isDown: %d", virtualKey, isDown ? 1 : 0);
-    // Gửi thông điệp WM_KEYDOWN / WM_KEYUP vào game loop
+    uint32_t msg = isDown ? 0x0100 : 0x0101; // WM_KEYDOWN / WM_KEYUP
+    Win32Bridge_PostMessage(msg, virtualKey, 0);
 }
 
 void InputInjector::injectTouchEvent(GameTouchAction action, float normalizedX, float normalizedY) {

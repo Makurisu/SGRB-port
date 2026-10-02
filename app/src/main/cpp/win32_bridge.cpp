@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <queue>
 #include <cstdlib>
 #include <chrono>
 #include <pthread.h>
@@ -1331,11 +1332,136 @@ int32_t WINAPI stub_GetSystemMetrics(int32_t nIndex) {
     if (nIndex == 1) return 1080; // SM_CYSCREEN
     return 0;
 }
-int32_t WINAPI stub_PeekMessageA(void*, void*, uint32_t, uint32_t, uint32_t) { return 0; }
+struct Win32Msg {
+    void* hwnd;
+    uint32_t message;
+    uint64_t wParam;
+    int64_t lParam;
+    uint32_t time;
+    struct {
+        int32_t x;
+        int32_t y;
+    } pt;
+    uint32_t lPrivate;
+};
+
+static std::queue<Win32Msg> gMsgQueue;
+static std::mutex gMsgMutex;
+static bool gInitialMessagesPushed = false;
+
+int32_t WINAPI stub_PeekMessageA(void* lpMsg, void*, uint32_t, uint32_t, uint32_t wRemoveMsg) {
+    if (!gInitialMessagesPushed) {
+        gInitialMessagesPushed = true;
+        // Bơm các thông điệp Win32 ban đầu để kích hoạt game engine
+        std::lock_guard<std::mutex> lock(gMsgMutex);
+        Win32Msg m1{ DUMMY_WINDOW, 0x0001, 0, 0, 0, {960, 540}, 0 }; // WM_CREATE
+        Win32Msg m2{ DUMMY_WINDOW, 0x0005, 0, (1080 << 16) | 1920, 0, {960, 540}, 0 }; // WM_SIZE
+        Win32Msg m3{ DUMMY_WINDOW, 0x0006, 1, 0, 0, {960, 540}, 0 }; // WM_ACTIVATE (WA_ACTIVE)
+        Win32Msg m4{ DUMMY_WINDOW, 0x0007, 0, 0, 0, {960, 540}, 0 }; // WM_SETFOCUS
+        Win32Msg m5{ DUMMY_WINDOW, 0x000F, 0, 0, 0, {960, 540}, 0 }; // WM_PAINT
+        gMsgQueue.push(m1);
+        gMsgQueue.push(m2);
+        gMsgQueue.push(m3);
+        gMsgQueue.push(m4);
+        gMsgQueue.push(m5);
+    }
+
+    std::lock_guard<std::mutex> lock(gMsgMutex);
+    if (gMsgQueue.empty()) return 0;
+
+    if (lpMsg) {
+        *reinterpret_cast<Win32Msg*>(lpMsg) = gMsgQueue.front();
+    }
+    if (wRemoveMsg & 0x0001) { // PM_REMOVE
+        gMsgQueue.pop();
+    }
+    return 1;
+}
+
 int32_t WINAPI stub_TranslateMessage(const void*) { return 1; }
 int64_t WINAPI stub_DispatchMessageA(const void*) { return 0; }
 int64_t WINAPI stub_DefWindowProcA(void*, uint32_t, uint64_t, int64_t) { return 0; }
 void WINAPI stub_PostQuitMessage(int32_t) {}
+
+// Window state & focus lifecycle
+void* WINAPI stub_GetForegroundWindow() { return DUMMY_WINDOW; }
+void* WINAPI stub_GetActiveWindow() { return DUMMY_WINDOW; }
+void* WINAPI stub_GetFocus() { return DUMMY_WINDOW; }
+void* WINAPI stub_SetActiveWindow(void*) { return DUMMY_WINDOW; }
+int32_t WINAPI stub_SetForegroundWindow(void*) { return 1; }
+void* WINAPI stub_SetFocus(void*) { return DUMMY_WINDOW; }
+int32_t WINAPI stub_IsIconic(void*) { return 0; }
+int32_t WINAPI stub_IsZoomed(void*) { return 0; }
+
+int32_t WINAPI stub_GetCursorPos(void* lpPoint) {
+    if (lpPoint) {
+        int32_t* pt = reinterpret_cast<int32_t*>(lpPoint);
+        pt[0] = 960; pt[1] = 540;
+    }
+    return 1;
+}
+int32_t WINAPI stub_SetCursorPos(int32_t, int32_t) { return 1; }
+int32_t WINAPI stub_ShowCursor(int32_t) { return 0; }
+void* WINAPI stub_SetCursor(void*) { return nullptr; }
+void* WINAPI stub_LoadCursorA(void*, const char*) { return reinterpret_cast<void*>(0x1234); }
+void* WINAPI stub_LoadIconA(void*, const char*) { return reinterpret_cast<void*>(0x5678); }
+uint16_t WINAPI stub_RegisterClassExA(const void*) { return 0x1234; }
+int32_t WINAPI stub_AdjustWindowRectEx(void*, uint32_t, int32_t, uint32_t) { return 1; }
+int32_t WINAPI stub_SystemParametersInfoA(uint32_t, uint32_t, void*, uint32_t) { return 1; }
+void* WINAPI stub_MonitorFromWindow(void*, uint32_t) { return reinterpret_cast<void*>(0x9999); }
+int32_t WINAPI stub_GetMonitorInfoA(void*, void* lpmi) {
+    if (lpmi) {
+        struct Win32MonitorInfo {
+            uint32_t cbSize;
+            int32_t rcMonitor[4];
+            int32_t rcWork[4];
+            uint32_t dwFlags;
+        };
+        auto* mi = reinterpret_cast<Win32MonitorInfo*>(lpmi);
+        mi->rcMonitor[0] = 0; mi->rcMonitor[1] = 0; mi->rcMonitor[2] = 1920; mi->rcMonitor[3] = 1080;
+        mi->rcWork[0] = 0; mi->rcWork[1] = 0; mi->rcWork[2] = 1920; mi->rcWork[3] = 1080;
+        mi->dwFlags = 1;
+    }
+    return 1;
+}
+void* WINAPI stub_WindowFromPoint(int32_t, int32_t) { return DUMMY_WINDOW; }
+int32_t WINAPI stub_ScreenToClient(void*, void*) { return 1; }
+int32_t WINAPI stub_ClientToScreen(void*, void*) { return 1; }
+int32_t WINAPI stub_TrackMouseEvent(void*) { return 1; }
+uintptr_t WINAPI stub_SetTimer(void*, uintptr_t nIDEvent, uint32_t, void*) { return nIDEvent ? nIDEvent : 1; }
+int32_t WINAPI stub_KillTimer(void*, uintptr_t) { return 1; }
+int16_t WINAPI stub_GetKeyState(int32_t) { return 0; }
+int32_t WINAPI stub_GetKeyboardState(void* lpKeyState) {
+    if (lpKeyState) memset(lpKeyState, 0, 256);
+    return 1;
+}
+int32_t WINAPI stub_AttachThreadInput(uint32_t, uint32_t, int32_t) { return 1; }
+int32_t WINAPI stub_GetWindowLongA(void*, int32_t) { return 0x10000000; } // WS_VISIBLE
+int32_t WINAPI stub_SetWindowLongA(void*, int32_t, int32_t) { return 0; }
+intptr_t WINAPI stub_GetWindowLongPtrA(void*, int32_t) { return 0; }
+intptr_t WINAPI stub_SetWindowLongPtrA(void*, int32_t, intptr_t) { return 0; }
+int32_t WINAPI stub_GetWindowPlacement(void*, void* lpwndpl) {
+    if (lpwndpl) {
+        struct Win32WindowPlacement {
+            uint32_t length;
+            uint32_t flags;
+            uint32_t showCmd;
+            int32_t ptMinPosition[2];
+            int32_t ptMaxPosition[2];
+            int32_t rcNormalPosition[4];
+        };
+        auto* wp = reinterpret_cast<Win32WindowPlacement*>(lpwndpl);
+        wp->showCmd = 1;
+        wp->rcNormalPosition[0] = 0; wp->rcNormalPosition[1] = 0; wp->rcNormalPosition[2] = 1920; wp->rcNormalPosition[3] = 1080;
+    }
+    return 1;
+}
+int32_t WINAPI stub_InvalidateRect(void*, const void*, int32_t) { return 1; }
+int64_t WINAPI stub_SendMessageA(void*, uint32_t, uint64_t, int64_t) { return 0; }
+int64_t WINAPI stub_CallWindowProcA(void*, void*, uint32_t, uint64_t, int64_t) { return 0; }
+int32_t WINAPI stub_EndDialog(void*, intptr_t) { return 1; }
+void* WINAPI stub_GetDlgItem(void*, int32_t) { return DUMMY_WINDOW; }
+
 int32_t WINAPI stub_GetWindowTextW(void*, char16_t* lpString, int32_t nMaxCount) {
     if (lpString && nMaxCount > 0) lpString[0] = u'\0';
     return 0;
@@ -1549,6 +1675,46 @@ void Win32Bridge_Init() {
     gFunctionMap["SendMessageW"] = reinterpret_cast<void*>(&stub_SendMessageW);
     gFunctionMap["DialogBoxParamW"] = reinterpret_cast<void*>(&stub_DialogBoxParamW);
 
+    // USER32 Window Lifecycle & Focus Registration
+    gFunctionMap["GetForegroundWindow"] = reinterpret_cast<void*>(&stub_GetForegroundWindow);
+    gFunctionMap["GetActiveWindow"] = reinterpret_cast<void*>(&stub_GetActiveWindow);
+    gFunctionMap["GetFocus"] = reinterpret_cast<void*>(&stub_GetFocus);
+    gFunctionMap["SetActiveWindow"] = reinterpret_cast<void*>(&stub_SetActiveWindow);
+    gFunctionMap["SetForegroundWindow"] = reinterpret_cast<void*>(&stub_SetForegroundWindow);
+    gFunctionMap["SetFocus"] = reinterpret_cast<void*>(&stub_SetFocus);
+    gFunctionMap["IsIconic"] = reinterpret_cast<void*>(&stub_IsIconic);
+    gFunctionMap["IsZoomed"] = reinterpret_cast<void*>(&stub_IsZoomed);
+    gFunctionMap["GetCursorPos"] = reinterpret_cast<void*>(&stub_GetCursorPos);
+    gFunctionMap["SetCursorPos"] = reinterpret_cast<void*>(&stub_SetCursorPos);
+    gFunctionMap["ShowCursor"] = reinterpret_cast<void*>(&stub_ShowCursor);
+    gFunctionMap["SetCursor"] = reinterpret_cast<void*>(&stub_SetCursor);
+    gFunctionMap["LoadCursorA"] = reinterpret_cast<void*>(&stub_LoadCursorA);
+    gFunctionMap["LoadIconA"] = reinterpret_cast<void*>(&stub_LoadIconA);
+    gFunctionMap["RegisterClassExA"] = reinterpret_cast<void*>(&stub_RegisterClassExA);
+    gFunctionMap["AdjustWindowRectEx"] = reinterpret_cast<void*>(&stub_AdjustWindowRectEx);
+    gFunctionMap["SystemParametersInfoA"] = reinterpret_cast<void*>(&stub_SystemParametersInfoA);
+    gFunctionMap["MonitorFromWindow"] = reinterpret_cast<void*>(&stub_MonitorFromWindow);
+    gFunctionMap["GetMonitorInfoA"] = reinterpret_cast<void*>(&stub_GetMonitorInfoA);
+    gFunctionMap["WindowFromPoint"] = reinterpret_cast<void*>(&stub_WindowFromPoint);
+    gFunctionMap["ScreenToClient"] = reinterpret_cast<void*>(&stub_ScreenToClient);
+    gFunctionMap["ClientToScreen"] = reinterpret_cast<void*>(&stub_ClientToScreen);
+    gFunctionMap["TrackMouseEvent"] = reinterpret_cast<void*>(&stub_TrackMouseEvent);
+    gFunctionMap["SetTimer"] = reinterpret_cast<void*>(&stub_SetTimer);
+    gFunctionMap["KillTimer"] = reinterpret_cast<void*>(&stub_KillTimer);
+    gFunctionMap["GetKeyState"] = reinterpret_cast<void*>(&stub_GetKeyState);
+    gFunctionMap["GetKeyboardState"] = reinterpret_cast<void*>(&stub_GetKeyboardState);
+    gFunctionMap["AttachThreadInput"] = reinterpret_cast<void*>(&stub_AttachThreadInput);
+    gFunctionMap["GetWindowLongA"] = reinterpret_cast<void*>(&stub_GetWindowLongA);
+    gFunctionMap["SetWindowLongA"] = reinterpret_cast<void*>(&stub_SetWindowLongA);
+    gFunctionMap["GetWindowLongPtrA"] = reinterpret_cast<void*>(&stub_GetWindowLongPtrA);
+    gFunctionMap["SetWindowLongPtrA"] = reinterpret_cast<void*>(&stub_SetWindowLongPtrA);
+    gFunctionMap["GetWindowPlacement"] = reinterpret_cast<void*>(&stub_GetWindowPlacement);
+    gFunctionMap["InvalidateRect"] = reinterpret_cast<void*>(&stub_InvalidateRect);
+    gFunctionMap["SendMessageA"] = reinterpret_cast<void*>(&stub_SendMessageA);
+    gFunctionMap["CallWindowProcA"] = reinterpret_cast<void*>(&stub_CallWindowProcA);
+    gFunctionMap["EndDialog"] = reinterpret_cast<void*>(&stub_EndDialog);
+    gFunctionMap["GetDlgItem"] = reinterpret_cast<void*>(&stub_GetDlgItem);
+
     // Stack & Exception Handling Registration
     gFunctionMap["RtlPcToFileHeader"] = reinterpret_cast<void*>(&stub_RtlPcToFileHeader);
     gFunctionMap["RaiseException"] = reinterpret_cast<void*>(&stub_RaiseException);
@@ -1586,4 +1752,18 @@ void* Win32Bridge_ResolveSymbol(const char* dllName, const char* funcName) {
 
     // Fallback cho IAT resolving tĩnh: Trả về stub_GenericSuccess để tránh crash null-pointer dereference
     return reinterpret_cast<void*>(&stub_GenericSuccess);
+}
+
+extern "C" void Win32Bridge_PostMessage(uint32_t message, uint64_t wParam, int64_t lParam) {
+    std::lock_guard<std::mutex> lock(gMsgMutex);
+    Win32Msg msg{};
+    msg.hwnd = DUMMY_WINDOW;
+    msg.message = message;
+    msg.wParam = wParam;
+    msg.lParam = lParam;
+    msg.time = stub_GetTickCount();
+    msg.pt.x = static_cast<int32_t>(lParam & 0xFFFF);
+    msg.pt.y = static_cast<int32_t>((lParam >> 16) & 0xFFFF);
+    msg.lPrivate = 0;
+    gMsgQueue.push(msg);
 }
