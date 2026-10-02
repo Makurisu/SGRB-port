@@ -69,3 +69,15 @@ sequenceDiagram
   - Runtime wrapper: ~60MB RAM.
   - Game gốc & E-mote cache: ~1.2GB - 2GB RAM.
   - Yêu cầu cấu hình khuyến nghị: Thiết bị Android có từ 4GB RAM trở lên, hỗ trợ Vulkan 1.1+.
+
+---
+
+## 4. Kiểm Thử Tự Động (LDPlayer Automation Testing)
+
+Hệ thống tích hợp bộ điều khiển tự động qua ADB và LDPlayer (`tests/automation/ldplayer_controller.py`):
+- **Phạm vi kiểm thử**:
+  - Tự động nhận diện thiết bị giả lập (`emulator-5554`, Android 9 x86_64).
+  - Tự động gửi cử chỉ chạm và vuốt đa hướng theo độ phân giải màn hình.
+  - Bắt ảnh chụp màn hình định dạng raw/png để phân tích frame vẽ đồ hoạ và chuyển động nhân vật.
+  - Lọc logcat theo tag native (`SGRE_JNI`, `SGRE_InputInjector`, `AndroidRuntime`) để cảnh báo lỗi ngay khi game crash.
+
