@@ -54,6 +54,7 @@ sequenceDiagram
   - Bóc tách COFF Header (Machine: `0x8664` x86_64, 8 sections) và PE32+ Optional Header.
   - Phân tích bảng Import Directory (`0x9627A0`, kích thước `0x168`) và nhận diện toàn bộ 17 DLL phụ thuộc (`steam_api64.dll`, `d3d11.dll`, `D3DCOMPILER_47.dll`, `XINPUT1_4.dll`, `KERNEL32.dll`, `USER32.dll`...).
   - Cấp phát không gian địa chỉ ảo 64-bit ẩn danh (`mmap` ~11.05 MB) và ánh xạ từng Section (`.text`, `.rodata`, `.rdata`, `.data`, `.pdata`, `.fptable`, `.rsrc`, `.reloc`) theo đúng toạ độ `VirtualAddress`.
+  - Thực thi thuật toán **64-bit Base Relocation Engine** (`IMAGE_REL_BASED_DIR64` fixup qua 103 blocks): Tự động tính độ lệch delta và tái định vị chuẩn xác **10,692 con trỏ bộ nhớ 64-bit** trong RAM để code x86_64 của game chạy đúng địa chỉ không bị crash.
   - Khởi tạo thành công điểm vào thực thi `EntryPoint` trong không gian nhớ của tiến trình Android.
 - **`steam_hook.cpp`**:
   - Giả lập các hàm API tối thiểu của Steamworks SDK:
