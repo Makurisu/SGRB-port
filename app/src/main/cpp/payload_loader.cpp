@@ -51,20 +51,19 @@ bool PayloadLoader::verifyPEHeader(const std::string& filePath, GamePayloadInfo&
     // Bỏ qua TimeDateStamp (4), PointerToSymbolTable (4), NumberOfSymbols (4), SizeOfOptionalHeader (2), Characteristics (2)
     file.seekg(12, std::ios::cur);
 
-    // Optional Header (PE32+ 64-bit)
+    // Optional Header (PE32+ 64-bit) bắt đầu tại peOffset + 24
     uint16_t optMagic = 0;
+    file.seekg(peOffset + 24, std::ios::beg);
     file.read(reinterpret_cast<char*>(&optMagic), sizeof(optMagic));
 
-    // Bỏ qua MajorLinkerVersion (1), MinorLinkerVersion (1), SizeOfCode (4), SizeOfInitializedData (4), SizeOfUninitializedData (4)
-    file.seekg(14, std::ios::cur);
-
+    // AddressOfEntryPoint tại offset peOffset + 24 + 16 (4 bytes)
     uint32_t entryPoint = 0;
+    file.seekg(peOffset + 24 + 16, std::ios::beg);
     file.read(reinterpret_cast<char*>(&entryPoint), sizeof(entryPoint));
 
-    // Bỏ qua BaseOfCode (4)
-    file.seekg(4, std::ios::cur);
-
+    // ImageBase tại offset peOffset + 24 + 24 (8 bytes trong PE32+)
     uint64_t imageBase = 0;
+    file.seekg(peOffset + 24 + 24, std::ios::beg);
     file.read(reinterpret_cast<char*>(&imageBase), sizeof(imageBase));
 
     outInfo.entryPointRva = entryPoint;
@@ -399,6 +398,43 @@ bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& inf
     }
 
     LOGI("Đã liên kết thành công %u hàm IAT (Steamworks & D3D11) vào binary trong RAM!", resolvedCount);
+    return true;
+}
+
+bool PayloadLoader::protectSections(void* baseAddress, const GamePayloadInfo& info) {
+    if (baseAddress == nullptr) return false;
+
+    uint8_t* basePtr = static_cast<uint8_t*>(baseAddress);
+
+    for (const auto& sec : info.sections) {
+        int prot = PROT_READ;
+        // IMAGE_SCN_MEM_WRITE = 0x80000000
+        if (sec.characteristics & 0x80000000) {
+            prot |= PROT_WRITE;
+        }
+        // IMAGE_SCN_MEM_EXECUTE = 0x20000000
+        if (sec.characteristics & 0x20000000) {
+            prot |= PROT_EXEC;
+        }
+
+        uintptr_t secStart = reinterpret_cast<uintptr_t>(basePtr + sec.virtualAddress);
+        uintptr_t pageStart = secStart & ~4095ULL;
+        size_t pageAlignedSize = ((secStart + sec.virtualSize + 4095ULL) & ~4095ULL) - pageStart;
+
+        int ret = mprotect(reinterpret_cast<void*>(pageStart), pageAlignedSize, prot);
+        if (ret == 0) {
+            LOGI("Thiết lập bảo vệ trang cho [%s]: Prot=0x%X (R:%d, W:%d, X:%d), Size=%zu",
+                 sec.name.c_str(), prot,
+                 (prot & PROT_READ) ? 1 : 0,
+                 (prot & PROT_WRITE) ? 1 : 0,
+                 (prot & PROT_EXEC) ? 1 : 0,
+                 pageAlignedSize);
+        } else {
+            LOGE("mprotect thất bại cho [%s] tại %p", sec.name.c_str(), reinterpret_cast<void*>(pageStart));
+        }
+    }
+
+    LOGI("Đã bảo vệ toàn bộ các phân vùng PE với cờ thực thi/ghi tương ứng");
     return true;
 }
 

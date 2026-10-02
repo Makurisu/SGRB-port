@@ -141,9 +141,11 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
         if (loadedBase != nullptr) {
             bool relocSuccess = PayloadLoader::applyRelocations(loadedBase, payloadInfo);
             bool importSuccess = PayloadLoader::resolveImports(loadedBase, payloadInfo);
-            LOGI("Ảo hoá bộ nhớ, Reloc (%s) & IAT Binding (%s) thành công! EntryPoint: %p, Tổng DLL: %zu",
+            bool protectSuccess = PayloadLoader::protectSections(loadedBase, payloadInfo);
+            LOGI("Ảo hoá bộ nhớ, Reloc (%s), IAT (%s), PageProt (%s) thành công! EntryPoint: %p, Tổng DLL: %zu",
                  relocSuccess ? "PASS" : "FAIL",
                  importSuccess ? "PASS" : "FAIL",
+                 protectSuccess ? "PASS" : "FAIL",
                  static_cast<uint8_t*>(loadedBase) + payloadInfo.entryPointRva,
                  payloadInfo.importedDlls.size());
         }
