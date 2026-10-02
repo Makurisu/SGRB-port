@@ -1,0 +1,33 @@
+# Build outputs
+build/
+.gradle/
+**/build/
+*.apk
+*.aab
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+local.properties
+.DS_Store
+
+# Native build
+.cxx/
+**/bin/
+**/obj/
+*.o
+*.so
+*.a
+*.dll
+*.exe
+
+# Large game assets (mounted at runtime)
+data/
+*.mp4
+*.psb
+*.obb
+
+# Logs & temp
+*.log
+scratch/
+tmp/
