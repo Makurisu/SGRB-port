@@ -48,6 +48,13 @@ void* WINAPI stub_GetCurrentProcess() { return reinterpret_cast<void*>(-1); }
 void* WINAPI stub_GetModuleHandleA(const char*) { return DUMMY_MODULE; }
 void* WINAPI stub_GetModuleHandleW(const wchar_t*) { return DUMMY_MODULE; }
 void* WINAPI stub_GetModuleHandleExW(uint32_t, const wchar_t*, void**) { return DUMMY_MODULE; }
+void* WINAPI stub_LoadLibraryA(const char*) { return DUMMY_MODULE; }
+void* WINAPI stub_LoadLibraryExW(const wchar_t*, void*, uint32_t) { return DUMMY_MODULE; }
+void* WINAPI stub_GetProcAddress(void*, const char* lpProcName) {
+    if (!lpProcName) return reinterpret_cast<void*>(&stub_GenericSuccess);
+    LOGI("GetProcAddress dynamic query: %s", lpProcName);
+    return Win32Bridge_ResolveSymbol(nullptr, lpProcName);
+}
 
 uint32_t WINAPI stub_GetTickCount() {
     auto now = std::chrono::steady_clock::now().time_since_epoch();
@@ -191,6 +198,9 @@ void Win32Bridge_Init() {
     gFunctionMap["GetModuleHandleA"] = reinterpret_cast<void*>(&stub_GetModuleHandleA);
     gFunctionMap["GetModuleHandleW"] = reinterpret_cast<void*>(&stub_GetModuleHandleW);
     gFunctionMap["GetModuleHandleExW"] = reinterpret_cast<void*>(&stub_GetModuleHandleExW);
+    gFunctionMap["GetProcAddress"] = reinterpret_cast<void*>(&stub_GetProcAddress);
+    gFunctionMap["LoadLibraryA"] = reinterpret_cast<void*>(&stub_LoadLibraryA);
+    gFunctionMap["LoadLibraryExW"] = reinterpret_cast<void*>(&stub_LoadLibraryExW);
     gFunctionMap["GetTickCount"] = reinterpret_cast<void*>(&stub_GetTickCount);
     gFunctionMap["GetTickCount64"] = reinterpret_cast<void*>(&stub_GetTickCount64);
     gFunctionMap["QueryPerformanceCounter"] = reinterpret_cast<void*>(&stub_QueryPerformanceCounter);
