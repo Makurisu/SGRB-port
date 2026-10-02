@@ -47,7 +47,7 @@ int32_t D3D11Bridge::createDevice(
 }
 
 extern "C" {
-int32_t D3D11CreateDevice(
+int32_t WINAPI D3D11CreateDevice(
     void* pAdapter,
     int32_t driverType,
     void* software,

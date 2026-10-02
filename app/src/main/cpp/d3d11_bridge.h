@@ -25,10 +25,16 @@ public:
     );
 };
 
+#if defined(__x86_64__)
+#define WINAPI __attribute__((ms_abi))
+#else
+#define WINAPI
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-int32_t D3D11CreateDevice(
+int32_t WINAPI D3D11CreateDevice(
     void* pAdapter,
     int32_t driverType,
     void* software,

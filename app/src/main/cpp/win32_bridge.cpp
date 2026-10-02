@@ -26,40 +26,40 @@ static void* const DUMMY_WINDOW = reinterpret_cast<void*>(0x30003000);
 static void* const DUMMY_DC = reinterpret_cast<void*>(0x40004000);
 
 // Các hàm Stub KERNEL32
-const wchar_t* stub_GetCommandLineW() { return gCmdLineW; }
-const char* stub_GetCommandLineA() { return gCmdLineA; }
-const wchar_t* stub_GetEnvironmentStringsW() { return gEnvStringsW; }
-int32_t stub_FreeEnvironmentStringsW(const wchar_t*) { return 1; }
+const wchar_t* WINAPI stub_GetCommandLineW() { return gCmdLineW; }
+const char* WINAPI stub_GetCommandLineA() { return gCmdLineA; }
+const wchar_t* WINAPI stub_GetEnvironmentStringsW() { return gEnvStringsW; }
+int32_t WINAPI stub_FreeEnvironmentStringsW(const wchar_t*) { return 1; }
 
-uint32_t stub_GetOEMCP() { return 65001; } // UTF-8
-uint32_t stub_GetACP() { return 65001; }
-int32_t stub_IsValidCodePage(uint32_t) { return 1; }
-uint32_t stub_GetConsoleOutputCP() { return 65001; }
+uint32_t WINAPI stub_GetOEMCP() { return 65001; } // UTF-8
+uint32_t WINAPI stub_GetACP() { return 65001; }
+int32_t WINAPI stub_IsValidCodePage(uint32_t) { return 1; }
+uint32_t WINAPI stub_GetConsoleOutputCP() { return 65001; }
 
-void* stub_GetProcessHeap() { return DUMMY_HEAP; }
-void* stub_HeapAlloc(void*, uint32_t, size_t size) { return malloc(size); }
-void* stub_HeapReAlloc(void*, uint32_t, void* ptr, size_t size) { return realloc(ptr, size); }
-int32_t stub_HeapFree(void*, uint32_t, void* ptr) { free(ptr); return 1; }
-size_t stub_HeapSize(void*, uint32_t, const void*) { return 0; }
+void* WINAPI stub_GetProcessHeap() { return DUMMY_HEAP; }
+void* WINAPI stub_HeapAlloc(void*, uint32_t, size_t size) { return malloc(size); }
+void* WINAPI stub_HeapReAlloc(void*, uint32_t, void* ptr, size_t size) { return realloc(ptr, size); }
+int32_t WINAPI stub_HeapFree(void*, uint32_t, void* ptr) { free(ptr); return 1; }
+size_t WINAPI stub_HeapSize(void*, uint32_t, const void*) { return 0; }
 
-uint32_t stub_GetCurrentProcessId() { return static_cast<uint32_t>(getpid()); }
-uint32_t stub_GetCurrentThreadId() { return static_cast<uint32_t>(pthread_self()); }
-void* stub_GetCurrentProcess() { return reinterpret_cast<void*>(-1); }
-void* stub_GetModuleHandleA(const char*) { return DUMMY_MODULE; }
-void* stub_GetModuleHandleW(const wchar_t*) { return DUMMY_MODULE; }
-void* stub_GetModuleHandleExW(uint32_t, const wchar_t*, void**) { return DUMMY_MODULE; }
+uint32_t WINAPI stub_GetCurrentProcessId() { return static_cast<uint32_t>(getpid()); }
+uint32_t WINAPI stub_GetCurrentThreadId() { return static_cast<uint32_t>(pthread_self()); }
+void* WINAPI stub_GetCurrentProcess() { return reinterpret_cast<void*>(-1); }
+void* WINAPI stub_GetModuleHandleA(const char*) { return DUMMY_MODULE; }
+void* WINAPI stub_GetModuleHandleW(const wchar_t*) { return DUMMY_MODULE; }
+void* WINAPI stub_GetModuleHandleExW(uint32_t, const wchar_t*, void**) { return DUMMY_MODULE; }
 
-uint32_t stub_GetTickCount() {
+uint32_t WINAPI stub_GetTickCount() {
     auto now = std::chrono::steady_clock::now().time_since_epoch();
     return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
-uint64_t stub_GetTickCount64() {
+uint64_t WINAPI stub_GetTickCount64() {
     auto now = std::chrono::steady_clock::now().time_since_epoch();
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
-int32_t stub_QueryPerformanceCounter(int64_t* lpPerformanceCount) {
+int32_t WINAPI stub_QueryPerformanceCounter(int64_t* lpPerformanceCount) {
     if (lpPerformanceCount) {
         auto now = std::chrono::steady_clock::now().time_since_epoch();
         *lpPerformanceCount = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
@@ -67,101 +67,101 @@ int32_t stub_QueryPerformanceCounter(int64_t* lpPerformanceCount) {
     return 1;
 }
 
-int32_t stub_QueryPerformanceFrequency(int64_t* lpFrequency) {
+int32_t WINAPI stub_QueryPerformanceFrequency(int64_t* lpFrequency) {
     if (lpFrequency) {
         *lpFrequency = 1000000000LL; // 1 GHz frequency (nanoseconds)
     }
     return 1;
 }
 
-void stub_Sleep(uint32_t dwMilliseconds) {
+void WINAPI stub_Sleep(uint32_t dwMilliseconds) {
     usleep(dwMilliseconds * 1000);
 }
 
-void stub_GetSystemTimeAsFileTime(void*) {}
-int32_t stub_SystemTimeToFileTime(const void*, void*) { return 1; }
-int32_t stub_FileTimeToSystemTime(const void*, void*) { return 1; }
-int32_t stub_FileTimeToLocalFileTime(const void*, void*) { return 1; }
+void WINAPI stub_GetSystemTimeAsFileTime(void*) {}
+int32_t WINAPI stub_SystemTimeToFileTime(const void*, void*) { return 1; }
+int32_t WINAPI stub_FileTimeToSystemTime(const void*, void*) { return 1; }
+int32_t WINAPI stub_FileTimeToLocalFileTime(const void*, void*) { return 1; }
 
-uint32_t stub_GetLastError() { return 0; }
-void stub_SetLastError(uint32_t) {}
+uint32_t WINAPI stub_GetLastError() { return 0; }
+void WINAPI stub_SetLastError(uint32_t) {}
 
-void stub_InitializeCriticalSection(void*) {}
-int32_t stub_InitializeCriticalSectionAndSpinCount(void*, uint32_t) { return 1; }
-int32_t stub_InitializeCriticalSectionEx(void*, uint32_t, uint32_t) { return 1; }
-void stub_EnterCriticalSection(void*) {}
-void stub_LeaveCriticalSection(void*) {}
-void stub_DeleteCriticalSection(void*) {}
+void WINAPI stub_InitializeCriticalSection(void*) {}
+int32_t WINAPI stub_InitializeCriticalSectionAndSpinCount(void*, uint32_t) { return 1; }
+int32_t WINAPI stub_InitializeCriticalSectionEx(void*, uint32_t, uint32_t) { return 1; }
+void WINAPI stub_EnterCriticalSection(void*) {}
+void WINAPI stub_LeaveCriticalSection(void*) {}
+void WINAPI stub_DeleteCriticalSection(void*) {}
 
-void stub_InitializeSRWLock(void*) {}
-void stub_AcquireSRWLockExclusive(void*) {}
-void stub_ReleaseSRWLockExclusive(void*) {}
-void stub_AcquireSRWLockShared(void*) {}
-void stub_ReleaseSRWLockShared(void*) {}
-int32_t stub_TryAcquireSRWLockExclusive(void*) { return 1; }
+void WINAPI stub_InitializeSRWLock(void*) {}
+void WINAPI stub_AcquireSRWLockExclusive(void*) {}
+void WINAPI stub_ReleaseSRWLockExclusive(void*) {}
+void WINAPI stub_AcquireSRWLockShared(void*) {}
+void WINAPI stub_ReleaseSRWLockShared(void*) {}
+int32_t WINAPI stub_TryAcquireSRWLockExclusive(void*) { return 1; }
 
-void stub_InitializeConditionVariable(void*) {}
-void stub_WakeConditionVariable(void*) {}
-void stub_WakeAllConditionVariable(void*) {}
-int32_t stub_SleepConditionVariableSRW(void*, void*, uint32_t, uint32_t) { return 1; }
+void WINAPI stub_InitializeConditionVariable(void*) {}
+void WINAPI stub_WakeConditionVariable(void*) {}
+void WINAPI stub_WakeAllConditionVariable(void*) {}
+int32_t WINAPI stub_SleepConditionVariableSRW(void*, void*, uint32_t, uint32_t) { return 1; }
 
-void stub_InitializeSListHead(void*) {}
-int32_t stub_IsProcessorFeaturePresent(uint32_t) { return 1; }
-int32_t stub_IsDebuggerPresent() { return 0; }
+void WINAPI stub_InitializeSListHead(void*) {}
+int32_t WINAPI stub_IsProcessorFeaturePresent(uint32_t) { return 1; }
+int32_t WINAPI stub_IsDebuggerPresent() { return 0; }
 
-uint32_t stub_TlsAlloc() { return 1; }
-void* stub_TlsGetValue(uint32_t) { return nullptr; }
-int32_t stub_TlsSetValue(uint32_t, void*) { return 1; }
-int32_t stub_TlsFree(uint32_t) { return 1; }
+uint32_t WINAPI stub_TlsAlloc() { return 1; }
+void* WINAPI stub_TlsGetValue(uint32_t) { return nullptr; }
+int32_t WINAPI stub_TlsSetValue(uint32_t, void*) { return 1; }
+int32_t WINAPI stub_TlsFree(uint32_t) { return 1; }
 
-uint32_t stub_FlsAlloc(void*) { return 1; }
-void* stub_FlsGetValue(uint32_t) { return nullptr; }
-int32_t stub_FlsSetValue(uint32_t, void*) { return 1; }
-int32_t stub_FlsFree(uint32_t) { return 1; }
+uint32_t WINAPI stub_FlsAlloc(void*) { return 1; }
+void* WINAPI stub_FlsGetValue(uint32_t) { return nullptr; }
+int32_t WINAPI stub_FlsSetValue(uint32_t, void*) { return 1; }
+int32_t WINAPI stub_FlsFree(uint32_t) { return 1; }
 
-void* stub_EncodePointer(void* ptr) { return ptr; }
-void* stub_DecodePointer(void* ptr) { return ptr; }
+void* WINAPI stub_EncodePointer(void* ptr) { return ptr; }
+void* WINAPI stub_DecodePointer(void* ptr) { return ptr; }
 
-void stub_OutputDebugStringW(const wchar_t*) {}
-void stub_GetStartupInfoW(void* lpStartupInfo) {
+void WINAPI stub_OutputDebugStringW(const wchar_t*) {}
+void WINAPI stub_GetStartupInfoW(void* lpStartupInfo) {
     if (lpStartupInfo) memset(lpStartupInfo, 0, 68);
 }
 
 // Các hàm Stub USER32
-void* stub_CreateWindowExA(uint32_t, const char*, const char*, uint32_t, int, int, int, int, void*, void*, void*, void*) { return DUMMY_WINDOW; }
-void* stub_CreateWindowExW(uint32_t, const wchar_t*, const wchar_t*, uint32_t, int, int, int, int, void*, void*, void*, void*) { return DUMMY_WINDOW; }
-int32_t stub_DestroyWindow(void*) { return 1; }
-int32_t stub_ShowWindow(void*, int32_t) { return 1; }
-int32_t stub_SetWindowPos(void*, void*, int, int, int, int, uint32_t) { return 1; }
-void* stub_GetDC(void*) { return DUMMY_DC; }
-int32_t stub_ReleaseDC(void*, void*) { return 1; }
-int32_t stub_GetClientRect(void*, void* lpRect) {
+void* WINAPI stub_CreateWindowExA(uint32_t, const char*, const char*, uint32_t, int, int, int, int, void*, void*, void*, void*) { return DUMMY_WINDOW; }
+void* WINAPI stub_CreateWindowExW(uint32_t, const wchar_t*, const wchar_t*, uint32_t, int, int, int, int, void*, void*, void*, void*) { return DUMMY_WINDOW; }
+int32_t WINAPI stub_DestroyWindow(void*) { return 1; }
+int32_t WINAPI stub_ShowWindow(void*, int32_t) { return 1; }
+int32_t WINAPI stub_SetWindowPos(void*, void*, int, int, int, int, uint32_t) { return 1; }
+void* WINAPI stub_GetDC(void*) { return DUMMY_DC; }
+int32_t WINAPI stub_ReleaseDC(void*, void*) { return 1; }
+int32_t WINAPI stub_GetClientRect(void*, void* lpRect) {
     if (lpRect) {
         int32_t* r = reinterpret_cast<int32_t*>(lpRect);
         r[0] = 0; r[1] = 0; r[2] = 1920; r[3] = 1080;
     }
     return 1;
 }
-int32_t stub_GetWindowRect(void*, void* lpRect) {
+int32_t WINAPI stub_GetWindowRect(void*, void* lpRect) {
     if (lpRect) {
         int32_t* r = reinterpret_cast<int32_t*>(lpRect);
         r[0] = 0; r[1] = 0; r[2] = 1920; r[3] = 1080;
     }
     return 1;
 }
-int32_t stub_GetSystemMetrics(int32_t nIndex) {
+int32_t WINAPI stub_GetSystemMetrics(int32_t nIndex) {
     if (nIndex == 0) return 1920; // SM_CXSCREEN
     if (nIndex == 1) return 1080; // SM_CYSCREEN
     return 0;
 }
-int32_t stub_PeekMessageA(void*, void*, uint32_t, uint32_t, uint32_t) { return 0; }
-int32_t stub_TranslateMessage(const void*) { return 1; }
-int64_t stub_DispatchMessageA(const void*) { return 0; }
-int64_t stub_DefWindowProcA(void*, uint32_t, uint64_t, int64_t) { return 0; }
-void stub_PostQuitMessage(int32_t) {}
+int32_t WINAPI stub_PeekMessageA(void*, void*, uint32_t, uint32_t, uint32_t) { return 0; }
+int32_t WINAPI stub_TranslateMessage(const void*) { return 1; }
+int64_t WINAPI stub_DispatchMessageA(const void*) { return 0; }
+int64_t WINAPI stub_DefWindowProcA(void*, uint32_t, uint64_t, int64_t) { return 0; }
+void WINAPI stub_PostQuitMessage(int32_t) {}
 
 // Generic fallback stub cho các hàm chưa dùng tới
-int64_t stub_GenericSuccess() { return 0; } // S_OK hoặc return 0 / NULL
+int64_t WINAPI stub_GenericSuccess() { return 0; } // S_OK hoặc return 0 / NULL
 
 // Bảng ánh xạ hàm API
 static std::unordered_map<std::string, void*> gFunctionMap;

@@ -483,7 +483,7 @@ bool PayloadLoader::executePayload(void* baseAddress, const GamePayloadInfo& inf
 
 #if defined(__x86_64__)
     LOGI("Hệ thống phát hiện kiến trúc CPU x86_64 gốc! Bắt đầu thực thi binary...");
-    using EntryFn = int32_t (*)();
+    using EntryFn = int32_t (WINAPI *)();
     EntryFn entryFunc = reinterpret_cast<EntryFn>(entryPointPtr);
 
     // Thực thi trong try/catch
