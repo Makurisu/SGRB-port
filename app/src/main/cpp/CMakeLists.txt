@@ -8,6 +8,7 @@ add_library(sgre_wrapper SHARED
     steam_hook.cpp
     payload_loader.cpp
     d3d11_bridge.cpp
+    win32_bridge.cpp
 )
 
 find_library(log-lib log)

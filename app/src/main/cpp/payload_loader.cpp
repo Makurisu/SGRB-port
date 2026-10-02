@@ -1,5 +1,6 @@
 #include "payload_loader.h"
 #include "d3d11_bridge.h"
+#include "win32_bridge.h"
 #include <fstream>
 #include <vector>
 #include <sys/mman.h>
@@ -393,11 +394,37 @@ bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& inf
                 idx++;
             }
         }
+        // Liên kết toàn bộ các hàm Windows Win32 API còn lại (KERNEL32, USER32, OLE32, DINPUT, XINPUT, ADVAPI...)
+        else {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                void* targetFunc = nullptr;
+
+                if (!(val & 0x8000000000000000)) {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    targetFunc = Win32Bridge_ResolveSymbol(nameStr.c_str(), fnName);
+                } else {
+                    // Ordinal import
+                    targetFunc = Win32Bridge_ResolveSymbol(nameStr.c_str(), nullptr);
+                }
+
+                if (targetFunc != nullptr) {
+                    iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                    resolvedCount++;
+                }
+                idx++;
+            }
+        }
 
         importDescPtr += 20;
     }
 
-    LOGI("Đã liên kết thành công %u hàm IAT (Steamworks & D3D11) vào binary trong RAM!", resolvedCount);
+    LOGI("Đã liên kết thành công %u / 278 hàm IAT (Steamworks, D3D11 & Win32 API) vào binary trong RAM!", resolvedCount);
     return true;
 }
 
