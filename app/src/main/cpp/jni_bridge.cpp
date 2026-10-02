@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include "input_injector.h"
+#include "payload_loader.h"
 
 #define LOG_TAG "SGRE_JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -126,6 +127,13 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
     }
 
     LOGI("Native Init hoàn tất, data dir: %s", gDataDirectory.c_str());
+
+    GamePayloadInfo payloadInfo = PayloadLoader::inspectPayload(gDataDirectory);
+    if (payloadInfo.isExeValid) {
+        LOGI("Game Executable hợp lệ! Size: %llu bytes", static_cast<unsigned long long>(payloadInfo.exeSize));
+    } else {
+        LOGE("Chưa tìm thấy hoặc binary sgre_steam.exe không hợp lệ");
+    }
 
     if (gNativeWindow != nullptr) {
         gIsRunning.store(true);

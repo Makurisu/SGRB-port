@@ -6,6 +6,7 @@ add_library(sgre_wrapper SHARED
     jni_bridge.cpp
     input_injector.cpp
     steam_hook.cpp
+    payload_loader.cpp
 )
 
 find_library(log-lib log)
