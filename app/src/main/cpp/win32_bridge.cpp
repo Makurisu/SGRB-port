@@ -28,11 +28,6 @@ static void* const DUMMY_DC = reinterpret_cast<void*>(0x40004000);
 // Biến lưu ImageBase thực tế trong RAM
 static void* gLoadedImageBase = nullptr;
 
-void Win32Bridge_SetLoadedImageBase(void* imageBase) {
-    gLoadedImageBase = imageBase;
-    LOGI("Win32Bridge đã thiết lập Loaded ImageBase: %p", imageBase);
-}
-
 // Generic fallback stub cho các hàm chưa dùng tới
 int64_t WINAPI stub_GenericSuccess() { return 0; } // S_OK hoặc return 0 / NULL
 
@@ -234,6 +229,11 @@ void WINAPI stub_PostQuitMessage(int32_t) {}
 static std::unordered_map<std::string, void*> gFunctionMap;
 
 } // namespace
+
+extern "C" void Win32Bridge_SetLoadedImageBase(void* imageBase) {
+    gLoadedImageBase = imageBase;
+    LOGI("Win32Bridge đã thiết lập Loaded ImageBase: %p", imageBase);
+}
 
 void Win32Bridge_Init() {
     if (!gFunctionMap.empty()) return;
