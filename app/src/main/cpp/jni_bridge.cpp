@@ -10,6 +10,7 @@
 #include <chrono>
 #include "input_injector.h"
 #include "payload_loader.h"
+#include "win32_bridge.h"
 
 #define LOG_TAG "SGRE_JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
