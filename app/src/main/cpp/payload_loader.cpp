@@ -1,6 +1,7 @@
 #include "payload_loader.h"
 #include <fstream>
 #include <vector>
+#include <sys/mman.h>
 #include <android/log.h>
 
 #define LOG_TAG "SGRE_PayloadLoader"
@@ -135,3 +136,60 @@ GamePayloadInfo PayloadLoader::inspectPayload(const std::string& dataDirectory) 
 
     return info;
 }
+
+void* PayloadLoader::mapImageToMemory(const GamePayloadInfo& info) {
+    if (!info.isExeValid || info.sections.empty()) {
+        LOGE("Payload không hợp lệ để ánh xạ bộ nhớ");
+        return nullptr;
+    }
+
+    // Tính toán kích thước ảnh ảo tổng thể từ section cuối cùng
+    const auto& lastSection = info.sections.back();
+    size_t totalImageSize = lastSection.virtualAddress + lastSection.virtualSize;
+    // Căn chỉnh theo trang bộ nhớ 4KB
+    totalImageSize = (totalImageSize + 4095) & ~4095;
+
+    LOGI("Đang cấp phát vùng nhớ ảo: %zu bytes (~%.2f MB)...",
+         totalImageSize, static_cast<double>(totalImageSize) / (1024.0 * 1024.0));
+
+    // Cấp phát vùng nhớ ảo ẩn danh (PROT_READ | PROT_WRITE)
+    void* baseAddr = mmap(nullptr, totalImageSize, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    if (baseAddr == MAP_FAILED) {
+        LOGE("mmap thất bại khi cấp phát vùng nhớ ảo cho game");
+        return nullptr;
+    }
+
+    std::ifstream file(info.exePath, std::ios::binary);
+    if (!file.is_open()) {
+        LOGE("Không thể mở lại file để sao chép sections");
+        munmap(baseAddr, totalImageSize);
+        return nullptr;
+    }
+
+    uint8_t* basePtr = static_cast<uint8_t*>(baseAddr);
+
+    // Sao chép từng Section từ file vào đúng toạ độ ảo VirtualAddress trong RAM
+    for (const auto& sec : info.sections) {
+        if (sec.rawSize == 0 || sec.rawOffset == 0) continue;
+
+        file.seekg(sec.rawOffset, std::ios::beg);
+        uint8_t* destPtr = basePtr + sec.virtualAddress;
+        file.read(reinterpret_cast<char*>(destPtr), sec.rawSize);
+
+        LOGI("Đã nạp section [%s] vào RAM tại offset +0x%X (Kích thước: %u bytes)",
+             sec.name.c_str(), sec.virtualAddress, sec.rawSize);
+    }
+
+    LOGI("Toàn bộ 8 sections của game đã được nạp vào RAM thành công tại địa chỉ cơ sở: %p", baseAddr);
+    return baseAddr;
+}
+
+void PayloadLoader::releaseImageMemory(void* baseAddress, size_t size) {
+    if (baseAddress != nullptr && size > 0) {
+        munmap(baseAddress, size);
+        LOGI("Đã giải phóng vùng nhớ ảo của game tại: %p", baseAddress);
+    }
+}
+

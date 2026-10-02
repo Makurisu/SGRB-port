@@ -28,4 +28,6 @@ class PayloadLoader {
 public:
     static GamePayloadInfo inspectPayload(const std::string& dataDirectory);
     static bool verifyPEHeader(const std::string& filePath, GamePayloadInfo& outInfo);
+    static void* mapImageToMemory(const GamePayloadInfo& info);
+    static void releaseImageMemory(void* baseAddress, size_t size);
 };

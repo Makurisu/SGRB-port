@@ -136,6 +136,12 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
              payloadInfo.numberOfSections,
              payloadInfo.entryPointRva,
              static_cast<unsigned long long>(payloadInfo.imageBase));
+
+        void* loadedBase = PayloadLoader::mapImageToMemory(payloadInfo);
+        if (loadedBase != nullptr) {
+            LOGI("Ảo hoá bộ nhớ thành công! Điểm bắt đầu thực thi EntryPoint: %p",
+                 static_cast<uint8_t*>(loadedBase) + payloadInfo.entryPointRva);
+        }
     } else {
         LOGE("Chưa tìm thấy hoặc binary sgre_steam.exe không hợp lệ");
     }
