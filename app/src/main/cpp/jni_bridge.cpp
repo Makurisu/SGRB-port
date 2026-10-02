@@ -140,8 +140,10 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
         void* loadedBase = PayloadLoader::mapImageToMemory(payloadInfo);
         if (loadedBase != nullptr) {
             bool relocSuccess = PayloadLoader::applyRelocations(loadedBase, payloadInfo);
-            LOGI("Ảo hoá bộ nhớ & Relocation thành công (%s)! Điểm bắt đầu thực thi EntryPoint: %p, Tổng DLL import: %zu",
+            bool importSuccess = PayloadLoader::resolveImports(loadedBase, payloadInfo);
+            LOGI("Ảo hoá bộ nhớ, Reloc (%s) & IAT Binding (%s) thành công! EntryPoint: %p, Tổng DLL: %zu",
                  relocSuccess ? "PASS" : "FAIL",
+                 importSuccess ? "PASS" : "FAIL",
                  static_cast<uint8_t*>(loadedBase) + payloadInfo.entryPointRva,
                  payloadInfo.importedDlls.size());
         }

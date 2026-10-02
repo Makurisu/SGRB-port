@@ -302,6 +302,81 @@ bool PayloadLoader::applyRelocations(void* baseAddress, const GamePayloadInfo& i
     return true;
 }
 
+// Khai báo các hàm mock steamworks từ steam_hook.cpp
+extern "C" {
+int32_t SteamAPI_GetHSteamUser();
+void SteamAPI_Shutdown();
+bool SteamAPI_RestartAppIfNecessary(uint32_t unOwnAppID);
+void SteamAPI_RunCallbacks();
+bool SteamInternal_SteamAPI_Init(void* pOutErrMsg, int nOutErrMsgSize);
+void* SteamInternal_FindOrCreateUserInterface(int32_t hSteamUser, const char* pszVersion);
+void SteamAPI_RegisterCallback(void* pCallback, int iCallback);
+void SteamAPI_UnregisterCallback(void* pCallback);
+void SteamInternal_ContextInit(void* pContext);
+}
+
+bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& info) {
+    if (baseAddress == nullptr || info.importRva == 0) {
+        return true;
+    }
+
+    uint8_t* basePtr = static_cast<uint8_t*>(baseAddress);
+    uint8_t* importDescPtr = basePtr + info.importRva;
+    uint32_t resolvedCount = 0;
+
+    LOGI("Bắt đầu giải quyết IAT (Import Address Table) cho các DLL phụ thuộc...");
+
+    while (true) {
+        uint32_t origFirstThunk = *reinterpret_cast<uint32_t*>(importDescPtr);
+        uint32_t nameRva = *reinterpret_cast<uint32_t*>(importDescPtr + 12);
+        uint32_t firstThunk = *reinterpret_cast<uint32_t*>(importDescPtr + 16);
+
+        if (nameRva == 0 && firstThunk == 0) break;
+
+        const char* dllName = reinterpret_cast<const char*>(basePtr + nameRva);
+        std::string nameStr = dllName ? dllName : "";
+
+        // Liên kết trực tiếp các hàm Steamworks
+        if (nameStr.find("steam_api64") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                if (!(val & 0x8000000000000000)) {
+                    // Nhập theo tên
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    void* targetFunc = nullptr;
+
+                    if (strcmp(fnName, "SteamAPI_GetHSteamUser") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_GetHSteamUser);
+                    else if (strcmp(fnName, "SteamAPI_Shutdown") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_Shutdown);
+                    else if (strcmp(fnName, "SteamAPI_RestartAppIfNecessary") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_RestartAppIfNecessary);
+                    else if (strcmp(fnName, "SteamAPI_RunCallbacks") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_RunCallbacks);
+                    else if (strcmp(fnName, "SteamInternal_SteamAPI_Init") == 0) targetFunc = reinterpret_cast<void*>(&SteamInternal_SteamAPI_Init);
+                    else if (strcmp(fnName, "SteamInternal_FindOrCreateUserInterface") == 0) targetFunc = reinterpret_cast<void*>(&SteamInternal_FindOrCreateUserInterface);
+                    else if (strcmp(fnName, "SteamAPI_RegisterCallback") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_RegisterCallback);
+                    else if (strcmp(fnName, "SteamAPI_UnregisterCallback") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_UnregisterCallback);
+                    else if (strcmp(fnName, "SteamInternal_ContextInit") == 0) targetFunc = reinterpret_cast<void*>(&SteamInternal_ContextInit);
+
+                    if (targetFunc != nullptr) {
+                        iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                        resolvedCount++;
+                        LOGI("-> Đã gắn IAT [%s]: %s -> %p", nameStr.c_str(), fnName, targetFunc);
+                    }
+                }
+                idx++;
+            }
+        }
+
+        importDescPtr += 20;
+    }
+
+    LOGI("Đã liên kết thành công %u hàm IAT của Steamworks vào binary trong RAM!", resolvedCount);
+    return true;
+}
+
 void PayloadLoader::releaseImageMemory(void* baseAddress, size_t size) {
     if (baseAddress != nullptr && size > 0) {
         munmap(baseAddress, size);
