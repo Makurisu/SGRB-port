@@ -22,6 +22,9 @@ struct GamePayloadInfo {
     uint64_t imageBase;
     uint16_t numberOfSections;
     std::vector<PESection> sections;
+    uint32_t importRva;
+    uint32_t importSize;
+    std::vector<std::string> importedDlls;
 };
 
 class PayloadLoader {

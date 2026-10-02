@@ -69,6 +69,16 @@ bool PayloadLoader::verifyPEHeader(const std::string& filePath, GamePayloadInfo&
     outInfo.entryPointRva = entryPoint;
     outInfo.imageBase = imageBase;
 
+    // Đọc DataDirectory[1] (Import Table) tại offset peOffset + 24 + 120 (trong PE32+ 64-bit)
+    file.seekg(peOffset + 24 + 120, std::ios::beg);
+    uint32_t importRva = 0;
+    uint32_t importSize = 0;
+    file.read(reinterpret_cast<char*>(&importRva), sizeof(importRva));
+    file.read(reinterpret_cast<char*>(&importSize), sizeof(importSize));
+
+    outInfo.importRva = importRva;
+    outInfo.importSize = importSize;
+
     // Đọc kích thước của Optional Header từ COFF header offset để nhảy chính xác tới Section Table
     file.seekg(peOffset + 20, std::ios::beg);
     uint16_t sizeOfOptHeader = 0;
@@ -109,8 +119,58 @@ bool PayloadLoader::verifyPEHeader(const std::string& filePath, GamePayloadInfo&
              sec.name.c_str(), vAddr, vSize, rOffset, rSize);
     }
 
-    LOGI("PE x86_64 xác thực: Machine=0x%X, Sections=%u, EntryPoint=0x%X, ImageBase=0x%llX",
-         machine, numSections, entryPoint, static_cast<unsigned long long>(imageBase));
+    // Phân tích bảng Import Table để liệt kê các DLL phụ thuộc
+    outInfo.importedDlls.clear();
+    if (importRva > 0) {
+        uint32_t importRawOffset = 0;
+        for (const auto& sec : outInfo.sections) {
+            if (sec.virtualAddress <= importRva && importRva < sec.virtualAddress + sec.virtualSize) {
+                importRawOffset = sec.rawOffset + (importRva - sec.virtualAddress);
+                break;
+            }
+        }
+
+        if (importRawOffset > 0) {
+            file.seekg(importRawOffset, std::ios::beg);
+            while (true) {
+                uint32_t origFirstThunk = 0, timeDate = 0, forwarder = 0, nameRva = 0, firstThunk = 0;
+                file.read(reinterpret_cast<char*>(&origFirstThunk), 4);
+                file.read(reinterpret_cast<char*>(&timeDate), 4);
+                file.read(reinterpret_cast<char*>(&forwarder), 4);
+                file.read(reinterpret_cast<char*>(&nameRva), 4);
+                file.read(reinterpret_cast<char*>(&firstThunk), 4);
+
+                if (nameRva == 0 && firstThunk == 0) break;
+
+                // Tìm vị trí tên DLL trong file
+                uint32_t nameFileOffset = 0;
+                for (const auto& sec : outInfo.sections) {
+                    if (sec.virtualAddress <= nameRva && nameRva < sec.virtualAddress + sec.virtualSize) {
+                        nameFileOffset = sec.rawOffset + (nameRva - sec.virtualAddress);
+                        break;
+                    }
+                }
+
+                if (nameFileOffset > 0) {
+                    std::streampos savedPos = file.tellg();
+                    file.seekg(nameFileOffset, std::ios::beg);
+                    std::string dllName;
+                    char ch;
+                    while (file.get(ch) && ch != '\0' && dllName.length() < 64) {
+                        dllName += ch;
+                    }
+                    if (!dllName.empty()) {
+                        outInfo.importedDlls.push_back(dllName);
+                        LOGI("Import DLL phụ thuộc: %s", dllName.c_str());
+                    }
+                    file.seekg(savedPos);
+                }
+            }
+        }
+    }
+
+    LOGI("PE x86_64 xác thực: Machine=0x%X, Sections=%u, ImportDLLs=%zu, EntryPoint=0x%X, ImageBase=0x%llX",
+         machine, numSections, outInfo.importedDlls.size(), entryPoint, static_cast<unsigned long long>(imageBase));
     return true;
 }
 
