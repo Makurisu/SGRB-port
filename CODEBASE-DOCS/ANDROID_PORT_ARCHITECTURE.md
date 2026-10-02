@@ -48,6 +48,10 @@ sequenceDiagram
 - **`input_injector.cpp`**:
   - Giữ tham chiếu tới hàm xử lý thông điệp cửa sổ của game gốc (`WndProc`).
   - Chuyển toạ độ màn hình Android (chuẩn hoá 0.0 - 1.0) sang độ phân giải game (1920x1080) và gửi vào cấu trúc sự kiện.
+- **`payload_loader.cpp`**:
+  - Quét thư mục dữ liệu ngoài `/sdcard/Android/data/com.makurisu.sgrb/files/data`.
+  - Phân tích và xác thực cấu trúc Portable Executable (DOS Magic `MZ` 0x5A4D và PE Signature `PE\0\0` 0x00004550) của file `sgre_steam.exe`.
+  - Đảm bảo tính toàn vẹn binary gốc trước khi nạp vào bộ điều phối thực thi.
 - **`steam_hook.cpp`**:
   - Giả lập các hàm API tối thiểu của Steamworks SDK:
     - `SteamAPI_Init()`: Luôn trả về `true`.
