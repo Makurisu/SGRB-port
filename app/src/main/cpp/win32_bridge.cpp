@@ -408,13 +408,6 @@ static std::unordered_map<uintptr_t, VfsFileHandle> gVfsHandles;
 static std::unordered_map<uintptr_t, VfsFindState> gVfsFindStates;
 static uintptr_t gNextHandleId = 0x10000;
 
-void Win32Bridge_SetDataDirectory(const char* dataDir) {
-    if (dataDir && dataDir[0] != '\0') {
-        gVfsDataDir = dataDir;
-        LOGI("Win32Bridge VFS: Gán thư mục dữ liệu gốc = '%s'", gVfsDataDir.c_str());
-    }
-}
-
 static std::string normalizeWinPathW(const wchar_t* wpath) {
     if (!wpath) return "";
     std::string s;
@@ -1261,6 +1254,13 @@ static std::unordered_map<std::string, void*> gFunctionMap;
 extern "C" void Win32Bridge_SetLoadedImageBase(void* imageBase) {
     gLoadedImageBase = imageBase;
     LOGI("Win32Bridge đã thiết lập Loaded ImageBase: %p", imageBase);
+}
+
+extern "C" void Win32Bridge_SetDataDirectory(const char* dataDir) {
+    if (dataDir && dataDir[0] != '\0') {
+        gVfsDataDir = dataDir;
+        LOGI("Win32Bridge VFS: Gán thư mục dữ liệu gốc = '%s'", gVfsDataDir.c_str());
+    }
 }
 
 void Win32Bridge_Init() {
