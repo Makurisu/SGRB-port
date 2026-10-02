@@ -368,12 +368,36 @@ bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& inf
                 }
                 idx++;
             }
+        // Liên kết trực tiếp các hàm D3D11 (DirectX 11 Graphics Pipeline)
+        else if (nameStr.find("d3d11") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                if (!(val & 0x8000000000000000)) {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    void* targetFunc = nullptr;
+
+                    extern int32_t D3D11CreateDevice(void*, int32_t, void*, uint32_t, const void*, uint32_t, uint32_t, void**, void*, void**);
+                    if (strcmp(fnName, "D3D11CreateDevice") == 0) targetFunc = reinterpret_cast<void*>(&D3D11CreateDevice);
+
+                    if (targetFunc != nullptr) {
+                        iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                        resolvedCount++;
+                        LOGI("-> Đã gắn IAT [%s]: %s -> %p", nameStr.c_str(), fnName, targetFunc);
+                    }
+                }
+                idx++;
+            }
         }
 
         importDescPtr += 20;
     }
 
-    LOGI("Đã liên kết thành công %u hàm IAT của Steamworks vào binary trong RAM!", resolvedCount);
+    LOGI("Đã liên kết thành công %u hàm IAT (Steamworks & D3D11) vào binary trong RAM!", resolvedCount);
     return true;
 }
 

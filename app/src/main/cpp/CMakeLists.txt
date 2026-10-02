@@ -7,6 +7,7 @@ add_library(sgre_wrapper SHARED
     input_injector.cpp
     steam_hook.cpp
     payload_loader.cpp
+    d3d11_bridge.cpp
 )
 
 find_library(log-lib log)
