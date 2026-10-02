@@ -74,6 +74,13 @@ sequenceDiagram
     - `SteamAPI_RegisterCallback()` & `SteamAPI_UnregisterCallback()`.
     - `SteamInternal_ContextInit()`.
   - Vượt qua toàn bộ kiểm tra Steam DRM mà không phụ thuộc vào `steam_api64.dll` của Windows.
+- **`win32_bridge.cpp`**:
+  - Đóng vai trò hệ thống cầu nối Win32 API / CRT subsystem cho Windows binary chạy trên Android:
+    - **Safe Heap & Memory Management**: Quản lý cấp phát an toàn với bảng theo dõi `gHeapAllocations` và mutex đa luồng, hỗ trợ cờ `HEAP_ZERO_MEMORY`, ngăn chặn crash `SIGSEGV` trong jemalloc khi game hoặc CRT giải phóng con trỏ ngoại vi hoặc unallocated buffer.
+    - **Virtual Memory Subsystem**: Giả lập `VirtualAlloc`, `VirtualFree`, `VirtualProtect`, `VirtualQuery` ánh xạ trực tiếp sang Linux `mmap`/`munmap`/`mprotect`.
+    - **Synchronization & Threading**: Cung cấp các nguyên ngữ đồng bộ hoá Windows Event (`CreateEventA`, `SetEvent`), Semaphore (`CreateSemaphore`), SRWLock, Condition Variable, `SwitchToThread` (`sched_yield`).
+    - **String & Locale Subsystem**: Chuyển đổi mã ký tự UTF-8/UTF-16 qua `MultiByteToWideChar`, `WideCharToMultiByte`.
+    - **CRT & Exception Subsystem**: Hỗ trợ PE ImageBase tracking, `RtlPcToFileHeader`, `IsProcessorFeaturePresent` (vô hiệu hoá `PF_FASTFAIL_AVAILABLE`), TLS/FLS slot management.
 
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).

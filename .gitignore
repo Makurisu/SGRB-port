@@ -31,3 +31,5 @@ data/
 *.log
 scratch/
 tmp/
+__pycache__/
+*.pyc

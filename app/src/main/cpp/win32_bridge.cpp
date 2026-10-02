@@ -7,6 +7,10 @@
 #include <chrono>
 #include <pthread.h>
 #include <unistd.h>
+#include <mutex>
+#include <sys/mman.h>
+#include <sched.h>
+#include <wchar.h>
 
 #define LOG_TAG "SGRE_Win32Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -42,11 +46,316 @@ uint32_t WINAPI stub_GetACP() { return 65001; }
 int32_t WINAPI stub_IsValidCodePage(uint32_t) { return 1; }
 uint32_t WINAPI stub_GetConsoleOutputCP() { return 65001; }
 
+// Bảng theo dõi cấp phát Heap an toàn để chống crash SIGSEGV khi free con trỏ lạ
+static std::unordered_map<uintptr_t, size_t> gHeapAllocations;
+static std::mutex gHeapMutex;
+
+// Bảng theo dõi bộ nhớ ảo VirtualAlloc
+static std::unordered_map<uintptr_t, size_t> gVirtualAllocations;
+static std::mutex gVirtualMutex;
+
 void* WINAPI stub_GetProcessHeap() { return DUMMY_HEAP; }
-void* WINAPI stub_HeapAlloc(void*, uint32_t, size_t size) { return malloc(size); }
-void* WINAPI stub_HeapReAlloc(void*, uint32_t, void* ptr, size_t size) { return realloc(ptr, size); }
-int32_t WINAPI stub_HeapFree(void*, uint32_t, void* ptr) { free(ptr); return 1; }
-size_t WINAPI stub_HeapSize(void*, uint32_t, const void*) { return 0; }
+
+void* WINAPI stub_HeapAlloc(void*, uint32_t dwFlags, size_t size) {
+    if (size == 0) size = 1;
+    void* ptr = malloc(size);
+    if (!ptr) return nullptr;
+    if (dwFlags & 0x08) { // HEAP_ZERO_MEMORY
+        memset(ptr, 0, size);
+    }
+    std::lock_guard<std::mutex> lock(gHeapMutex);
+    gHeapAllocations[reinterpret_cast<uintptr_t>(ptr)] = size;
+    return ptr;
+}
+
+void* WINAPI stub_HeapReAlloc(void* hHeap, uint32_t dwFlags, void* ptr, size_t size) {
+    if (!ptr) return stub_HeapAlloc(hHeap, dwFlags, size);
+    if (size == 0) size = 1;
+
+    std::lock_guard<std::mutex> lock(gHeapMutex);
+    auto it = gHeapAllocations.find(reinterpret_cast<uintptr_t>(ptr));
+    if (it != gHeapAllocations.end()) {
+        size_t oldSize = it->second;
+        gHeapAllocations.erase(it);
+        void* newPtr = realloc(ptr, size);
+        if (newPtr) {
+            if ((dwFlags & 0x08) && size > oldSize) {
+                memset(reinterpret_cast<char*>(newPtr) + oldSize, 0, size - oldSize);
+            }
+            gHeapAllocations[reinterpret_cast<uintptr_t>(newPtr)] = size;
+            return newPtr;
+        }
+        gHeapAllocations[reinterpret_cast<uintptr_t>(ptr)] = oldSize;
+        return nullptr;
+    }
+
+    void* newPtr = malloc(size);
+    if (newPtr) {
+        if (dwFlags & 0x08) memset(newPtr, 0, size);
+        gHeapAllocations[reinterpret_cast<uintptr_t>(newPtr)] = size;
+    }
+    return newPtr;
+}
+
+int32_t WINAPI stub_HeapFree(void*, uint32_t, void* ptr) {
+    if (!ptr) return 1;
+    std::lock_guard<std::mutex> lock(gHeapMutex);
+    auto it = gHeapAllocations.find(reinterpret_cast<uintptr_t>(ptr));
+    if (it != gHeapAllocations.end()) {
+        gHeapAllocations.erase(it);
+        free(ptr);
+        return 1;
+    }
+    LOGW("stub_HeapFree: bỏ qua con trỏ không hợp lệ hoặc không thuộc heap: %p", ptr);
+    return 1;
+}
+
+size_t WINAPI stub_HeapSize(void*, uint32_t, const void* ptr) {
+    if (!ptr) return 0;
+    std::lock_guard<std::mutex> lock(gHeapMutex);
+    auto it = gHeapAllocations.find(reinterpret_cast<uintptr_t>(ptr));
+    if (it != gHeapAllocations.end()) return it->second;
+    return 0;
+}
+
+void* WINAPI stub_HeapCreate(uint32_t, size_t, size_t) { return DUMMY_HEAP; }
+int32_t WINAPI stub_HeapDestroy(void*) { return 1; }
+int32_t WINAPI stub_HeapValidate(void*, uint32_t, const void*) { return 1; }
+
+// Memory management: VirtualAlloc, VirtualFree, VirtualProtect, VirtualQuery
+void* WINAPI stub_VirtualAlloc(void* lpAddress, size_t dwSize, uint32_t, uint32_t flProtect) {
+    if (dwSize == 0) return nullptr;
+    size_t alignedSize = (dwSize + 4095) & ~4095ULL;
+
+    int prot = PROT_READ | PROT_WRITE;
+    if (flProtect == 0x10 || flProtect == 0x20 || flProtect == 0x40) {
+        prot |= PROT_EXEC;
+    }
+
+    void* addr = mmap(lpAddress, alignedSize, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (addr == MAP_FAILED) {
+        LOGW("VirtualAlloc mmap thất bại cho kích thước: %zu", dwSize);
+        return nullptr;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(gVirtualMutex);
+        gVirtualAllocations[reinterpret_cast<uintptr_t>(addr)] = alignedSize;
+    }
+    return addr;
+}
+
+int32_t WINAPI stub_VirtualFree(void* lpAddress, size_t dwSize, uint32_t) {
+    if (!lpAddress) return 1;
+
+    std::lock_guard<std::mutex> lock(gVirtualMutex);
+    auto it = gVirtualAllocations.find(reinterpret_cast<uintptr_t>(lpAddress));
+    if (it != gVirtualAllocations.end()) {
+        size_t size = it->second;
+        gVirtualAllocations.erase(it);
+        munmap(lpAddress, size);
+        return 1;
+    }
+    if (dwSize > 0) {
+        munmap(lpAddress, (dwSize + 4095) & ~4095ULL);
+    }
+    return 1;
+}
+
+int32_t WINAPI stub_VirtualProtect(void* lpAddress, size_t dwSize, uint32_t flNewProtect, uint32_t* lpflOldProtect) {
+    if (!lpAddress || dwSize == 0) return 0;
+    if (lpflOldProtect) *lpflOldProtect = 0x40; // PAGE_EXECUTE_READWRITE
+
+    int prot = PROT_READ | PROT_WRITE;
+    if (flNewProtect == 0x10 || flNewProtect == 0x20 || flNewProtect == 0x40) {
+        prot |= PROT_EXEC;
+    }
+    uintptr_t pageStart = reinterpret_cast<uintptr_t>(lpAddress) & ~4095ULL;
+    size_t alignedLen = ((reinterpret_cast<uintptr_t>(lpAddress) + dwSize + 4095) & ~4095ULL) - pageStart;
+    mprotect(reinterpret_cast<void*>(pageStart), alignedLen, prot);
+    return 1;
+}
+
+size_t WINAPI stub_VirtualQuery(const void* lpAddress, void* lpBuffer, size_t dwLength) {
+    if (!lpBuffer || dwLength < 48) return 0;
+    struct MEM_INFO {
+        uint64_t BaseAddress;
+        uint64_t AllocationBase;
+        uint32_t AllocationProtect;
+        uint32_t Alignment1;
+        uint64_t RegionSize;
+        uint32_t State;
+        uint32_t Protect;
+        uint32_t Type;
+        uint32_t Alignment2;
+    };
+    MEM_INFO* mi = reinterpret_cast<MEM_INFO*>(lpBuffer);
+    uint64_t page = reinterpret_cast<uint64_t>(lpAddress) & ~4095ULL;
+    mi->BaseAddress = page;
+    mi->AllocationBase = page;
+    mi->AllocationProtect = 0x40; // PAGE_EXECUTE_READWRITE
+    mi->Alignment1 = 0;
+    mi->RegionSize = 0x10000; // 64 KB
+    mi->State = 0x1000; // MEM_COMMIT
+    mi->Protect = 0x40;
+    mi->Type = 0x20000; // MEM_PRIVATE
+    mi->Alignment2 = 0;
+    return sizeof(MEM_INFO);
+}
+
+// Global & Local memory
+void* WINAPI stub_GlobalAlloc(uint32_t uFlags, size_t dwBytes) {
+    if (dwBytes == 0) dwBytes = 1;
+    void* ptr = malloc(dwBytes);
+    if (ptr && (uFlags & 0x0040)) { // GMEM_ZEROINIT
+        memset(ptr, 0, dwBytes);
+    }
+    return ptr;
+}
+void* WINAPI stub_GlobalFree(void* hMem) {
+    if (hMem) free(hMem);
+    return nullptr;
+}
+void* WINAPI stub_LocalFree(void* hMem) {
+    if (hMem) free(hMem);
+    return nullptr;
+}
+
+// System Information
+void WINAPI stub_GetSystemInfo(void* lpSystemInfo) {
+    if (!lpSystemInfo) return;
+    struct SYS_INFO {
+        uint16_t wProcessorArchitecture;
+        uint16_t wReserved;
+        uint32_t dwPageSize;
+        void* lpMinimumApplicationAddress;
+        void* lpMaximumApplicationAddress;
+        uint64_t dwActiveProcessorMask;
+        uint32_t dwNumberOfProcessors;
+        uint32_t dwProcessorType;
+        uint32_t dwAllocationGranularity;
+        uint16_t wProcessorLevel;
+        uint16_t wProcessorRevision;
+    };
+    SYS_INFO* si = reinterpret_cast<SYS_INFO*>(lpSystemInfo);
+    memset(si, 0, sizeof(SYS_INFO));
+    si->wProcessorArchitecture = 9; // PROCESSOR_ARCHITECTURE_AMD64
+    si->dwPageSize = 4096;
+    si->lpMinimumApplicationAddress = reinterpret_cast<void*>(0x10000);
+    si->lpMaximumApplicationAddress = reinterpret_cast<void*>(0x7FFFFFFEFFFFULL);
+    si->dwActiveProcessorMask = 0xF;
+    si->dwNumberOfProcessors = 4;
+    si->dwProcessorType = 8664;
+    si->dwAllocationGranularity = 65536;
+}
+void WINAPI stub_GetNativeSystemInfo(void* lpSystemInfo) {
+    stub_GetSystemInfo(lpSystemInfo);
+}
+
+// String conversions
+int32_t WINAPI stub_MultiByteToWideChar(uint32_t, uint32_t, const char* lpMultiByteStr, int32_t cbMultiByte, wchar_t* lpWideCharStr, int32_t cchWideChar) {
+    if (!lpMultiByteStr) return 0;
+    int32_t len = cbMultiByte >= 0 ? cbMultiByte : static_cast<int32_t>(strlen(lpMultiByteStr));
+    if (cchWideChar == 0) {
+        return len + (cbMultiByte < 0 ? 1 : 0);
+    }
+    if (!lpWideCharStr) return 0;
+    int32_t count = 0;
+    for (int32_t i = 0; i < len && count < cchWideChar; ++i) {
+        lpWideCharStr[count++] = static_cast<wchar_t>(static_cast<unsigned char>(lpMultiByteStr[i]));
+    }
+    if (cbMultiByte < 0 && count < cchWideChar) {
+        lpWideCharStr[count++] = L'\0';
+    }
+    return count;
+}
+
+int32_t WINAPI stub_WideCharToMultiByte(uint32_t, uint32_t, const wchar_t* lpWideCharStr, int32_t cchWideChar, char* lpMultiByteStr, int32_t cbMultiByte, const char*, int32_t*) {
+    if (!lpWideCharStr) return 0;
+    int32_t len = cchWideChar >= 0 ? cchWideChar : static_cast<int32_t>(wcslen(lpWideCharStr));
+    if (cbMultiByte == 0) {
+        return len + (cchWideChar < 0 ? 1 : 0);
+    }
+    if (!lpMultiByteStr) return 0;
+    int32_t count = 0;
+    for (int32_t i = 0; i < len && count < cbMultiByte; ++i) {
+        lpMultiByteStr[count++] = static_cast<char>(lpWideCharStr[i] & 0x7F);
+    }
+    if (cchWideChar < 0 && count < cbMultiByte) {
+        lpMultiByteStr[count++] = '\0';
+    }
+    return count;
+}
+
+size_t WINAPI stub_lstrlenA(const char* lpString) {
+    return lpString ? strlen(lpString) : 0;
+}
+
+char* WINAPI stub_lstrcpynA(char* lpString1, const char* lpString2, int32_t iMaxLength) {
+    if (!lpString1 || iMaxLength <= 0) return lpString1;
+    if (!lpString2) { lpString1[0] = '\0'; return lpString1; }
+    strncpy(lpString1, lpString2, iMaxLength - 1);
+    lpString1[iMaxLength - 1] = '\0';
+    return lpString1;
+}
+
+// Synchronization & Events
+void* WINAPI stub_CreateEventA(void*, int32_t, int32_t, const char*) { return reinterpret_cast<void*>(0x50005001); }
+void* WINAPI stub_CreateEventExA(void*, const char*, uint32_t, uint32_t) { return reinterpret_cast<void*>(0x50005002); }
+int32_t WINAPI stub_SetEvent(void*) { return 1; }
+int32_t WINAPI stub_ResetEvent(void*) { return 1; }
+void* WINAPI stub_CreateSemaphoreA(void*, int32_t, int32_t, const char*) { return reinterpret_cast<void*>(0x50005003); }
+void* WINAPI stub_CreateSemaphoreW(void*, int32_t, int32_t, const wchar_t*) { return reinterpret_cast<void*>(0x50005004); }
+int32_t WINAPI stub_ReleaseSemaphore(void*, int32_t, int32_t*) { return 1; }
+uint32_t WINAPI stub_WaitForSingleObject(void*, uint32_t) { return 0; }
+uint32_t WINAPI stub_WaitForSingleObjectEx(void*, uint32_t, int32_t) { return 0; }
+int32_t WINAPI stub_SwitchToThread() { sched_yield(); return 1; }
+
+// Console & Standard Handles
+void* WINAPI stub_GetStdHandle(uint32_t nStdHandle) {
+    if (nStdHandle == static_cast<uint32_t>(-10)) return reinterpret_cast<void*>(0x10);
+    if (nStdHandle == static_cast<uint32_t>(-11)) return reinterpret_cast<void*>(0x11);
+    if (nStdHandle == static_cast<uint32_t>(-12)) return reinterpret_cast<void*>(0x12);
+    return reinterpret_cast<void*>(-1);
+}
+int32_t WINAPI stub_SetStdHandle(uint32_t, void*) { return 1; }
+uint32_t WINAPI stub_GetFileType(void*) { return 2; } // FILE_TYPE_CHAR
+int32_t WINAPI stub_GetConsoleMode(void*, uint32_t* lpMode) {
+    if (lpMode) *lpMode = 0x0007;
+    return 1;
+}
+int32_t WINAPI stub_WriteConsoleW(void*, const void*, uint32_t nChars, uint32_t* lpWritten, void*) {
+    if (lpWritten) *lpWritten = nChars;
+    return 1;
+}
+int32_t WINAPI stub_ReadConsoleW(void*, void*, uint32_t, uint32_t* lpRead, void*) {
+    if (lpRead) *lpRead = 0;
+    return 1;
+}
+
+// File & Path Information
+uint32_t WINAPI stub_GetFileAttributesW(const wchar_t*) { return 0x80; } // FILE_ATTRIBUTE_NORMAL
+int32_t WINAPI stub_GetCurrentDirectoryW(uint32_t nBufferLength, wchar_t* lpBuffer) {
+    if (lpBuffer && nBufferLength > 3) {
+        lpBuffer[0] = L'C'; lpBuffer[1] = L':'; lpBuffer[2] = L'\\'; lpBuffer[3] = L'\0';
+    }
+    return 3;
+}
+int32_t WINAPI stub_SetCurrentDirectoryW(const wchar_t*) { return 1; }
+uint32_t WINAPI stub_GetModuleFileNameA(void*, char* lpFilename, uint32_t nSize) {
+    if (lpFilename && nSize > 14) {
+        strcpy(lpFilename, "sgre_steam.exe");
+        return 14;
+    }
+    return 0;
+}
+uint32_t WINAPI stub_GetModuleFileNameW(void*, wchar_t* lpFilename, uint32_t nSize) {
+    if (lpFilename && nSize > 14) {
+        wcscpy(lpFilename, L"sgre_steam.exe");
+        return 14;
+    }
+    return 0;
+}
 
 uint32_t WINAPI stub_GetCurrentProcessId() { return static_cast<uint32_t>(getpid()); }
 uint32_t WINAPI stub_GetCurrentThreadId() { return static_cast<uint32_t>(pthread_self()); }
@@ -189,6 +498,13 @@ int32_t WINAPI stub_UnhandledExceptionFilter(void*) { return 0; }
 void WINAPI stub_RtlCaptureContext(void*) {}
 void* WINAPI stub_RtlLookupFunctionEntry(uint64_t, void*, void*) { return nullptr; }
 void* WINAPI stub_RtlVirtualUnwind(uint32_t, uint64_t, uint64_t, void*, void*, void*, void*, void*) { return nullptr; }
+void* WINAPI stub_RtlPcToFileHeader(void*, void** baseOfImage) {
+    if (baseOfImage) *baseOfImage = gLoadedImageBase;
+    return gLoadedImageBase;
+}
+void WINAPI stub_RaiseException(uint32_t, uint32_t, uint32_t, const uint64_t*) {}
+void WINAPI stub_RtlUnwind(void*, void*, void*, void*) {}
+void WINAPI stub_RtlUnwindEx(void*, void*, void*, void*, void*, void*) {}
 void WINAPI stub_TerminateProcess(void*, uint32_t) {}
 void WINAPI stub_ExitProcess(uint32_t) {}
 
@@ -329,6 +645,61 @@ void Win32Bridge_Init() {
     gFunctionMap["RtlVirtualUnwind"] = reinterpret_cast<void*>(&stub_RtlVirtualUnwind);
     gFunctionMap["TerminateProcess"] = reinterpret_cast<void*>(&stub_TerminateProcess);
     gFunctionMap["ExitProcess"] = reinterpret_cast<void*>(&stub_ExitProcess);
+
+    // Hardened Heap & Virtual Memory API Registration
+    gFunctionMap["HeapCreate"] = reinterpret_cast<void*>(&stub_HeapCreate);
+    gFunctionMap["HeapDestroy"] = reinterpret_cast<void*>(&stub_HeapDestroy);
+    gFunctionMap["HeapValidate"] = reinterpret_cast<void*>(&stub_HeapValidate);
+    gFunctionMap["VirtualAlloc"] = reinterpret_cast<void*>(&stub_VirtualAlloc);
+    gFunctionMap["VirtualFree"] = reinterpret_cast<void*>(&stub_VirtualFree);
+    gFunctionMap["VirtualProtect"] = reinterpret_cast<void*>(&stub_VirtualProtect);
+    gFunctionMap["VirtualQuery"] = reinterpret_cast<void*>(&stub_VirtualQuery);
+    gFunctionMap["GlobalAlloc"] = reinterpret_cast<void*>(&stub_GlobalAlloc);
+    gFunctionMap["GlobalFree"] = reinterpret_cast<void*>(&stub_GlobalFree);
+    gFunctionMap["LocalFree"] = reinterpret_cast<void*>(&stub_LocalFree);
+
+    // System Information Registration
+    gFunctionMap["GetSystemInfo"] = reinterpret_cast<void*>(&stub_GetSystemInfo);
+    gFunctionMap["GetNativeSystemInfo"] = reinterpret_cast<void*>(&stub_GetNativeSystemInfo);
+
+    // String & Conversion Registration
+    gFunctionMap["MultiByteToWideChar"] = reinterpret_cast<void*>(&stub_MultiByteToWideChar);
+    gFunctionMap["WideCharToMultiByte"] = reinterpret_cast<void*>(&stub_WideCharToMultiByte);
+    gFunctionMap["lstrlenA"] = reinterpret_cast<void*>(&stub_lstrlenA);
+    gFunctionMap["lstrcpynA"] = reinterpret_cast<void*>(&stub_lstrcpynA);
+
+    // Synchronization Registration
+    gFunctionMap["CreateEventA"] = reinterpret_cast<void*>(&stub_CreateEventA);
+    gFunctionMap["CreateEventExA"] = reinterpret_cast<void*>(&stub_CreateEventExA);
+    gFunctionMap["SetEvent"] = reinterpret_cast<void*>(&stub_SetEvent);
+    gFunctionMap["ResetEvent"] = reinterpret_cast<void*>(&stub_ResetEvent);
+    gFunctionMap["CreateSemaphoreA"] = reinterpret_cast<void*>(&stub_CreateSemaphoreA);
+    gFunctionMap["CreateSemaphoreW"] = reinterpret_cast<void*>(&stub_CreateSemaphoreW);
+    gFunctionMap["ReleaseSemaphore"] = reinterpret_cast<void*>(&stub_ReleaseSemaphore);
+    gFunctionMap["WaitForSingleObject"] = reinterpret_cast<void*>(&stub_WaitForSingleObject);
+    gFunctionMap["WaitForSingleObjectEx"] = reinterpret_cast<void*>(&stub_WaitForSingleObjectEx);
+    gFunctionMap["SwitchToThread"] = reinterpret_cast<void*>(&stub_SwitchToThread);
+
+    // Console & Stdio Registration
+    gFunctionMap["GetStdHandle"] = reinterpret_cast<void*>(&stub_GetStdHandle);
+    gFunctionMap["SetStdHandle"] = reinterpret_cast<void*>(&stub_SetStdHandle);
+    gFunctionMap["GetFileType"] = reinterpret_cast<void*>(&stub_GetFileType);
+    gFunctionMap["GetConsoleMode"] = reinterpret_cast<void*>(&stub_GetConsoleMode);
+    gFunctionMap["WriteConsoleW"] = reinterpret_cast<void*>(&stub_WriteConsoleW);
+    gFunctionMap["ReadConsoleW"] = reinterpret_cast<void*>(&stub_ReadConsoleW);
+
+    // File & Path Information Registration
+    gFunctionMap["GetFileAttributesW"] = reinterpret_cast<void*>(&stub_GetFileAttributesW);
+    gFunctionMap["GetCurrentDirectoryW"] = reinterpret_cast<void*>(&stub_GetCurrentDirectoryW);
+    gFunctionMap["SetCurrentDirectoryW"] = reinterpret_cast<void*>(&stub_SetCurrentDirectoryW);
+    gFunctionMap["GetModuleFileNameA"] = reinterpret_cast<void*>(&stub_GetModuleFileNameA);
+    gFunctionMap["GetModuleFileNameW"] = reinterpret_cast<void*>(&stub_GetModuleFileNameW);
+
+    // Stack & Exception Handling Registration
+    gFunctionMap["RtlPcToFileHeader"] = reinterpret_cast<void*>(&stub_RtlPcToFileHeader);
+    gFunctionMap["RaiseException"] = reinterpret_cast<void*>(&stub_RaiseException);
+    gFunctionMap["RtlUnwind"] = reinterpret_cast<void*>(&stub_RtlUnwind);
+    gFunctionMap["RtlUnwindEx"] = reinterpret_cast<void*>(&stub_RtlUnwindEx);
 
     LOGI("Bảng Win32 Bridge đã khởi tạo thành công %zu hàm stub native!", gFunctionMap.size());
 }

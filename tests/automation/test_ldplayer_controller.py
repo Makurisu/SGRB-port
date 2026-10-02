@@ -1,5 +1,8 @@
 import os
+import sys
 import unittest
+
+sys.path.insert(0, os.path.dirname(__file__))
 from ldplayer_controller import LDPlayerController
 
 class TestLDPlayerController(unittest.TestCase):
