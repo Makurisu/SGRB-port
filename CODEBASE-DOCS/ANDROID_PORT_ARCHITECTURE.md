@@ -46,8 +46,8 @@ sequenceDiagram
     - `nativeSendTouchEvent(int action, float x, float y)`: Nhận toạ độ chạm.
     - `nativePause()` / `nativeResume()`: Quản lý vòng đời ứng dụng.
 - **`input_injector.cpp`**:
-  - Giữ tham chiếu tới hàm xử lý thông điệp cửa sổ của game gốc (`WndProc`).
-  - Chuyển toạ độ màn hình Android (chuẩn hoá 0.0 - 1.0) sang độ phân giải game (1920x1080) và gửi vào cấu trúc sự kiện.
+  - Chuyển toạ độ màn hình Android (chuẩn hoá 0.0 - 1.0) sang độ phân giải game (1920x1080) và mã thông điệp Win32 (`WM_LBUTTONDOWN`, `WM_LBUTTONUP`, `WM_MOUSEMOVE`, `WM_KEYDOWN`...).
+  - Đẩy trực tiếp thông điệp vào hàng đợi tin nhắn `Win32Bridge_PostMessage` để `stub_PeekMessageA` phân phối đồng bộ vào game loop của binary gốc x86_64.
 - **`payload_loader.cpp`**:
   - Quét thư mục dữ liệu ngoài `/sdcard/Android/data/com.makurisu.sgrb/files/data`.
   - Phân tích và xác thực cấu trúc Portable Executable (DOS Magic `MZ` 0x5A4D và PE Signature `PE\0\0` 0x00004550) của file `sgre_steam.exe`.
@@ -107,6 +107,10 @@ sequenceDiagram
     - **SHELL32 Subsystem**:
       - Bắt chặn `SHGetSpecialFolderPathW` để điều hướng thư mục Documents / AppData của Windows sang thư mục lưu trữ cục bộ ảo `C:\saves` (ánh xạ trực tiếp vào `data/saves`), tự động tạo thư mục nếu có cờ `fCreate`.
       - Bắt chặn `SHCreateDirectoryExW` để tạo cấu trúc thư mục lồng nhau an toàn cho save data.
+    - **Window Lifecycle & Message Pump Subsystem**:
+      - Triển khai hàng đợi thông điệp Win32 luồng an toàn (`gMsgQueue`) kết hợp với hàm `stub_PeekMessageA` theo cờ `PM_REMOVE`.
+      - Tự động bơm các thông điệp vòng đời Win32 thiết yếu khi khởi động: `WM_CREATE`, `WM_SIZE` (1920x1080), `WM_ACTIVATE` (`WA_ACTIVE`), `WM_SETFOCUS`, `WM_PAINT`, đánh thức và kích hoạt hoàn toàn engine logic mà không bị đóng băng ở trạng thái nền.
+      - Giả lập trọn bộ API trạng thái cửa sổ (`GetForegroundWindow`, `GetActiveWindow`, `GetFocus`, `IsIconic`, `GetCursorPos`, `SetCursorPos`, `MonitorFromWindow`, `GetMonitorInfoA`...) đảm bảo engine luôn xác định cửa sổ game ở chế độ tiền cảnh và sẵn sàng nhận input.
 - **`dinput_bridge.cpp`**:
   - Đóng vai trò cầu nối xử lý thiết bị nhập liệu (Keyboard, Mouse, Gamepad) theo chuẩn COM DirectInput 8:
     - Bắt chặn hàm khởi tạo `DirectInput8Create` từ `DINPUT8.dll`.
