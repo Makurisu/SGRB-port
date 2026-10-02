@@ -38,5 +38,6 @@ public:
     static bool applyRelocations(void* baseAddress, const GamePayloadInfo& info);
     static bool resolveImports(void* baseAddress, const GamePayloadInfo& info);
     static bool protectSections(void* baseAddress, const GamePayloadInfo& info);
+    static bool executePayload(void* baseAddress, const GamePayloadInfo& info);
     static void releaseImageMemory(void* baseAddress, size_t size);
 };

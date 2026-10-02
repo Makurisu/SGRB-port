@@ -148,6 +148,12 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
                  protectSuccess ? "PASS" : "FAIL",
                  static_cast<uint8_t*>(loadedBase) + payloadInfo.entryPointRva,
                  payloadInfo.importedDlls.size());
+
+            // Chạy Game EntryPoint trên một luồng Worker riêng biệt để không block giao diện
+            std::thread gameThread([loadedBase, payloadInfo]() {
+                PayloadLoader::executePayload(loadedBase, payloadInfo);
+            });
+            gameThread.detach();
         }
     } else {
         LOGE("Chưa tìm thấy hoặc binary sgre_steam.exe không hợp lệ");
