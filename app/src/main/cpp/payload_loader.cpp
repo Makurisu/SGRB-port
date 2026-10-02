@@ -79,6 +79,17 @@ bool PayloadLoader::verifyPEHeader(const std::string& filePath, GamePayloadInfo&
     outInfo.importRva = importRva;
     outInfo.importSize = importSize;
 
+    // Đọc DataDirectory[5] (Base Relocation Table) tại offset peOffset + 24 + 152
+    file.seekg(peOffset + 24 + 152, std::ios::beg);
+    uint32_t relocRva = 0;
+    uint32_t relocSize = 0;
+    file.read(reinterpret_cast<char*>(&relocRva), sizeof(relocRva));
+    file.read(reinterpret_cast<char*>(&relocSize), sizeof(relocSize));
+
+    outInfo.relocRva = relocRva;
+    outInfo.relocSize = relocSize;
+    outInfo.totalRelocEntries = 0;
+
     // Đọc kích thước của Optional Header từ COFF header offset để nhảy chính xác tới Section Table
     file.seekg(peOffset + 20, std::ios::beg);
     uint16_t sizeOfOptHeader = 0;
@@ -244,6 +255,51 @@ void* PayloadLoader::mapImageToMemory(const GamePayloadInfo& info) {
 
     LOGI("Toàn bộ 8 sections của game đã được nạp vào RAM thành công tại địa chỉ cơ sở: %p", baseAddr);
     return baseAddr;
+}
+
+bool PayloadLoader::applyRelocations(void* baseAddress, const GamePayloadInfo& info) {
+    if (baseAddress == nullptr || info.relocRva == 0 || info.relocSize == 0) {
+        LOGI("Không có Base Relocation cần áp dụng");
+        return true;
+    }
+
+    uint8_t* basePtr = static_cast<uint8_t*>(baseAddress);
+    int64_t delta = reinterpret_cast<intptr_t>(baseAddress) - static_cast<int64_t>(info.imageBase);
+
+    LOGI("Bắt đầu Relocation Fixup: Delta = 0x%llX (Base=%p, OrigBase=0x%llX)",
+         static_cast<unsigned long long>(delta), baseAddress, static_cast<unsigned long long>(info.imageBase));
+
+    uint8_t* relocData = basePtr + info.relocRva;
+    uint32_t offset = 0;
+    uint32_t fixupCount = 0;
+
+    while (offset < info.relocSize) {
+        uint32_t pageRva = *reinterpret_cast<uint32_t*>(relocData + offset);
+        uint32_t blockSize = *reinterpret_cast<uint32_t*>(relocData + offset + 4);
+
+        if (blockSize == 0 || blockSize < 8) break;
+
+        uint32_t entryCount = (blockSize - 8) / 2;
+        uint16_t* entries = reinterpret_cast<uint16_t*>(relocData + offset + 8);
+
+        for (uint32_t i = 0; i < entryCount; ++i) {
+            uint16_t entry = entries[i];
+            uint8_t type = (entry >> 12);
+            uint16_t rvaOffset = (entry & 0x0FFF);
+
+            // IMAGE_REL_BASED_DIR64 = 10 (Áp dụng cho con trỏ 64-bit)
+            if (type == 10) {
+                uint64_t* targetAddr = reinterpret_cast<uint64_t*>(basePtr + pageRva + rvaOffset);
+                *targetAddr += delta;
+                fixupCount++;
+            }
+        }
+
+        offset += blockSize;
+    }
+
+    LOGI("Đã hoàn tất Relocation: %u con trỏ 64-bit đã được fixup chuẩn xác theo RAM Android!", fixupCount);
+    return true;
 }
 
 void PayloadLoader::releaseImageMemory(void* baseAddress, size_t size) {

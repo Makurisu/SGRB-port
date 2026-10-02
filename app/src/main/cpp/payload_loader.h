@@ -25,6 +25,9 @@ struct GamePayloadInfo {
     uint32_t importRva;
     uint32_t importSize;
     std::vector<std::string> importedDlls;
+    uint32_t relocRva;
+    uint32_t relocSize;
+    uint32_t totalRelocEntries;
 };
 
 class PayloadLoader {
@@ -32,5 +35,6 @@ public:
     static GamePayloadInfo inspectPayload(const std::string& dataDirectory);
     static bool verifyPEHeader(const std::string& filePath, GamePayloadInfo& outInfo);
     static void* mapImageToMemory(const GamePayloadInfo& info);
+    static bool applyRelocations(void* baseAddress, const GamePayloadInfo& info);
     static void releaseImageMemory(void* baseAddress, size_t size);
 };
