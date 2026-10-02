@@ -1,4 +1,5 @@
 #include "payload_loader.h"
+#include "d3d11_bridge.h"
 #include <fstream>
 #include <vector>
 #include <sys/mman.h>
@@ -382,7 +383,6 @@ bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& inf
                     const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
                     void* targetFunc = nullptr;
 
-                    extern "C" int32_t D3D11CreateDevice(void*, int32_t, void*, uint32_t, const void*, uint32_t, uint32_t, void**, void*, void**);
                     if (strcmp(fnName, "D3D11CreateDevice") == 0) targetFunc = reinterpret_cast<void*>(&D3D11CreateDevice);
 
                     if (targetFunc != nullptr) {
