@@ -1,6 +1,16 @@
 #pragma once
 #include <string>
 #include <cstdint>
+#include <vector>
+
+struct PESection {
+    std::string name;
+    uint32_t virtualSize;
+    uint32_t virtualAddress;
+    uint32_t rawSize;
+    uint32_t rawOffset;
+    uint32_t characteristics;
+};
 
 struct GamePayloadInfo {
     std::string exePath;
@@ -11,6 +21,7 @@ struct GamePayloadInfo {
     uint32_t entryPointRva;
     uint64_t imageBase;
     uint16_t numberOfSections;
+    std::vector<PESection> sections;
 };
 
 class PayloadLoader {

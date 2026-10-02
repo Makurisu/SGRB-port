@@ -68,6 +68,46 @@ bool PayloadLoader::verifyPEHeader(const std::string& filePath, GamePayloadInfo&
     outInfo.entryPointRva = entryPoint;
     outInfo.imageBase = imageBase;
 
+    // Đọc kích thước của Optional Header từ COFF header offset để nhảy chính xác tới Section Table
+    file.seekg(peOffset + 20, std::ios::beg);
+    uint16_t sizeOfOptHeader = 0;
+    file.read(reinterpret_cast<char*>(&sizeOfOptHeader), sizeof(sizeOfOptHeader));
+
+    // Điểm bắt đầu của bảng Section Headers
+    uint32_t sectionTableOffset = peOffset + 24 + sizeOfOptHeader;
+    file.seekg(sectionTableOffset, std::ios::beg);
+
+    outInfo.sections.clear();
+    for (uint16_t i = 0; i < numSections; ++i) {
+        char nameBuf[9] = {0};
+        file.read(nameBuf, 8);
+
+        uint32_t vSize = 0, vAddr = 0, rSize = 0, rOffset = 0;
+        file.read(reinterpret_cast<char*>(&vSize), sizeof(vSize));
+        file.read(reinterpret_cast<char*>(&vAddr), sizeof(vAddr));
+        file.read(reinterpret_cast<char*>(&rSize), sizeof(rSize));
+        file.read(reinterpret_cast<char*>(&rOffset), sizeof(rOffset));
+
+        // Bỏ qua PointerToRelocations (4), PointerToLinenumbers (4), NumberOfRelocations (2), NumberOfLinenumbers (2)
+        file.seekg(12, std::ios::cur);
+
+        uint32_t chars = 0;
+        file.read(reinterpret_cast<char*>(&chars), sizeof(chars));
+
+        PESection sec;
+        sec.name = std::string(nameBuf);
+        sec.virtualSize = vSize;
+        sec.virtualAddress = vAddr;
+        sec.rawSize = rSize;
+        sec.rawOffset = rOffset;
+        sec.characteristics = chars;
+
+        outInfo.sections.push_back(sec);
+
+        LOGI("Section [%s]: VAddr=0x%X, VSize=0x%X, RawOffset=0x%X, RawSize=0x%X",
+             sec.name.c_str(), vAddr, vSize, rOffset, rSize);
+    }
+
     LOGI("PE x86_64 xác thực: Machine=0x%X, Sections=%u, EntryPoint=0x%X, ImageBase=0x%llX",
          machine, numSections, entryPoint, static_cast<unsigned long long>(imageBase));
     return true;
