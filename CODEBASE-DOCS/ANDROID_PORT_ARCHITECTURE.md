@@ -51,8 +51,9 @@ sequenceDiagram
 - **`payload_loader.cpp`**:
   - Quét thư mục dữ liệu ngoài `/sdcard/Android/data/com.makurisu.sgrb/files/data`.
   - Phân tích và xác thực cấu trúc Portable Executable (DOS Magic `MZ` 0x5A4D và PE Signature `PE\0\0` 0x00004550) của file `sgre_steam.exe`.
-  - Bóc tách COFF Header (Machine: `0x8664` x86_64, 8 sections) và PE32+ Optional Header để chuẩn bị vùng nạp bộ nhớ ảo.
-  - Đảm bảo tính toàn vẹn binary gốc trước khi nạp vào bộ điều phối thực thi.
+  - Bóc tách COFF Header (Machine: `0x8664` x86_64, 8 sections) và PE32+ Optional Header.
+  - Cấp phát không gian địa chỉ ảo 64-bit ẩn danh (`mmap` ~11.05 MB) và ánh xạ từng Section (`.text`, `.rodata`, `.rdata`, `.data`, `.pdata`, `.fptable`, `.rsrc`, `.reloc`) theo đúng toạ độ `VirtualAddress`.
+  - Khởi tạo thành công điểm vào thực thi `EntryPoint` trong không gian nhớ của tiến trình Android.
 - **`steam_hook.cpp`**:
   - Giả lập các hàm API tối thiểu của Steamworks SDK:
     - `SteamAPI_Init()`: Luôn trả về `true`.
