@@ -57,6 +57,7 @@ sequenceDiagram
   - Thực thi thuật toán **64-bit Base Relocation Engine** (`IMAGE_REL_BASED_DIR64` fixup qua 103 blocks): Tự động tính độ lệch delta và tái định vị chuẩn xác **10,692 con trỏ bộ nhớ 64-bit** trong RAM để code x86_64 của game chạy đúng địa chỉ không bị crash.
   - Phân giải và liên kết động trực tiếp bảng **Import Address Table (IAT)** trong RAM: Gắn chính xác 9 con trỏ hàm API của Steamworks và hàm đồ họa `D3D11CreateDevice` vào binary gốc.
   - Cấu hình phân quyền trang bộ nhớ `mprotect` chuẩn xác theo Characteristics của từng section (`PROT_READ | PROT_EXEC` cho code `.text` & `.rodata`, `PROT_READ | PROT_WRITE` cho `.data`).
+  - **Windows TEB & PEB Subsystem**: Cấp phát cấu trúc 64-bit Thread Environment Block (`TEB`), Process Environment Block (`PEB`), và `RTL_USER_PROCESS_PARAMETERS`. Tự động gắn địa chỉ cơ sở vào thanh ghi phân đoạn `GS` qua syscall `arch_prctl(ARCH_SET_GS, teb)` của nhân Linux x86_64, đảm bảo các chỉ lệnh truy cập `gs:[0x30]` và `[rax + 0x60]` của Windows CRT/Game engine thực thi mượt mà không bị lỗi `SEGV_MAPERR`.
   - Khởi tạo thành công điểm vào thực thi `EntryPoint` (RVA: `0x56EACC`, Virtual: `0x7638727f6acc`) trong không gian nhớ của tiến trình Android.
 - **`d3d11_bridge.cpp`**:
   - Đóng vai trò cầu nối đồ họa Direct3D 11 cho engine game gốc:
