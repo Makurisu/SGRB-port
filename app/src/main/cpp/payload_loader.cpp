@@ -368,6 +368,7 @@ bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& inf
                 }
                 idx++;
             }
+        }
         // Liên kết trực tiếp các hàm D3D11 (DirectX 11 Graphics Pipeline)
         else if (nameStr.find("d3d11") != std::string::npos) {
             uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
