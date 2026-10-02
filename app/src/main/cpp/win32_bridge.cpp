@@ -705,6 +705,7 @@ int32_t WINAPI stub_ReadFile(
     }
 
     if (lpNumberOfBytesRead) *lpNumberOfBytesRead = static_cast<uint32_t>(bytesRead);
+    LOGI("ReadFile: Handle=%p, fd=%d, bytesToRead=%u -> read=%zd", hFile, fd, nNumberOfBytesToRead, bytesRead);
     return 1;
 }
 
@@ -739,6 +740,7 @@ int32_t WINAPI stub_WriteFile(
     }
 
     if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = static_cast<uint32_t>(bytesWritten);
+    LOGI("WriteFile: Handle=%p, fd=%d, bytesToWrite=%u -> written=%zd", hFile, fd, nNumberOfBytesToWrite, bytesWritten);
     return 1;
 }
 
@@ -862,6 +864,7 @@ int32_t WINAPI stub_CloseHandle(void* hObject) {
     std::lock_guard<std::mutex> lock(gVfsMutex);
     auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hObject));
     if (it != gVfsHandles.end()) {
+        LOGI("CloseHandle: file %p (fd=%d, path='%s')", hObject, it->second.fd, it->second.path.c_str());
         close(it->second.fd);
         gVfsHandles.erase(it);
         return 1;
@@ -869,6 +872,7 @@ int32_t WINAPI stub_CloseHandle(void* hObject) {
 
     auto fit = gVfsFindStates.find(reinterpret_cast<uintptr_t>(hObject));
     if (fit != gVfsFindStates.end()) {
+        LOGI("CloseHandle: find handle %p", hObject);
         if (fit->second.dir) closedir(fit->second.dir);
         gVfsFindStates.erase(fit);
         return 1;
@@ -1079,13 +1083,18 @@ int32_t WINAPI stub_DeleteFileA(const char* lpFileName) {
 }
 
 int32_t WINAPI stub_GetCurrentDirectoryW(uint32_t nBufferLength, char16_t* lpBuffer) {
+    LOGI("GetCurrentDirectoryW: bufferLen=%u", nBufferLength);
     if (lpBuffer && nBufferLength > 3) {
         lpBuffer[0] = u'C'; lpBuffer[1] = u':'; lpBuffer[2] = u'\\'; lpBuffer[3] = u'\0';
     }
     return 3;
 }
 
-int32_t WINAPI stub_SetCurrentDirectoryW(const char16_t*) { return 1; }
+int32_t WINAPI stub_SetCurrentDirectoryW(const char16_t* lpPath) {
+    std::string s = normalizeWinPathW(lpPath);
+    LOGI("SetCurrentDirectoryW: '%s'", s.c_str());
+    return 1;
+}
 uint32_t WINAPI stub_GetModuleFileNameA(void*, char* lpFilename, uint32_t nSize) {
     if (lpFilename && nSize > 14) {
         strcpy(lpFilename, "sgre_steam.exe");
