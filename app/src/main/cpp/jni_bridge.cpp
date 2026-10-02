@@ -130,7 +130,12 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
 
     GamePayloadInfo payloadInfo = PayloadLoader::inspectPayload(gDataDirectory);
     if (payloadInfo.isExeValid) {
-        LOGI("Game Executable hợp lệ! Size: %llu bytes", static_cast<unsigned long long>(payloadInfo.exeSize));
+        LOGI("Game Executable hợp lệ! Size: %llu bytes, Machine: 0x%X, Sections: %u, EntryPoint: 0x%X, ImageBase: 0x%llX",
+             static_cast<unsigned long long>(payloadInfo.exeSize),
+             payloadInfo.machineType,
+             payloadInfo.numberOfSections,
+             payloadInfo.entryPointRva,
+             static_cast<unsigned long long>(payloadInfo.imageBase));
     } else {
         LOGE("Chưa tìm thấy hoặc binary sgre_steam.exe không hợp lệ");
     }
