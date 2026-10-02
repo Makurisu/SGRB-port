@@ -99,6 +99,16 @@ sequenceDiagram
     - **Synchronization & Threading**: Cung cấp các nguyên ngữ đồng bộ hoá Windows Event (`CreateEventA`, `SetEvent`), Semaphore (`CreateSemaphore`), SRWLock, Condition Variable, `SwitchToThread` (`sched_yield`).
     - **String & Locale Subsystem**: Chuyển đổi mã ký tự UTF-8/UTF-16 qua `MultiByteToWideChar`, `WideCharToMultiByte`.
     - **CRT & Exception Subsystem**: Hỗ trợ PE ImageBase tracking, `RtlPcToFileHeader`, `IsProcessorFeaturePresent` (vô hiệu hoá `PF_FASTFAIL_AVAILABLE`), TLS/FLS slot management.
+- **`dinput_bridge.cpp`**:
+  - Đóng vai trò cầu nối xử lý thiết bị nhập liệu (Keyboard, Mouse, Gamepad) theo chuẩn COM DirectInput 8:
+    - Bắt chặn hàm khởi tạo `DirectInput8Create` từ `DINPUT8.dll`.
+    - Cấp phát mock `IDirectInput8W` và `IDirectInputDevice8W` với vtable chuẩn COM (32 slots) hỗ trợ đầy đủ các phương thức thiết yếu của game engine:
+      - `CreateDevice(rguid, lplpDirectInputDevice, pUnkOuter)`: Cung cấp đối tượng device cho bàn phím (`GUID_SysKeyboard`) và chuột (`GUID_SysMouse`).
+      - `SetDataFormat()`, `SetCooperativeLevel()`, `Acquire()`, `Unacquire()`, `GetDeviceState()`.
+    - Ngăn chặn hoàn toàn lỗi crash null pointer dereference (`SEGV_MAPERR fault addr 0x0`) tại RVA `0x4F379D` khi engine giải tham chiếu `*ppvOut` để gọi `CreateDevice`.
+- **`XInput Subsystem (XINPUT1_4.dll)`**:
+  - Bắt chặn gọi theo ordinal (Ordinal #2 `XInputGetState`, Ordinal #3 `XInputSetState`).
+  - Xóa trắng bộ nhớ `XINPUT_STATE` và trả về mã lỗi an toàn `ERROR_DEVICE_NOT_CONNECTED` (1167) để game tự động chuyển sang chế độ bàn phím/chuột mà không phát sinh lỗi bất thường.
 
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).

@@ -1,5 +1,6 @@
 #include "win32_bridge.h"
 #include "d3d11_bridge.h"
+#include "dinput_bridge.h"
 #include <android/log.h>
 #include <cstring>
 #include <string>
@@ -710,6 +711,9 @@ void Win32Bridge_Init() {
 
     // D3D Compiler Registration
     gFunctionMap["D3DReflect"] = reinterpret_cast<void*>(&D3DReflect);
+
+    // DirectInput Registration
+    gFunctionMap["DirectInput8Create"] = reinterpret_cast<void*>(&DirectInput8Create);
 
     LOGI("Bảng Win32 Bridge đã khởi tạo thành công %zu hàm stub native!", gFunctionMap.size());
 }

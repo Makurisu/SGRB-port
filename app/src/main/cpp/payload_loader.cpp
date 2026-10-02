@@ -1,5 +1,6 @@
 #include "payload_loader.h"
 #include "d3d11_bridge.h"
+#include "dinput_bridge.h"
 #include "win32_bridge.h"
 #include <fstream>
 #include <vector>
@@ -442,7 +443,67 @@ bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& inf
                 idx++;
             }
         }
-        // Liên kết toàn bộ các hàm Windows Win32 API còn lại (KERNEL32, USER32, OLE32, DINPUT, XINPUT, ADVAPI...)
+        // Liên kết trực tiếp DINPUT8.dll (DirectInput8Create)
+        else if (nameStr.find("DINPUT8") != std::string::npos || nameStr.find("dinput8") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                if (!(val & 0x8000000000000000)) {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    void* targetFunc = nullptr;
+
+                    if (strcmp(fnName, "DirectInput8Create") == 0) targetFunc = reinterpret_cast<void*>(&DirectInput8Create);
+
+                    if (targetFunc != nullptr) {
+                        iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                        resolvedCount++;
+                        LOGI("-> Đã gắn IAT [%s]: %s -> %p", nameStr.c_str(), fnName, targetFunc);
+                    }
+                }
+                idx++;
+            }
+        }
+        // Liên kết trực tiếp XINPUT1_4.dll (XInputGetState, XInputSetState theo ordinal)
+        else if (nameStr.find("XINPUT") != std::string::npos || nameStr.find("xinput") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            // Stubs an toàn cho XInput
+            auto xinputGetState = [](uint32_t, void* pState) -> uint32_t WINAPI {
+                if (pState) memset(pState, 0, 16);
+                return 1167; // ERROR_DEVICE_NOT_CONNECTED
+            };
+            auto xinputSetState = [](uint32_t, void*) -> uint32_t WINAPI {
+                return 1167; // ERROR_DEVICE_NOT_CONNECTED
+            };
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                void* targetFunc = nullptr;
+                if (val & 0x8000000000000000) {
+                    uint16_t ord = val & 0xFFFF;
+                    if (ord == 2) targetFunc = reinterpret_cast<void*>(+xinputGetState);
+                    else if (ord == 3) targetFunc = reinterpret_cast<void*>(+xinputSetState);
+                } else {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    if (strcmp(fnName, "XInputGetState") == 0) targetFunc = reinterpret_cast<void*>(+xinputGetState);
+                    else if (strcmp(fnName, "XInputSetState") == 0) targetFunc = reinterpret_cast<void*>(+xinputSetState);
+                }
+                if (targetFunc != nullptr) {
+                    iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                    resolvedCount++;
+                    LOGI("-> Đã gắn IAT [%s]: #%u -> %p", nameStr.c_str(), static_cast<unsigned>(val & 0xFFFF), targetFunc);
+                }
+                idx++;
+            }
+        }
+        // Liên kết toàn bộ các hàm Windows Win32 API còn lại (KERNEL32, USER32, OLE32, ADVAPI...)
         else {
             uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
             uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
