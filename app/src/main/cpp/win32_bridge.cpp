@@ -707,6 +707,10 @@ void Win32Bridge_Init() {
     gFunctionMap["RtlUnwind"] = reinterpret_cast<void*>(&stub_RtlUnwind);
     gFunctionMap["RtlUnwindEx"] = reinterpret_cast<void*>(&stub_RtlUnwindEx);
 
+    // D3D Compiler Registration
+    extern int32_t WINAPI D3DReflect(const void*, size_t, const void*, void**);
+    gFunctionMap["D3DReflect"] = reinterpret_cast<void*>(&D3DReflect);
+
     LOGI("Bảng Win32 Bridge đã khởi tạo thành công %zu hàm stub native!", gFunctionMap.size());
 }
 

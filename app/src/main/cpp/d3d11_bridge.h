@@ -42,6 +42,12 @@ int32_t WINAPI D3D11CreateDevice(
     void* pFeatureLevel,
     void** ppImmediateContext
 );
+int32_t WINAPI D3DReflect(
+    const void* pSrcData,
+    size_t srcDataSize,
+    const void* pInterface,
+    void** ppReflector
+);
 #ifdef __cplusplus
 }
 #endif

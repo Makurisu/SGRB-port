@@ -418,6 +418,30 @@ bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& inf
                 idx++;
             }
         }
+        // Liên kết trực tiếp D3DCOMPILER (D3DReflect)
+        else if (nameStr.find("D3DCOMPILER") != std::string::npos || nameStr.find("d3dcompiler") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                if (!(val & 0x8000000000000000)) {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    void* targetFunc = nullptr;
+
+                    if (strcmp(fnName, "D3DReflect") == 0) targetFunc = reinterpret_cast<void*>(&D3DReflect);
+
+                    if (targetFunc != nullptr) {
+                        iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                        resolvedCount++;
+                        LOGI("-> Đã gắn IAT [%s]: %s -> %p", nameStr.c_str(), fnName, targetFunc);
+                    }
+                }
+                idx++;
+            }
+        }
         // Liên kết toàn bộ các hàm Windows Win32 API còn lại (KERNEL32, USER32, OLE32, DINPUT, XINPUT, ADVAPI...)
         else {
             uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;

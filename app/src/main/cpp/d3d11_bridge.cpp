@@ -36,6 +36,7 @@ static const ComGuid IID_IDXGIFactory2_Val     = { 0x50c83a1c, 0xe072, 0x4c48, {
 static const ComGuid IID_IDXGISwapChain_Val    = { 0x310d36a0, 0xd837, 0x44da, { 0xaa, 0x5f, 0xe0, 0x50, 0xe2, 0x56, 0xf2, 0x0d } };
 static const ComGuid IID_IDXGISwapChain1_Val   = { 0x790a45f7, 0x0d42, 0x4876, { 0x98, 0x3a, 0x0a, 0x55, 0xcf, 0xe6, 0xf4, 0xaa } };
 static const ComGuid IID_ID3D11Texture2D_Val   = { 0x6f15aaf2, 0xd208, 0x4e89, { 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c } };
+static const ComGuid IID_ID3D11ShaderReflection_Val = { 0x8d536ca1, 0x0cca, 0x4956, { 0xa8, 0x37, 0x78, 0x69, 0x63, 0x75, 0x55, 0x84 } };
 
 // Vtables riêng biệt cho từng COM interface để ngăn chặn tuyệt đối xung đột slot/tham số
 static uint64_t gDeviceVtable[128] = {0};
@@ -47,6 +48,10 @@ static uint64_t gDXGIFactoryVtable[32] = {0};
 static uint64_t gSwapChainVtable[32] = {0};
 static uint64_t gTexture2DVtable[32] = {0};
 static uint64_t gGenericResourceVtable[32] = {0};
+static uint64_t gShaderReflectionVtable[32] = {0};
+static uint64_t gShaderReflectionConstantBufferVtable[16] = {0};
+static uint64_t gShaderReflectionVariableVtable[16] = {0};
+static uint64_t gShaderReflectionTypeVtable[16] = {0};
 
 // Mock COM Instances
 static SGRE_COM_Mock gMockDevice = { gDeviceVtable };
@@ -58,6 +63,10 @@ static SGRE_COM_Mock gMockDXGIFactory = { gDXGIFactoryVtable };
 static SGRE_COM_Mock gMockSwapChain = { gSwapChainVtable };
 static SGRE_COM_Mock gMockTexture2D = { gTexture2DVtable };
 static SGRE_COM_Mock gMockGenericResource = { gGenericResourceVtable };
+static SGRE_COM_Mock gMockShaderReflection = { gShaderReflectionVtable };
+static SGRE_COM_Mock gMockShaderConstantBuffer = { gShaderReflectionConstantBufferVtable };
+static SGRE_COM_Mock gMockShaderVariable = { gShaderReflectionVariableVtable };
+static SGRE_COM_Mock gMockShaderType = { gShaderReflectionTypeVtable };
 
 // Vùng nhớ đệm an toàn cho ID3D11DeviceContext::Map
 static uint8_t sMappedScratchMemory[16 * 1024 * 1024]; // 16 MB
@@ -111,6 +120,11 @@ static int64_t WINAPI mock_COM_QueryInterface(void* thisPtr, const void* riid, v
         if (IID_ID3D11Device_Val.matches(riid) || IID_ID3D11Device1_Val.matches(riid)) {
             *ppvObject = &gMockDevice;
             LOGI("-> Phản hồi Mock ID3D11Device1: %p", *ppvObject);
+            return 0;
+        }
+        if (IID_ID3D11ShaderReflection_Val.matches(riid)) {
+            *ppvObject = &gMockShaderReflection;
+            LOGI("-> Phản hồi Mock ID3D11ShaderReflection: %p", *ppvObject);
             return 0;
         }
     }
@@ -306,6 +320,39 @@ static int64_t WINAPI mock_Context_Map(void*, void*, uint32_t, uint32_t, uint32_
 
 static void WINAPI mock_Context_Unmap(void*, void*, uint32_t) {}
 
+// ID3D11ShaderReflection methods
+static int64_t WINAPI mock_Reflection_GetDesc(void*, void* pDesc) {
+    LOGI("ID3D11ShaderReflection::GetDesc called");
+    if (pDesc) {
+        memset(pDesc, 0, 256);
+        auto* desc32 = reinterpret_cast<uint32_t*>(pDesc);
+        desc32[0] = 0x500; // D3D11 shader model 5.0
+    }
+    return 0; // S_OK
+}
+
+static void* WINAPI mock_Reflection_GetConstantBuffer(void*, uint32_t) {
+    return &gMockShaderConstantBuffer;
+}
+
+static int64_t WINAPI mock_Reflection_GetResourceBindingDesc(void*, uint32_t, void* pDesc) {
+    if (pDesc) memset(pDesc, 0, 128);
+    return 0; // S_OK
+}
+
+static int64_t WINAPI mock_Reflection_GetParameterDesc(void*, uint32_t, void* pDesc) {
+    if (pDesc) memset(pDesc, 0, 128);
+    return 0; // S_OK
+}
+
+static void* WINAPI mock_Reflection_GetVariable(void*, const char*) {
+    return &gMockShaderVariable;
+}
+
+static void* WINAPI mock_Reflection_GetType(void*) {
+    return &gMockShaderType;
+}
+
 static void initVtablesOnce() {
     static bool initialized = false;
     if (initialized) return;
@@ -323,16 +370,21 @@ static void initVtablesOnce() {
         gSwapChainVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
         gTexture2DVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
         gGenericResourceVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
+        gShaderReflectionVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
     }
     for (int i = 0; i < 16; ++i) {
         gMultithreadVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
+        gShaderReflectionConstantBufferVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
+        gShaderReflectionVariableVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
+        gShaderReflectionTypeVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
     }
 
     // 2. IUnknown base slots (0, 1, 2) cho toàn bộ vtable
     uint64_t* allVtables[] = {
         gDeviceVtable, gContextVtable, gMultithreadVtable,
         gDXGIDeviceVtable, gDXGIAdapterVtable, gDXGIFactoryVtable,
-        gSwapChainVtable, gTexture2DVtable, gGenericResourceVtable
+        gSwapChainVtable, gTexture2DVtable, gGenericResourceVtable,
+        gShaderReflectionVtable
     };
     for (auto* vt : allVtables) {
         vt[0] = reinterpret_cast<uint64_t>(&mock_COM_QueryInterface);
@@ -394,6 +446,29 @@ static void initVtablesOnce() {
     gContextVtable[3] = reinterpret_cast<uint64_t>(&mock_Resource_GetDevice);
     gContextVtable[13] = reinterpret_cast<uint64_t>(&mock_Context_Map);
     gContextVtable[14] = reinterpret_cast<uint64_t>(&mock_Context_Unmap);
+
+    // 12. ID3D11ShaderReflection slots
+    gShaderReflectionVtable[3] = reinterpret_cast<uint64_t>(&mock_Reflection_GetDesc);
+    gShaderReflectionVtable[4] = reinterpret_cast<uint64_t>(&mock_Reflection_GetConstantBuffer); // GetConstantBufferByIndex
+    gShaderReflectionVtable[5] = reinterpret_cast<uint64_t>(&mock_Reflection_GetConstantBuffer); // GetConstantBufferByName
+    gShaderReflectionVtable[6] = reinterpret_cast<uint64_t>(&mock_Reflection_GetResourceBindingDesc);
+    gShaderReflectionVtable[7] = reinterpret_cast<uint64_t>(&mock_Reflection_GetParameterDesc); // GetInputParameterDesc
+    gShaderReflectionVtable[8] = reinterpret_cast<uint64_t>(&mock_Reflection_GetParameterDesc); // GetOutputParameterDesc
+
+    // 13. ID3D11ShaderReflectionConstantBuffer slots
+    gShaderReflectionConstantBufferVtable[0] = reinterpret_cast<uint64_t>(&mock_Reflection_GetResourceBindingDesc);
+    gShaderReflectionConstantBufferVtable[1] = reinterpret_cast<uint64_t>(&mock_Reflection_GetVariable);
+    gShaderReflectionConstantBufferVtable[2] = reinterpret_cast<uint64_t>(&mock_Reflection_GetVariable);
+
+    // 14. ID3D11ShaderReflectionVariable slots
+    gShaderReflectionVariableVtable[0] = reinterpret_cast<uint64_t>(&mock_Reflection_GetResourceBindingDesc);
+    gShaderReflectionVariableVtable[1] = reinterpret_cast<uint64_t>(&mock_Reflection_GetType);
+    gShaderReflectionVariableVtable[2] = reinterpret_cast<uint64_t>(&mock_Reflection_GetConstantBuffer);
+
+    // 15. ID3D11ShaderReflectionType slots
+    gShaderReflectionTypeVtable[0] = reinterpret_cast<uint64_t>(&mock_Reflection_GetResourceBindingDesc);
+    gShaderReflectionTypeVtable[1] = reinterpret_cast<uint64_t>(&mock_Reflection_GetType);
+    gShaderReflectionTypeVtable[2] = reinterpret_cast<uint64_t>(&mock_Reflection_GetType);
 }
 
 int32_t D3D11Bridge::createDevice(
@@ -449,5 +524,22 @@ int32_t WINAPI D3D11CreateDevice(
         pAdapter, driverType, software, flags, pFeatureLevels, featureLevels,
         sdkVersion, ppDevice, pFeatureLevel, ppImmediateContext
     );
+}
+
+int32_t WINAPI D3DReflect(
+    const void* /* pSrcData */,
+    size_t srcDataSize,
+    const void* pInterface,
+    void** ppReflector
+) {
+    initVtablesOnce();
+    LOGI("D3DReflect intercepted: SrcDataSize=%zu, pInterface=%p, ppReflector=%p",
+         srcDataSize, pInterface, ppReflector);
+
+    if (ppReflector) {
+        *ppReflector = &gMockShaderReflection;
+        LOGI("-> Đã cấp phát Mock ID3D11ShaderReflection: %p", *ppReflector);
+    }
+    return 0; // S_OK
 }
 }

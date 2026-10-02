@@ -14,6 +14,7 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.IID_IDXGIFACTORY2     = "50c83a1c-e072-4c48-87b0-3630fa36a6d0"
         self.IID_IDXGISWAPCHAIN    = "310d36a0-d837-44da-aa5f-e050e256f20d"
         self.IID_ID3D11TEXTURE2D   = "6f15aaf2-d208-4e89-9ab4-489535d34f9c"
+        self.IID_ID3D11SHADERREFLECTION = "8d536ca1-0cca-4956-a837-786963755584"
 
     def mock_query_interface(self, iid):
         if iid == self.IID_ID3D11MULTITHREAD:
@@ -28,11 +29,17 @@ class TestD3D11BridgeLogic(unittest.TestCase):
             return "MockIDXGISwapChain"
         elif iid == self.IID_ID3D11TEXTURE2D:
             return "MockID3D11Texture2D"
+        elif iid == self.IID_ID3D11SHADERREFLECTION:
+            return "MockID3D11ShaderReflection"
         elif iid in (self.IID_ID3D11DEVICE, self.IID_ID3D11DEVICE1):
             return "MockID3D11Device"
         elif iid == self.IID_ID3D11CONTEXT:
             return "MockID3D11DeviceContext"
         return "MockGeneric"
+
+    def mock_d3d_reflect(self, src_data, size, iid):
+        reflector = self.mock_query_interface(iid)
+        return (0, reflector) # S_OK, reflector pointer
 
     def test_multithread_guid_routing(self):
         obj = self.mock_query_interface(self.IID_ID3D11MULTITHREAD)
@@ -54,6 +61,16 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         obj = self.mock_query_interface(self.IID_ID3D11TEXTURE2D)
         self.assertEqual(obj, "MockID3D11Texture2D")
 
+    def test_shader_reflection_guid_routing(self):
+        obj = self.mock_query_interface(self.IID_ID3D11SHADERREFLECTION)
+        self.assertEqual(obj, "MockID3D11ShaderReflection")
+
+    def test_d3d_reflect_output_pointer(self):
+        hr, reflector = self.mock_d3d_reflect(None, 0, self.IID_ID3D11SHADERREFLECTION)
+        self.assertEqual(hr, 0, "D3DReflect phải trả về S_OK (0)")
+        self.assertIsNotNone(reflector, "ppReflector không được là nullptr")
+        self.assertEqual(reflector, "MockID3D11ShaderReflection")
+
     def test_vtable_slot_isolation(self):
         # Kiểm tra slot 5 của Multithread là SetMultithreadProtected (2 args)
         # Trong khi slot 5 của Device là CreateTexture2D (4 args)
@@ -64,3 +81,4 @@ class TestD3D11BridgeLogic(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -62,7 +62,11 @@ sequenceDiagram
 - **`d3d11_bridge.cpp`**:
   - Đóng vai trò cầu nối đồ họa Direct3D 11 và DXGI cho engine game gốc:
     - Bắt chặn hàm nhập `D3D11CreateDevice` từ bảng IAT.
-    - **Hệ thống Đa Vtable COM Chuyên Biệt (Dedicated Multi-Interface COM Vtables)**: Thay vì dùng chung một vtable đơn lẻ gây xung đột tham số gọi hàm (call-signature mismatch), kiến trúc triển khai 9 vtable và đối tượng COM riêng biệt:
+    - **D3D Compiler Subsystem (`D3DCOMPILER_47.dll`)**:
+      - Bắt chặn hàm `D3DReflect` từ IAT.
+      - Cấp phát mock `ID3D11ShaderReflection` (`IID_ID3D11ShaderReflection` `{8d536ca1-0cca-4956-a837-786963755584}`) cùng hệ thống vtable phản chiếu `ID3D11ShaderReflectionConstantBuffer`, `ID3D11ShaderReflectionVariable`, `ID3D11ShaderReflectionType`.
+      - Xử lý phương thức `GetDesc(D3D11_SHADER_DESC*)`, khởi tạo an toàn tham số Shader Model 5.0, loại bỏ hoàn toàn lỗi crash null-pointer dereference (`SEGV_MAPERR fault addr 0x0`) khi engine phản chiếu cấu trúc shader bytecode.
+    - **Hệ thống Đa Vtable COM Chuyên Biệt (Dedicated Multi-Interface COM Vtables)**: Thay vì dùng chung một vtable đơn lẻ gây xung đột tham số gọi hàm (call-signature mismatch), kiến trúc triển khai 13 vtable và đối tượng COM riêng biệt:
       - `ID3D11Device` / `ID3D11Device1` (128 slots)
       - `ID3D11DeviceContext` / `ID3D11DeviceContext1` (128 slots, hỗ trợ `Map` với 16MB scratch buffer và `Unmap`)
       - `ID3D11Multithread` (16 slots, hỗ trợ `SetMultithreadProtected`, `GetMultithreadProtected`)
@@ -72,7 +76,9 @@ sequenceDiagram
       - `IDXGISwapChain` / `IDXGISwapChain1` (32 slots, `GetBuffer`, `Present`, `ResizeBuffers`, `GetDevice`)
       - `ID3D11Texture2D` (32 slots, `GetDesc` thiết lập độ phân giải 1920x1080 và định dạng RGBA8)
       - `ID3D11GenericResource` (32 slots cho Views/Buffers/Shaders)
-    - **COM QueryInterface GUID Dispatcher**: Tự động bóc tách và phân giải chính xác 16-byte COM GUIDs chuẩn Microsoft (`IID_ID3D11Multithread`, `IID_IDXGIDevice1`, `IID_IDXGIFactory2`, `IID_IDXGISwapChain`, `IID_ID3D11Texture2D`...), chuyển hướng chính xác đến từng đối tượng mock tương ứng.
+      - `ID3D11ShaderReflection` (32 slots cho `GetDesc`, `GetConstantBufferByIndex`, `GetResourceBindingDesc`)
+      - `ID3D11ShaderReflectionConstantBuffer`, `ID3D11ShaderReflectionVariable`, `ID3D11ShaderReflectionType` (16 slots)
+    - **COM QueryInterface GUID Dispatcher**: Tự động bóc tách và phân giải chính xác 16-byte COM GUIDs chuẩn Microsoft (`IID_ID3D11Multithread`, `IID_IDXGIDevice1`, `IID_IDXGIFactory2`, `IID_IDXGISwapChain`, `IID_ID3D11Texture2D`, `IID_ID3D11ShaderReflection`...), chuyển hướng chính xác đến từng đối tượng mock tương ứng.
     - Fallback generic stub an toàn tuyệt đối (không đọc/ghi con trỏ bừa bãi), loại bỏ hoàn toàn nguy cơ ghi đè bộ nhớ không hợp lệ (`SEGV_MAPERR`).
     - Xác lập `D3D_FEATURE_LEVEL_11_0` (0xb000) và mã kết quả `S_OK` (0) để engine đồ họa game kích hoạt thành công mà không phụ thuộc vào `d3d11.dll` native của Windows.
 - **`steam_hook.cpp`**:
