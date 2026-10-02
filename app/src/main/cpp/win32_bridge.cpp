@@ -19,7 +19,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sched.h>
-#include <wchar.h>
+#include <uchar.h>
 
 #define LOG_TAG "SGRE_Win32Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -27,10 +27,10 @@
 
 namespace {
 
-// Cấu trúc chuỗi môi trường và command line Windows
-static const wchar_t gCmdLineW[] = L"sgre_steam.exe";
+// Cấu trúc chuỗi môi trường và command line Windows (chuẩn UTF-16LE 2-byte)
+static const char16_t gCmdLineW[] = u"sgre_steam.exe";
 static const char gCmdLineA[] = "sgre_steam.exe";
-static const wchar_t gEnvStringsW[] = L"ALLUSERSPROFILE=C:\\ProgramData\0APPDATA=C:\\AppData\0\0";
+static const char16_t gEnvStringsW[] = u"ALLUSERSPROFILE=C:\\ProgramData\0APPDATA=C:\\AppData\0\0";
 
 // Handle giả định an toàn cho Windows
 static void* const DUMMY_HEAP = reinterpret_cast<void*>(0x10001000);
@@ -45,10 +45,10 @@ static void* gLoadedImageBase = nullptr;
 int64_t WINAPI stub_GenericSuccess() { return 0; } // S_OK hoặc return 0 / NULL
 
 // Các hàm Stub KERNEL32
-const wchar_t* WINAPI stub_GetCommandLineW() { return gCmdLineW; }
+const char16_t* WINAPI stub_GetCommandLineW() { return gCmdLineW; }
 const char* WINAPI stub_GetCommandLineA() { return gCmdLineA; }
-const wchar_t* WINAPI stub_GetEnvironmentStringsW() { return gEnvStringsW; }
-int32_t WINAPI stub_FreeEnvironmentStringsW(const wchar_t*) { return 1; }
+const char16_t* WINAPI stub_GetEnvironmentStringsW() { return gEnvStringsW; }
+int32_t WINAPI stub_FreeEnvironmentStringsW(const char16_t*) { return 1; }
 
 uint32_t WINAPI stub_GetOEMCP() { return 65001; } // UTF-8
 uint32_t WINAPI stub_GetACP() { return 65001; }
@@ -261,8 +261,15 @@ void WINAPI stub_GetNativeSystemInfo(void* lpSystemInfo) {
     stub_GetSystemInfo(lpSystemInfo);
 }
 
-// String conversions
-int32_t WINAPI stub_MultiByteToWideChar(uint32_t, uint32_t, const char* lpMultiByteStr, int32_t cbMultiByte, wchar_t* lpWideCharStr, int32_t cchWideChar) {
+static size_t utf16Len(const char16_t* s) {
+    if (!s) return 0;
+    size_t len = 0;
+    while (s[len] != 0) ++len;
+    return len;
+}
+
+// String conversions (UTF-16LE 2-byte char16_t)
+int32_t WINAPI stub_MultiByteToWideChar(uint32_t, uint32_t, const char* lpMultiByteStr, int32_t cbMultiByte, char16_t* lpWideCharStr, int32_t cchWideChar) {
     if (!lpMultiByteStr) return 0;
     int32_t len = cbMultiByte >= 0 ? cbMultiByte : static_cast<int32_t>(strlen(lpMultiByteStr));
     if (cchWideChar == 0) {
@@ -271,17 +278,17 @@ int32_t WINAPI stub_MultiByteToWideChar(uint32_t, uint32_t, const char* lpMultiB
     if (!lpWideCharStr) return 0;
     int32_t count = 0;
     for (int32_t i = 0; i < len && count < cchWideChar; ++i) {
-        lpWideCharStr[count++] = static_cast<wchar_t>(static_cast<unsigned char>(lpMultiByteStr[i]));
+        lpWideCharStr[count++] = static_cast<char16_t>(static_cast<unsigned char>(lpMultiByteStr[i]));
     }
     if (cbMultiByte < 0 && count < cchWideChar) {
-        lpWideCharStr[count++] = L'\0';
+        lpWideCharStr[count++] = u'\0';
     }
     return count;
 }
 
-int32_t WINAPI stub_WideCharToMultiByte(uint32_t, uint32_t, const wchar_t* lpWideCharStr, int32_t cchWideChar, char* lpMultiByteStr, int32_t cbMultiByte, const char*, int32_t*) {
+int32_t WINAPI stub_WideCharToMultiByte(uint32_t, uint32_t, const char16_t* lpWideCharStr, int32_t cchWideChar, char* lpMultiByteStr, int32_t cbMultiByte, const char*, int32_t*) {
     if (!lpWideCharStr) return 0;
-    int32_t len = cchWideChar >= 0 ? cchWideChar : static_cast<int32_t>(wcslen(lpWideCharStr));
+    int32_t len = cchWideChar >= 0 ? cchWideChar : static_cast<int32_t>(utf16Len(lpWideCharStr));
     if (cbMultiByte == 0) {
         return len + (cchWideChar < 0 ? 1 : 0);
     }
@@ -314,7 +321,7 @@ void* WINAPI stub_CreateEventExA(void*, const char*, uint32_t, uint32_t) { retur
 int32_t WINAPI stub_SetEvent(void*) { return 1; }
 int32_t WINAPI stub_ResetEvent(void*) { return 1; }
 void* WINAPI stub_CreateSemaphoreA(void*, int32_t, int32_t, const char*) { return reinterpret_cast<void*>(0x50005003); }
-void* WINAPI stub_CreateSemaphoreW(void*, int32_t, int32_t, const wchar_t*) { return reinterpret_cast<void*>(0x50005004); }
+void* WINAPI stub_CreateSemaphoreW(void*, int32_t, int32_t, const char16_t*) { return reinterpret_cast<void*>(0x50005004); }
 int32_t WINAPI stub_ReleaseSemaphore(void*, int32_t, int32_t*) { return 1; }
 uint32_t WINAPI stub_WaitForSingleObject(void*, uint32_t) { return 0; }
 uint32_t WINAPI stub_WaitForSingleObjectEx(void*, uint32_t, int32_t) { return 0; }
@@ -373,9 +380,10 @@ struct Win32FindDataW {
     uint32_t nFileSizeLow;
     uint32_t dwReserved0;
     uint32_t dwReserved1;
-    wchar_t cFileName[260];
-    wchar_t cAlternateFileName[14];
+    char16_t cFileName[260];
+    char16_t cAlternateFileName[14];
 };
+static_assert(sizeof(Win32FindDataW) == 592, "Win32FindDataW must be exactly 592 bytes for Windows ABI");
 
 struct Win32FindDataA {
     uint32_t dwFileAttributes;
@@ -408,15 +416,22 @@ static std::unordered_map<uintptr_t, VfsFileHandle> gVfsHandles;
 static std::unordered_map<uintptr_t, VfsFindState> gVfsFindStates;
 static uintptr_t gNextHandleId = 0x10000;
 
-static std::string normalizeWinPathW(const wchar_t* wpath) {
+static std::string normalizeWinPathW(const char16_t* wpath) {
     if (!wpath) return "";
     std::string s;
     for (size_t i = 0; wpath[i] != 0; ++i) {
-        wchar_t wc = wpath[i];
-        if (wc == L'\\') s.push_back('/');
-        else if (wc < 128) s.push_back(static_cast<char>(wc));
-        else {
-            s.push_back(static_cast<char>(wc & 0xFF));
+        char16_t wc = wpath[i];
+        if (wc == u'\\') {
+            s.push_back('/');
+        } else if (wc < 0x80) {
+            s.push_back(static_cast<char>(wc));
+        } else if (wc < 0x0800) {
+            s.push_back(static_cast<char>(0xC0 | ((wc >> 6) & 0x1F)));
+            s.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+        } else {
+            s.push_back(static_cast<char>(0xE0 | ((wc >> 12) & 0x0F)));
+            s.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
+            s.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
         }
     }
     if (s.size() >= 2 && s[1] == ':') {
@@ -426,6 +441,28 @@ static std::string normalizeWinPathW(const wchar_t* wpath) {
         s = s.substr(1);
     }
     return s;
+}
+
+static void copyUtf8ToUtf16(const std::string& in, char16_t* out, size_t maxChars) {
+    if (!out || maxChars == 0) return;
+    size_t outIdx = 0;
+    size_t inIdx = 0;
+    while (inIdx < in.size() && outIdx + 1 < maxChars) {
+        unsigned char c = static_cast<unsigned char>(in[inIdx++]);
+        if (c < 0x80) {
+            out[outIdx++] = static_cast<char16_t>(c);
+        } else if ((c & 0xE0) == 0xC0 && inIdx < in.size()) {
+            unsigned char c2 = static_cast<unsigned char>(in[inIdx++]);
+            out[outIdx++] = static_cast<char16_t>(((c & 0x1F) << 6) | (c2 & 0x3F));
+        } else if ((c & 0xF0) == 0xE0 && inIdx + 1 < in.size()) {
+            unsigned char c2 = static_cast<unsigned char>(in[inIdx++]);
+            unsigned char c3 = static_cast<unsigned char>(in[inIdx++]);
+            out[outIdx++] = static_cast<char16_t>(((c & 0x0F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F));
+        } else {
+            out[outIdx++] = static_cast<char16_t>(c);
+        }
+    }
+    out[outIdx] = 0;
 }
 
 static std::string normalizeWinPathA(const char* apath) {
@@ -519,7 +556,7 @@ static void ensureParentDirExists(const std::string& filePath) {
 }
 
 void* WINAPI stub_CreateFileW(
-    const wchar_t* lpFileName,
+    const char16_t* lpFileName,
     uint32_t dwDesiredAccess,
     uint32_t /* dwShareMode */,
     void* /* lpSecurityAttributes */,
@@ -532,8 +569,8 @@ void* WINAPI stub_CreateFileW(
     std::string relPath = normalizeWinPathW(lpFileName);
     std::string fullPath = resolveCaseInsensitivePath(gVfsDataDir, relPath);
 
-    LOGI("CreateFileW: '%ls' -> mapped: '%s', disp=%u, access=0x%X",
-         lpFileName, fullPath.c_str(), dwCreationDisposition, dwDesiredAccess);
+    LOGI("CreateFileW: '%s' -> mapped: '%s', disp=%u, access=0x%X",
+         relPath.c_str(), fullPath.c_str(), dwCreationDisposition, dwDesiredAccess);
 
     int flags = 0;
     bool isWrite = (dwDesiredAccess & 0x40000000) != 0;
@@ -839,7 +876,7 @@ int32_t WINAPI stub_CloseHandle(void* hObject) {
     return 1;
 }
 
-uint32_t WINAPI stub_GetFileAttributesW(const wchar_t* lpFileName) {
+uint32_t WINAPI stub_GetFileAttributesW(const char16_t* lpFileName) {
     if (!lpFileName) return 0xFFFFFFFF;
 
     std::string relPath = normalizeWinPathW(lpFileName);
@@ -870,7 +907,7 @@ uint32_t WINAPI stub_GetFileAttributesA(const char* lpFileName) {
     return 0x80;
 }
 
-void* WINAPI stub_FindFirstFileW(const wchar_t* lpFileName, void* lpFindFileData) {
+void* WINAPI stub_FindFirstFileW(const char16_t* lpFileName, void* lpFindFileData) {
     if (!lpFileName || !lpFindFileData) return reinterpret_cast<void*>(static_cast<intptr_t>(-1));
 
     std::string normPath = normalizeWinPathW(lpFileName);
@@ -912,9 +949,7 @@ void* WINAPI stub_FindFirstFileW(const wchar_t* lpFileName, void* lpFindFileData
             } else {
                 findData->dwFileAttributes = 0x80;
             }
-            for (size_t k = 0; k < 259 && entry->d_name[k] != 0; ++k) {
-                findData->cFileName[k] = static_cast<wchar_t>(static_cast<uint8_t>(entry->d_name[k]));
-            }
+            copyUtf8ToUtf16(entry->d_name, findData->cFileName, 260);
 
             std::lock_guard<std::mutex> lock(gVfsMutex);
             uintptr_t findId = ++gNextHandleId;
@@ -925,6 +960,17 @@ void* WINAPI stub_FindFirstFileW(const wchar_t* lpFileName, void* lpFindFileData
 
     closedir(dir);
     return reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+}
+
+void* WINAPI stub_FindFirstFileExW(
+    const char16_t* lpFileName,
+    int32_t,
+    void* lpFindFileData,
+    int32_t,
+    void*,
+    uint32_t
+) {
+    return stub_FindFirstFileW(lpFileName, lpFindFileData);
 }
 
 int32_t WINAPI stub_FindNextFileW(void* hFindFile, void* lpFindFileData) {
@@ -974,9 +1020,7 @@ int32_t WINAPI stub_FindNextFileW(void* hFindFile, void* lpFindFileData) {
             } else {
                 findData->dwFileAttributes = 0x80;
             }
-            for (size_t k = 0; k < 259 && entry->d_name[k] != 0; ++k) {
-                findData->cFileName[k] = static_cast<wchar_t>(static_cast<uint8_t>(entry->d_name[k]));
-            }
+            copyUtf8ToUtf16(entry->d_name, findData->cFileName, 260);
             return 1;
         }
     }
@@ -1019,7 +1063,7 @@ int32_t WINAPI stub_SetEndOfFile(void* hFile) {
     return 1;
 }
 
-int32_t WINAPI stub_DeleteFileW(const wchar_t* lpFileName) {
+int32_t WINAPI stub_DeleteFileW(const char16_t* lpFileName) {
     if (!lpFileName) return 0;
     std::string relPath = normalizeWinPathW(lpFileName);
     std::string fullPath = resolveCaseInsensitivePath(gVfsDataDir, relPath);
@@ -1033,14 +1077,14 @@ int32_t WINAPI stub_DeleteFileA(const char* lpFileName) {
     return unlink(fullPath.c_str()) == 0 ? 1 : 0;
 }
 
-int32_t WINAPI stub_GetCurrentDirectoryW(uint32_t nBufferLength, wchar_t* lpBuffer) {
+int32_t WINAPI stub_GetCurrentDirectoryW(uint32_t nBufferLength, char16_t* lpBuffer) {
     if (lpBuffer && nBufferLength > 3) {
-        lpBuffer[0] = L'C'; lpBuffer[1] = L':'; lpBuffer[2] = L'\\'; lpBuffer[3] = L'\0';
+        lpBuffer[0] = u'C'; lpBuffer[1] = u':'; lpBuffer[2] = u'\\'; lpBuffer[3] = u'\0';
     }
     return 3;
 }
 
-int32_t WINAPI stub_SetCurrentDirectoryW(const wchar_t*) { return 1; }
+int32_t WINAPI stub_SetCurrentDirectoryW(const char16_t*) { return 1; }
 uint32_t WINAPI stub_GetModuleFileNameA(void*, char* lpFilename, uint32_t nSize) {
     if (lpFilename && nSize > 14) {
         strcpy(lpFilename, "sgre_steam.exe");
@@ -1048,9 +1092,9 @@ uint32_t WINAPI stub_GetModuleFileNameA(void*, char* lpFilename, uint32_t nSize)
     }
     return 0;
 }
-uint32_t WINAPI stub_GetModuleFileNameW(void*, wchar_t* lpFilename, uint32_t nSize) {
+uint32_t WINAPI stub_GetModuleFileNameW(void*, char16_t* lpFilename, uint32_t nSize) {
     if (lpFilename && nSize > 14) {
-        wcscpy(lpFilename, L"sgre_steam.exe");
+        copyUtf8ToUtf16("sgre_steam.exe", lpFilename, nSize);
         return 14;
     }
     return 0;
@@ -1067,22 +1111,64 @@ void* WINAPI stub_GetModuleHandleA(const char* lpModuleName) {
     return DUMMY_MODULE;
 }
 
-void* WINAPI stub_GetModuleHandleW(const wchar_t* lpModuleName) {
-    if (!lpModuleName || lpModuleName[0] == L'\0') {
+void* WINAPI stub_GetModuleHandleW(const char16_t* lpModuleName) {
+    if (!lpModuleName || lpModuleName[0] == u'\0') {
         return gLoadedImageBase ? gLoadedImageBase : DUMMY_MODULE;
     }
     return DUMMY_MODULE;
 }
 
-void* WINAPI stub_GetModuleHandleExW(uint32_t, const wchar_t* lpModuleName, void** phModule) {
+void* WINAPI stub_GetModuleHandleExW(uint32_t, const char16_t* lpModuleName, void** phModule) {
     void* hMod = stub_GetModuleHandleW(lpModuleName);
     if (phModule) *phModule = hMod;
     return hMod;
 }
 
 void* WINAPI stub_LoadLibraryA(const char*) { return DUMMY_MODULE; }
-void* WINAPI stub_LoadLibraryExW(const wchar_t*, void*, uint32_t) { return DUMMY_MODULE; }
+void* WINAPI stub_LoadLibraryExW(const char16_t*, void*, uint32_t) { return DUMMY_MODULE; }
 int32_t WINAPI stub_FreeLibrary(void*) { return 1; }
+
+// SHELL32 API Implementation
+int32_t WINAPI stub_SHGetSpecialFolderPathW(void*, char16_t* pszPath, int32_t csidl, int32_t fCreate) {
+    if (!pszPath) return 0;
+    // Map CSIDL_PERSONAL (0x0005) hoặc folder lưu game vào C:\saves
+    copyUtf8ToUtf16("C:\\saves", pszPath, 260);
+
+    if (fCreate) {
+        std::string savesDir = gVfsDataDir + "/saves";
+        mkdir(savesDir.c_str(), 0777);
+    }
+    LOGI("SHGetSpecialFolderPathW: csidl=0x%X -> 'C:\\saves'", csidl);
+    return 1; // TRUE
+}
+
+int32_t WINAPI stub_SHCreateDirectoryExW(void*, const char16_t* pszPath, void*) {
+    if (!pszPath) return 0;
+    std::string relPath = normalizeWinPathW(pszPath);
+    std::string fullPath = resolveCaseInsensitivePath(gVfsDataDir, relPath);
+    ensureParentDirExists(fullPath + "/placeholder");
+    mkdir(fullPath.c_str(), 0777);
+    LOGI("SHCreateDirectoryExW: tạo thành công thư mục '%s'", fullPath.c_str());
+    return 0; // ERROR_SUCCESS
+}
+
+void* WINAPI stub_ShellExecuteW(void*, const char16_t*, const char16_t*, const char16_t*, const char16_t*, int32_t) {
+    return reinterpret_cast<void*>(33); // Thành công (> 32)
+}
+
+void WINAPI stub_DragAcceptFiles(void*, int32_t) {}
+
+int32_t WINAPI stub_MessageBoxA(void*, const char* lpText, const char* lpCaption, uint32_t) {
+    LOGW("MessageBoxA: [%s] %s", lpCaption ? lpCaption : "", lpText ? lpText : "");
+    return 1; // IDOK
+}
+
+int32_t WINAPI stub_MessageBoxW(void*, const char16_t* lpText, const char16_t* lpCaption, uint32_t) {
+    std::string text = normalizeWinPathW(lpText);
+    std::string caption = normalizeWinPathW(lpCaption);
+    LOGW("MessageBoxW: [%s] %s", caption.c_str(), text.c_str());
+    return 1; // IDOK
+}
 
 void* WINAPI stub_GetProcAddress(void*, const char* lpProcName) {
     if (!lpProcName) return nullptr;
@@ -1186,7 +1272,12 @@ int32_t WINAPI stub_FlsFree(uint32_t) { return 1; }
 void* WINAPI stub_EncodePointer(void* ptr) { return ptr; }
 void* WINAPI stub_DecodePointer(void* ptr) { return ptr; }
 
-void WINAPI stub_OutputDebugStringW(const wchar_t*) {}
+void WINAPI stub_OutputDebugStringW(const char16_t* lpOutputString) {
+    if (lpOutputString) {
+        std::string s = normalizeWinPathW(lpOutputString);
+        LOGI("[GameDebug] %s", s.c_str());
+    }
+}
 void WINAPI stub_GetStartupInfoW(void* lpStartupInfo) {
     if (lpStartupInfo) memset(lpStartupInfo, 0, 68);
 }
@@ -1215,7 +1306,7 @@ void WINAPI stub_ExitProcess(uint32_t uExitCode) {
 
 // Các hàm Stub USER32
 void* WINAPI stub_CreateWindowExA(uint32_t, const char*, const char*, uint32_t, int, int, int, int, void*, void*, void*, void*) { return DUMMY_WINDOW; }
-void* WINAPI stub_CreateWindowExW(uint32_t, const wchar_t*, const wchar_t*, uint32_t, int, int, int, int, void*, void*, void*, void*) { return DUMMY_WINDOW; }
+void* WINAPI stub_CreateWindowExW(uint32_t, const char16_t*, const char16_t*, uint32_t, int, int, int, int, void*, void*, void*, void*) { return DUMMY_WINDOW; }
 int32_t WINAPI stub_DestroyWindow(void*) { return 1; }
 int32_t WINAPI stub_ShowWindow(void*, int32_t) { return 1; }
 int32_t WINAPI stub_SetWindowPos(void*, void*, int, int, int, int, uint32_t) { return 1; }
@@ -1245,6 +1336,19 @@ int32_t WINAPI stub_TranslateMessage(const void*) { return 1; }
 int64_t WINAPI stub_DispatchMessageA(const void*) { return 0; }
 int64_t WINAPI stub_DefWindowProcA(void*, uint32_t, uint64_t, int64_t) { return 0; }
 void WINAPI stub_PostQuitMessage(int32_t) {}
+int32_t WINAPI stub_GetWindowTextW(void*, char16_t* lpString, int32_t nMaxCount) {
+    if (lpString && nMaxCount > 0) lpString[0] = u'\0';
+    return 0;
+}
+int32_t WINAPI stub_GetWindowTextLengthW(void*) { return 0; }
+int32_t WINAPI stub_SetWindowTextW(void*, const char16_t*) { return 1; }
+int32_t WINAPI stub_SetDlgItemTextW(void*, int32_t, const char16_t*) { return 1; }
+uint32_t WINAPI stub_GetDlgItemTextW(void*, int32_t, char16_t* lpString, int32_t nMaxCount) {
+    if (lpString && nMaxCount > 0) lpString[0] = u'\0';
+    return 0;
+}
+int64_t WINAPI stub_SendMessageW(void*, uint32_t, uint64_t, int64_t) { return 0; }
+int64_t WINAPI stub_DialogBoxParamW(void*, const char16_t*, void*, void*, int64_t) { return 1; }
 
 // Bảng ánh xạ hàm API
 static std::unordered_map<std::string, void*> gFunctionMap;
@@ -1420,12 +1524,30 @@ void Win32Bridge_Init() {
     gFunctionMap["GetFileInformationByHandle"] = reinterpret_cast<void*>(&stub_GetFileInformationByHandle);
     gFunctionMap["CloseHandle"] = reinterpret_cast<void*>(&stub_CloseHandle);
     gFunctionMap["FindFirstFileW"] = reinterpret_cast<void*>(&stub_FindFirstFileW);
+    gFunctionMap["FindFirstFileExW"] = reinterpret_cast<void*>(&stub_FindFirstFileExW);
     gFunctionMap["FindNextFileW"] = reinterpret_cast<void*>(&stub_FindNextFileW);
     gFunctionMap["FindClose"] = reinterpret_cast<void*>(&stub_FindClose);
     gFunctionMap["FlushFileBuffers"] = reinterpret_cast<void*>(&stub_FlushFileBuffers);
     gFunctionMap["SetEndOfFile"] = reinterpret_cast<void*>(&stub_SetEndOfFile);
     gFunctionMap["DeleteFileW"] = reinterpret_cast<void*>(&stub_DeleteFileW);
     gFunctionMap["DeleteFileA"] = reinterpret_cast<void*>(&stub_DeleteFileA);
+
+    // SHELL32 API Registration
+    gFunctionMap["SHGetSpecialFolderPathW"] = reinterpret_cast<void*>(&stub_SHGetSpecialFolderPathW);
+    gFunctionMap["SHCreateDirectoryExW"] = reinterpret_cast<void*>(&stub_SHCreateDirectoryExW);
+    gFunctionMap["ShellExecuteW"] = reinterpret_cast<void*>(&stub_ShellExecuteW);
+    gFunctionMap["DragAcceptFiles"] = reinterpret_cast<void*>(&stub_DragAcceptFiles);
+
+    // USER32 Additional Dialog & Message Registration
+    gFunctionMap["MessageBoxA"] = reinterpret_cast<void*>(&stub_MessageBoxA);
+    gFunctionMap["MessageBoxW"] = reinterpret_cast<void*>(&stub_MessageBoxW);
+    gFunctionMap["GetWindowTextW"] = reinterpret_cast<void*>(&stub_GetWindowTextW);
+    gFunctionMap["GetWindowTextLengthW"] = reinterpret_cast<void*>(&stub_GetWindowTextLengthW);
+    gFunctionMap["SetWindowTextW"] = reinterpret_cast<void*>(&stub_SetWindowTextW);
+    gFunctionMap["SetDlgItemTextW"] = reinterpret_cast<void*>(&stub_SetDlgItemTextW);
+    gFunctionMap["GetDlgItemTextW"] = reinterpret_cast<void*>(&stub_GetDlgItemTextW);
+    gFunctionMap["SendMessageW"] = reinterpret_cast<void*>(&stub_SendMessageW);
+    gFunctionMap["DialogBoxParamW"] = reinterpret_cast<void*>(&stub_DialogBoxParamW);
 
     // Stack & Exception Handling Registration
     gFunctionMap["RtlPcToFileHeader"] = reinterpret_cast<void*>(&stub_RtlPcToFileHeader);

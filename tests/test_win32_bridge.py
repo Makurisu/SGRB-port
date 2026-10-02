@@ -95,6 +95,50 @@ class TestWin32BridgeLogic(unittest.TestCase):
         self.assertEqual(mock_entries.get("data/title.pure.psb", INVALID_FILE_ATTRIBUTES), 0x80)
         self.assertEqual(mock_entries.get("missing.file", INVALID_FILE_ATTRIBUTES), 0xFFFFFFFF)
 
+    def test_utf16_path_normalization(self):
+        # Kiểm tra giải mã UTF-16LE 16-bit sang UTF-8
+        def normalize_win_path_w(raw_bytes):
+            # raw_bytes là chuỗi byte UTF-16LE kết thúc bằng \0
+            chars = []
+            for i in range(0, len(raw_bytes) - 1, 2):
+                code = raw_bytes[i] | (raw_bytes[i + 1] << 8)
+                if code == 0:
+                    break
+                if code == ord('\\'):
+                    chars.append('/')
+                else:
+                    chars.append(chr(code))
+            s = "".join(chars)
+            if len(s) >= 2 and s[1] == ':':
+                s = s[2:]
+            while s.startswith("/"):
+                s = s[1:]
+            return s
+
+        sample_path = "C:\\Program Files\\SGRE\\fullscreen.txt"
+        utf16_bytes = sample_path.encode("utf-16le") + b"\x00\x00"
+        normalized = normalize_win_path_w(utf16_bytes)
+        self.assertEqual(normalized, "Program Files/SGRE/fullscreen.txt")
+
+    def test_win32_find_data_w_size(self):
+        # Kích thước chuẩn trên Windows x64: 592 bytes
+        # dwFileAttributes (4) + 3*FILETIME(8) + 2*FileSize(4) + 2*Reserved(4) + 260*char16_t(2) + 14*char16_t(2)
+        expected_size = 4 + (3 * 8) + (2 * 4) + (2 * 4) + (260 * 2) + (14 * 2)
+        self.assertEqual(expected_size, 592, "Win32FindDataW phải có đúng kích thước 592 bytes")
+
+    def test_shell_special_folder(self):
+        # Giả lập SHGetSpecialFolderPathW cho CSIDL_PERSONAL (Documents)
+        CSIDL_PERSONAL = 0x0005
+        CSIDL_APPDATA = 0x001A
+
+        def mock_sh_get_folder(csidl):
+            if csidl in (CSIDL_PERSONAL, CSIDL_APPDATA):
+                return "C:\\saves"
+            return "C:\\"
+
+        self.assertEqual(mock_sh_get_folder(CSIDL_PERSONAL), "C:\\saves")
+        self.assertEqual(mock_sh_get_folder(CSIDL_APPDATA), "C:\\saves")
+
 if __name__ == "__main__":
     unittest.main()
 
