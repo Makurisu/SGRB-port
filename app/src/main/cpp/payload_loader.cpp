@@ -603,109 +603,6 @@ void PayloadLoader::releaseImageMemory(void* baseAddress, size_t size) {
     }
 }
 
-#if defined(__x86_64__)
-#ifndef SYS_arch_prctl
-#define SYS_arch_prctl 158
-#endif
-#ifndef ARCH_SET_GS
-#define ARCH_SET_GS 0x1001
-#endif
-#ifndef ARCH_GET_GS
-#define ARCH_GET_GS 0x1004
-#endif
-
-static bool setupWindowsTEB(void* imageBase, const GamePayloadInfo& info) {
-    // Cấp phát 64KB bộ nhớ ẩn danh cho TEB, PEB, ProcessParameters và TLS (Thread Local Storage)
-    void* memory = mmap(nullptr, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (memory == MAP_FAILED) {
-        LOGE("Không thể mmap bộ nhớ cho Windows TEB/PEB: errno=%d", errno);
-        return false;
-    }
-    memset(memory, 0, 65536);
-
-    uint8_t* teb = static_cast<uint8_t*>(memory);
-    uint8_t* peb = teb + 8192;
-    uint8_t* params = peb + 4096;
-    uint64_t* tlsArray = reinterpret_cast<uint64_t*>(params + 4096); // 128 slots con trỏ TLS (1024 bytes)
-    uint8_t* tlsData = reinterpret_cast<uint8_t*>(tlsArray + 128);   // Vùng đệm TLS data (32768 bytes)
-
-    // 1. Cấu hình Windows x64 TEB (Thread Environment Block)
-    // gs:[0x30] trỏ tới chính TEB (Linear address of TEB / Self pointer)
-    *reinterpret_cast<uint64_t*>(teb + 0x30) = reinterpret_cast<uint64_t>(teb);
-    // gs:[0x40] Process ID
-    *reinterpret_cast<uint64_t*>(teb + 0x40) = static_cast<uint64_t>(getpid());
-    // gs:[0x48] Thread ID
-    *reinterpret_cast<uint64_t*>(teb + 0x48) = static_cast<uint64_t>(pthread_self());
-    // gs:[0x58] ThreadLocalStoragePointer (Mảng con trỏ TLS của thread, ngăn crash tại gs:[0x58])
-    *reinterpret_cast<uint64_t*>(teb + 0x58) = reinterpret_cast<uint64_t>(tlsArray);
-    // gs:[0x60] Process Environment Block (PEB)
-    *reinterpret_cast<uint64_t*>(teb + 0x60) = reinterpret_cast<uint64_t>(peb);
-
-    // Slot 0 trỏ tới vùng dữ liệu TLS của module chính
-    tlsArray[0] = reinterpret_cast<uint64_t>(tlsData);
-
-    // Khởi tạo biến _tls_index và sao chép TLS template data nếu PE có IMAGE_DIRECTORY_ENTRY_TLS
-    if (info.tlsRva != 0 && imageBase != nullptr) {
-        uint8_t* basePtr = static_cast<uint8_t*>(imageBase);
-        struct ImageTlsDirectory64 {
-            uint64_t startAddressOfRawData;
-            uint64_t endAddressOfRawData;
-            uint64_t addressOfIndex;
-            uint64_t addressOfCallBacks;
-            uint32_t sizeOfZeroFill;
-            uint32_t characteristics;
-        };
-        auto* tlsDir = reinterpret_cast<ImageTlsDirectory64*>(basePtr + info.tlsRva);
-        int64_t delta = reinterpret_cast<intptr_t>(imageBase) - static_cast<int64_t>(info.imageBase);
-
-        if (tlsDir->addressOfIndex != 0) {
-            uint32_t* pIndex = reinterpret_cast<uint32_t*>(tlsDir->addressOfIndex);
-            if (reinterpret_cast<uintptr_t>(pIndex) < reinterpret_cast<uintptr_t>(imageBase)) {
-                pIndex = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(pIndex) + delta);
-            }
-            *pIndex = 0; // TLS index của module chính luôn là 0
-            LOGI("Windows TLS: Đã đặt *AddressOfIndex (%p) = 0", pIndex);
-        }
-
-        if (tlsDir->startAddressOfRawData != 0 && tlsDir->endAddressOfRawData > tlsDir->startAddressOfRawData) {
-            uint8_t* rawStart = reinterpret_cast<uint8_t*>(tlsDir->startAddressOfRawData);
-            uint8_t* rawEnd = reinterpret_cast<uint8_t*>(tlsDir->endAddressOfRawData);
-            if (reinterpret_cast<uintptr_t>(rawStart) < reinterpret_cast<uintptr_t>(imageBase)) {
-                rawStart += delta;
-                rawEnd += delta;
-            }
-            size_t rawSize = rawEnd - rawStart;
-            if (rawSize < 32768) {
-                memcpy(tlsData, rawStart, rawSize);
-                LOGI("Windows TLS: Đã sao chép %zu bytes dữ liệu khởi tạo TLS vào %p", rawSize, tlsData);
-            }
-        }
-    }
-
-    // 2. Cấu hình Windows x64 PEB (Process Environment Block)
-    // peb[0x10] ImageBaseAddress
-    *reinterpret_cast<uint64_t*>(peb + 0x10) = reinterpret_cast<uint64_t>(imageBase);
-    // peb[0x20] ProcessParameters (PRTL_USER_PROCESS_PARAMETERS)
-    *reinterpret_cast<uint64_t*>(peb + 0x20) = reinterpret_cast<uint64_t>(params);
-
-    // 3. Cấu hình RTL_USER_PROCESS_PARAMETERS
-    *reinterpret_cast<uint32_t*>(params + 0x00) = 4096; // MaximumLength
-    *reinterpret_cast<uint32_t*>(params + 0x04) = 512;  // Length
-    *reinterpret_cast<uint32_t*>(params + 0x08) = 0x00000001; // Flags (NORMALIZED)
-
-    // 4. Thiết lập thanh ghi phân đoạn GS trên Linux x86_64 qua syscall arch_prctl
-    long ret = syscall(SYS_arch_prctl, ARCH_SET_GS, teb);
-    if (ret != 0) {
-        LOGE("syscall(SYS_arch_prctl, ARCH_SET_GS) thất bại: ret=%ld, errno=%d", ret, errno);
-        return false;
-    }
-
-    LOGI("Khởi tạo Windows TEB (%p, gs:[0x58]=%p) và PEB (%p) hoàn tất! Thanh ghi GS đã được gắn thành công.",
-         teb, tlsArray, peb);
-    return true;
-}
-#endif
-
 bool PayloadLoader::executePayload(void* baseAddress, const GamePayloadInfo& info) {
     if (baseAddress == nullptr || info.entryPointRva == 0) {
         LOGE("Không thể thực thi payload: địa chỉ cơ sở hoặc EntryPoint không hợp lệ");
@@ -715,9 +612,12 @@ bool PayloadLoader::executePayload(void* baseAddress, const GamePayloadInfo& inf
     uint8_t* entryPointPtr = static_cast<uint8_t*>(baseAddress) + info.entryPointRva;
     LOGI("Chuẩn bị chuyển quyền điều khiển tới Game EntryPoint tại: %p", entryPointPtr);
 
+    Win32Bridge_SetLoadedImageBase(baseAddress);
+    Win32Bridge_SetTlsInfo(info.tlsRva, info.imageBase);
+
 #if defined(__x86_64__)
     LOGI("Hệ thống phát hiện kiến trúc CPU x86_64 gốc! Bắt đầu thực thi binary...");
-    if (!setupWindowsTEB(baseAddress, info)) {
+    if (!Win32Bridge_SetupCurrentThreadTEB()) {
         LOGE("Thiết lập Windows TEB/PEB thất bại, không thể tiếp tục thực thi");
         return false;
     }

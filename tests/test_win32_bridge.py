@@ -169,6 +169,95 @@ class TestWin32BridgeLogic(unittest.TestCase):
         self.assertEqual(msg_pop["msg"], 0x0201)
         self.assertEqual(len(queue), 0)
 
+    def test_thread_creation_and_lifecycle(self):
+        # Giả lập vòng đời Win32 Thread
+        thread_map = {}
+        STILL_ACTIVE = 0x103
+
+        def create_thread(routine, param):
+            h_thread = 0x20001 + len(thread_map)
+            thread_map[h_thread] = {
+                "routine": routine,
+                "param": param,
+                "finished": False,
+                "exitCode": STILL_ACTIVE
+            }
+            return h_thread
+
+        def get_exit_code(h_thread):
+            if h_thread not in thread_map:
+                return 0
+            return thread_map[h_thread]["exitCode"]
+
+        def complete_thread(h_thread, code):
+            thread_map[h_thread]["finished"] = True
+            thread_map[h_thread]["exitCode"] = code
+
+        h = create_thread(lambda p: 0, None)
+        self.assertEqual(get_exit_code(h), STILL_ACTIVE)
+
+        complete_thread(h, 42)
+        self.assertEqual(get_exit_code(h), 42)
+
+    def test_window_procedure_dispatch(self):
+        # Giả lập Window Procedure callback và DispatchMessage
+        captured_messages = []
+
+        def mock_wnd_proc(hwnd, msg, wparam, lparam):
+            captured_messages.append((hwnd, msg, wparam, lparam))
+            return 1234
+
+        registered_wnd_proc = mock_wnd_proc
+
+        def dispatch_message(msg_obj):
+            if registered_wnd_proc:
+                return registered_wnd_proc(msg_obj["hwnd"], msg_obj["msg"], msg_obj["wParam"], msg_obj["lParam"])
+            return 0
+
+        sample_msg = {"hwnd": 0x30003000, "msg": 0x0001, "wParam": 0, "lParam": 0} # WM_CREATE
+        res = dispatch_message(sample_msg)
+        self.assertEqual(res, 1234)
+        self.assertEqual(len(captured_messages), 1)
+        self.assertEqual(captured_messages[0], (0x30003000, 0x0001, 0, 0))
+
+    def test_crypto_api_stubs(self):
+        # Kiểm tra giả lập ADVAPI32 Crypto context và key handles
+        def crypt_acquire_context():
+            return True, 0x70001
+
+        def crypt_import_key(prov_handle):
+            if prov_handle == 0x70001:
+                return True, 0x70002
+            return False, 0
+
+        ok, h_prov = crypt_acquire_context()
+        self.assertTrue(ok)
+        self.assertEqual(h_prov, 0x70001)
+
+        ok_key, h_key = crypt_import_key(h_prov)
+        self.assertTrue(ok_key)
+        self.assertEqual(h_key, 0x70002)
+
+    def test_gdi_and_system_stubs(self):
+        # Kiểm tra giả lập GetDeviceCaps
+        HORZRES = 8
+        VERTRES = 10
+        BITSPIXEL = 12
+
+        def get_device_caps(idx):
+            if idx == HORZRES:
+                return 1920
+            if idx == VERTRES:
+                return 1080
+            if idx == BITSPIXEL:
+                return 32
+            return 1
+
+        self.assertEqual(get_device_caps(HORZRES), 1920)
+        self.assertEqual(get_device_caps(VERTRES), 1080)
+        self.assertEqual(get_device_caps(BITSPIXEL), 32)
+
 if __name__ == "__main__":
     unittest.main()
+
 
