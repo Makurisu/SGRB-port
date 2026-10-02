@@ -199,6 +199,41 @@ class TestWin32BridgeLogic(unittest.TestCase):
         complete_thread(h, 42)
         self.assertEqual(get_exit_code(h), 42)
 
+    def test_thread_creation_suspended_and_resume(self):
+        # Giả lập cờ CREATE_SUSPENDED và hàm ResumeThread
+        thread_map = {}
+        CREATE_SUSPENDED = 0x00000004
+        STILL_ACTIVE = 0x103
+
+        def create_thread(routine, param, flags=0):
+            h_thread = 0x20001 + len(thread_map)
+            thread_map[h_thread] = {
+                "routine": routine,
+                "param": param,
+                "finished": False,
+                "exitCode": STILL_ACTIVE,
+                "suspended": (flags & CREATE_SUSPENDED) != 0
+            }
+            return h_thread
+
+        def resume_thread(h_thread):
+            if h_thread in thread_map and thread_map[h_thread]["suspended"]:
+                thread_map[h_thread]["suspended"] = False
+                return 1
+            return 0
+
+        # Thread thường (không suspended)
+        h1 = create_thread(lambda p: 0, None, 0)
+        self.assertFalse(thread_map[h1]["suspended"])
+        self.assertEqual(resume_thread(h1), 0)
+
+        # Thread với cờ CREATE_SUSPENDED
+        h2 = create_thread(lambda p: 0, None, CREATE_SUSPENDED)
+        self.assertTrue(thread_map[h2]["suspended"])
+        self.assertEqual(resume_thread(h2), 1)
+        self.assertFalse(thread_map[h2]["suspended"])
+        self.assertEqual(resume_thread(h2), 0) # Đã resume rồi thì trả về 0
+
     def test_window_procedure_dispatch(self):
         # Giả lập Window Procedure callback và DispatchMessage
         captured_messages = []

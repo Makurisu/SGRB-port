@@ -22,6 +22,7 @@
 #include <sched.h>
 #include <uchar.h>
 #include <sys/syscall.h>
+#include <condition_variable>
 
 #if defined(__x86_64__)
 #ifndef SYS_arch_prctl
@@ -429,13 +430,18 @@ uint32_t WINAPI stub_WaitForSingleObjectEx(void*, uint32_t, int32_t) { return 0;
 int32_t WINAPI stub_SwitchToThread() { sched_yield(); return 1; }
 
 // Win32 Threading Subsystem
+using Win32ThreadStartRoutine = uint32_t (WINAPI *)(void* lpThreadParameter);
+
 struct Win32ThreadInfo {
     pthread_t pth;
     uint32_t threadId;
-    uint32_t (*startRoutine)(void*);
+    Win32ThreadStartRoutine startRoutine;
     void* param;
     uint32_t exitCode;
     bool finished;
+    bool suspended;
+    std::mutex suspendMutex;
+    std::condition_variable suspendCond;
 };
 
 static std::mutex gThreadMutex;
@@ -446,9 +452,24 @@ static uintptr_t gNextThreadHandle = 0x20000;
 static void* win32ThreadTrampoline(void* arg) {
     auto* info = static_cast<Win32ThreadInfo*>(arg);
     Win32Bridge_SetupCurrentThreadTEB();
-    LOGI("Win32 Worker Thread %u bắt đầu thực thi startRoutine=%p", info->threadId, info->startRoutine);
+
+    // Nếu thread được tạo với cờ CREATE_SUSPENDED (0x04), tạm dừng chờ ResumeThread()
+    if (info->suspended) {
+        LOGI("Win32 Worker Thread %u đang tạm dừng chờ ResumeThread...", info->threadId);
+        std::unique_lock<std::mutex> lock(info->suspendMutex);
+        info->suspendCond.wait(lock, [info] { return !info->suspended; });
+        LOGI("Win32 Worker Thread %u đã nhận tín hiệu ResumeThread, bắt đầu chạy!", info->threadId);
+    }
+
+    LOGI("Win32 Worker Thread %u bắt đầu thực thi startRoutine=%p (ms_abi), param=%p",
+         info->threadId, info->startRoutine, info->param);
     if (info->startRoutine) {
-        info->exitCode = info->startRoutine(info->param);
+        try {
+            info->exitCode = info->startRoutine(info->param);
+        } catch (...) {
+            LOGE("Ngoại lệ xảy ra trong Win32 Worker Thread %u!", info->threadId);
+            info->exitCode = 0xFFFFFFFF;
+        }
     }
     info->finished = true;
     LOGI("Win32 Worker Thread %u kết thúc với exitCode=%u", info->threadId, info->exitCode);
@@ -458,9 +479,9 @@ static void* win32ThreadTrampoline(void* arg) {
 void* WINAPI stub_CreateThread(
     void*,
     size_t dwStackSize,
-    uint32_t (*lpStartAddress)(void*),
+    Win32ThreadStartRoutine lpStartAddress,
     void* lpParameter,
-    uint32_t,
+    uint32_t dwCreationFlags,
     uint32_t* lpThreadId
 ) {
     auto* info = new Win32ThreadInfo();
@@ -475,6 +496,7 @@ void* WINAPI stub_CreateThread(
         info->param = lpParameter;
         info->exitCode = 0x103; // STILL_ACTIVE
         info->finished = false;
+        info->suspended = (dwCreationFlags & 0x00000004) != 0; // CREATE_SUSPENDED
         gThreadMap[hThread] = info;
     }
     if (lpThreadId) *lpThreadId = tid;
@@ -493,12 +515,28 @@ void* WINAPI stub_CreateThread(
         return nullptr;
     }
 
-    LOGI("stub_CreateThread: Khởi tạo Win32 Thread Handle=%p, ThreadID=%u, StartAddress=%p",
-         reinterpret_cast<void*>(hThread), tid, lpStartAddress);
+    LOGI("stub_CreateThread: Khởi tạo Win32 Thread Handle=%p, ThreadID=%u, StartAddress=%p, suspended=%d",
+         reinterpret_cast<void*>(hThread), tid, lpStartAddress, info->suspended ? 1 : 0);
     return reinterpret_cast<void*>(hThread);
 }
 
-uint32_t WINAPI stub_ResumeThread(void*) { return 0; }
+uint32_t WINAPI stub_ResumeThread(void* hThread) {
+    std::lock_guard<std::mutex> lock(gThreadMutex);
+    auto it = gThreadMap.find(reinterpret_cast<uintptr_t>(hThread));
+    if (it != gThreadMap.end()) {
+        auto* info = it->second;
+        if (info->suspended) {
+            {
+                std::lock_guard<std::mutex> sLock(info->suspendMutex);
+                info->suspended = false;
+            }
+            info->suspendCond.notify_all();
+            LOGI("stub_ResumeThread: Đã đánh thức Win32 Thread Handle=%p, ThreadID=%u", hThread, info->threadId);
+            return 1; // Số lần suspend trước đó = 1
+        }
+    }
+    return 0;
+}
 int32_t WINAPI stub_SetThreadPriority(void*, int32_t) { return 1; }
 uint32_t WINAPI stub_SetThreadIdealProcessor(void*, uint32_t) { return 0; }
 

@@ -115,7 +115,9 @@ sequenceDiagram
     - **Multi-Threading & Per-Thread Windows TEB Subsystem**:
       - Hỗ trợ đầy đủ các hàm điều khiển luồng của KERNEL32: `CreateThread`, `ResumeThread`, `SetThreadPriority`, `SetThreadIdealProcessor`, `GetExitCodeThread`, `TerminateThread`, `ExitThread`, `FreeLibraryAndExitThread`.
       - Cơ chế **Trampoline per-thread**: Mọi worker thread mới được sinh ra bởi `pthread_create` sẽ tự động khởi tạo Windows TEB độc lập và cấu hình thanh ghi `%gs` (`ARCH_SET_GS`) thông qua `Win32Bridge_SetupCurrentThreadTEB()` trước khi chạy hàm mục tiêu `lpStartAddress(lpParameter)`.
-      - Đảm bảo các luồng nền của Mages Engine (như Disk loader, resource streaming, audio worker) chạy ổn định mà không bị crash khi truy xuất TLS (`gs:[0x58]`).
+      - **Windows x64 Calling Convention (`ms_abi`)**: Định nghĩa con trỏ hàm luồng `using Win32ThreadStartRoutine = uint32_t (WINAPI *)(void* lpThreadParameter)` với thuộc tính `__attribute__((ms_abi))`. Đảm bảo tham số `lpParameter` được truyền qua thanh ghi `RCX` (thay vì `RDI` theo System V AMD64 ABI của Linux Clang) và cấp phát đủ 32-byte Shadow Space trên stack, ngăn ngừa hoàn toàn lỗi `SIGSEGV` tại hàm khởi động luồng CRT `_threadstartex` (RVA `0x4BEA2D`).
+      - **Đồng Bộ Hóa Luồng Bị Tạm Dừng (`CREATE_SUSPENDED` & `ResumeThread`)**: Xử lý cờ `CREATE_SUSPENDED (0x00000004)` bằng cơ chế khoá điều kiện `std::condition_variable` và `std::mutex`. Worker thread sẽ tạm dừng an toàn cho đến khi luồng chính cấu hình xong dữ liệu đồng bộ và phát tín hiệu đánh thức qua `ResumeThread()`.
+      - Đảm bảo toàn bộ 9 luồng nền của Mages Engine (Disk loader, resource streaming, audio worker, E-mote physics) khởi tạo và vận hành mượt mà.
     - **Cryptography Subsystem (`ADVAPI32.dll`)**:
       - Giả lập trọn vẹn bộ Windows CryptoAPI: `CryptAcquireContextA`, `CryptReleaseContext`, `CryptImportKey`, `CryptSetKeyParam`, `CryptEncrypt`, `CryptDecrypt`, `CryptDestroyKey`, `CryptDestroyHash`.
       - Cung cấp các handle hợp lệ và phản hồi thành công (`TRUE`) để engine M2 thực hiện giải mã các gói dữ liệu game (`.psb.m`) và save data mà không bị tắc nghẽn.
