@@ -109,6 +109,16 @@ sequenceDiagram
 - **`XInput Subsystem (XINPUT1_4.dll)`**:
   - Bắt chặn gọi theo ordinal (Ordinal #2 `XInputGetState`, Ordinal #3 `XInputSetState`).
   - Xóa trắng bộ nhớ `XINPUT_STATE` và trả về mã lỗi an toàn `ERROR_DEVICE_NOT_CONNECTED` (1167) để game tự động chuyển sang chế độ bàn phím/chuột mà không phát sinh lỗi bất thường.
+- **`xaudio2_bridge.cpp`**:
+  - Đóng vai trò cầu nối âm thanh DirectX XAudio2 (hỗ trợ XAudio 2.7, 2.8, 2.9):
+    - Bắt chặn hàm `XAudio2Create` được nạp động qua `GetProcAddress`.
+    - Cung cấp mock `IXAudio2` và `IXAudio2MasteringVoice` với vtable chuẩn COM (32 slots), khởi tạo thành công mastering voice mà không gây lỗi phân rã module âm thanh.
+- **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
+  - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
+  - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.
+  - Gán trực tiếp con trỏ mảng vào trường `gs:[0x58]` của cấu trúc Windows 64-bit TEB.
+  - Tự động sao chép template data ban đầu từ `StartAddressOfRawData` và xác lập `_tls_index = 0`.
+  - Loại bỏ hoàn toàn lỗi crash null-pointer dereference (`SEGV_MAPERR fault addr 0x0`) khi các container C++ (như `std::vector`), luồng hoặc từ khoá `thread_local` của game engine giải tham chiếu `[rax + rcx*8]` qua thanh ghi phân đoạn `GS`.
 
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).

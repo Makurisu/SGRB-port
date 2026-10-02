@@ -9,6 +9,7 @@ add_library(sgre_wrapper SHARED
     payload_loader.cpp
     d3d11_bridge.cpp
     dinput_bridge.cpp
+    xaudio2_bridge.cpp
     win32_bridge.cpp
 )
 

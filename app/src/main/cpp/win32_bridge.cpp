@@ -1,6 +1,7 @@
 #include "win32_bridge.h"
 #include "d3d11_bridge.h"
 #include "dinput_bridge.h"
+#include "xaudio2_bridge.h"
 #include <android/log.h>
 #include <cstring>
 #include <string>
@@ -714,6 +715,9 @@ void Win32Bridge_Init() {
 
     // DirectInput Registration
     gFunctionMap["DirectInput8Create"] = reinterpret_cast<void*>(&DirectInput8Create);
+
+    // XAudio2 Audio Subsystem Registration
+    gFunctionMap["XAudio2Create"] = reinterpret_cast<void*>(&XAudio2Create);
 
     LOGI("Bảng Win32 Bridge đã khởi tạo thành công %zu hàm stub native!", gFunctionMap.size());
 }

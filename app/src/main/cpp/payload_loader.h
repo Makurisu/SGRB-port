@@ -30,6 +30,8 @@ struct GamePayloadInfo {
     uint32_t relocRva;
     uint32_t relocSize;
     uint32_t totalRelocEntries;
+    uint32_t tlsRva;
+    uint32_t tlsSize;
 };
 
 class PayloadLoader {
