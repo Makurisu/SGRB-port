@@ -26,6 +26,12 @@ void* Win32Bridge_ResolveSymbol(const char* dllName, const char* funcName);
 // Đẩy thông điệp Win32 vào hàng đợi thông điệp của game
 void Win32Bridge_PostMessage(uint32_t message, uint64_t wParam, int64_t lParam);
 
+// Thiết lập thông tin TLS của binary PE để hỗ trợ đa luồng
+void Win32Bridge_SetTlsInfo(uint32_t tlsRva, uint64_t origImageBase);
+
+// Khởi tạo Windows TEB & cấu hình thanh ghi GS cho luồng hiện tại
+bool Win32Bridge_SetupCurrentThreadTEB();
+
 #ifdef __cplusplus
 }
 #endif

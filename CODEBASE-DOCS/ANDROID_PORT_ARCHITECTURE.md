@@ -107,10 +107,23 @@ sequenceDiagram
     - **SHELL32 Subsystem**:
       - Bắt chặn `SHGetSpecialFolderPathW` để điều hướng thư mục Documents / AppData của Windows sang thư mục lưu trữ cục bộ ảo `C:\saves` (ánh xạ trực tiếp vào `data/saves`), tự động tạo thư mục nếu có cờ `fCreate`.
       - Bắt chặn `SHCreateDirectoryExW` để tạo cấu trúc thư mục lồng nhau an toàn cho save data.
-    - **Window Lifecycle & Message Pump Subsystem**:
+    - **Window Lifecycle, Procedure & Message Pump Subsystem**:
       - Triển khai hàng đợi thông điệp Win32 luồng an toàn (`gMsgQueue`) kết hợp với hàm `stub_PeekMessageA` theo cờ `PM_REMOVE`.
       - Tự động bơm các thông điệp vòng đời Win32 thiết yếu khi khởi động: `WM_CREATE`, `WM_SIZE` (1920x1080), `WM_ACTIVATE` (`WA_ACTIVE`), `WM_SETFOCUS`, `WM_PAINT`, đánh thức và kích hoạt hoàn toàn engine logic mà không bị đóng băng ở trạng thái nền.
-      - Giả lập trọn bộ API trạng thái cửa sổ (`GetForegroundWindow`, `GetActiveWindow`, `GetFocus`, `IsIconic`, `GetCursorPos`, `SetCursorPos`, `MonitorFromWindow`, `GetMonitorInfoA`...) đảm bảo engine luôn xác định cửa sổ game ở chế độ tiền cảnh và sẵn sàng nhận input.
+      - **Window Procedure (WndProc) Interception**: Bắt trọn con trỏ hàm `lpfnWndProc` được game đăng ký qua cấu trúc `WNDCLASSEXA` trong `RegisterClassExA`. Khi `DispatchMessageA` được gọi từ game loop, thông điệp được chuyển thẳng vào hàm `WndProc` của game engine để xử lý logic, đồng thời cung cấp phản hồi chuẩn trong `DefWindowProcA` cho `WM_NCHITTEST` và `WM_SETCURSOR`.
+      - Giả lập trọn bộ API trạng thái cửa sổ (`GetForegroundWindow`, `GetActiveWindow`, `GetFocus`, `IsIconic`, `GetCursorPos`, `SetCursorPos`, `MonitorFromWindow`, `GetMonitorInfoA`, `GetWindowThreadProcessId`, `SetClassLongPtrA`...) đảm bảo engine luôn xác định cửa sổ game ở chế độ tiền cảnh và sẵn sàng nhận input.
+    - **Multi-Threading & Per-Thread Windows TEB Subsystem**:
+      - Hỗ trợ đầy đủ các hàm điều khiển luồng của KERNEL32: `CreateThread`, `ResumeThread`, `SetThreadPriority`, `SetThreadIdealProcessor`, `GetExitCodeThread`, `TerminateThread`, `ExitThread`, `FreeLibraryAndExitThread`.
+      - Cơ chế **Trampoline per-thread**: Mọi worker thread mới được sinh ra bởi `pthread_create` sẽ tự động khởi tạo Windows TEB độc lập và cấu hình thanh ghi `%gs` (`ARCH_SET_GS`) thông qua `Win32Bridge_SetupCurrentThreadTEB()` trước khi chạy hàm mục tiêu `lpStartAddress(lpParameter)`.
+      - Đảm bảo các luồng nền của Mages Engine (như Disk loader, resource streaming, audio worker) chạy ổn định mà không bị crash khi truy xuất TLS (`gs:[0x58]`).
+    - **Cryptography Subsystem (`ADVAPI32.dll`)**:
+      - Giả lập trọn vẹn bộ Windows CryptoAPI: `CryptAcquireContextA`, `CryptReleaseContext`, `CryptImportKey`, `CryptSetKeyParam`, `CryptEncrypt`, `CryptDecrypt`, `CryptDestroyKey`, `CryptDestroyHash`.
+      - Cung cấp các handle hợp lệ và phản hồi thành công (`TRUE`) để engine M2 thực hiện giải mã các gói dữ liệu game (`.psb.m`) và save data mà không bị tắc nghẽn.
+    - **OLE32, GDI32 & WINMM Subsystems**:
+      - `ole32.dll`: Cung cấp `CoInitializeEx`, `CoUninitialize`, `CoCreateGuid`, `CoCreateInstance` (E_NOINTERFACE), `CoTaskMemFree`, `PropVariantClear`.
+      - `GDI32.dll`: Cung cấp `GetDeviceCaps` (độ phân giải 1920x1080, 32-bit màu, 96 DPI), `GetStockObject`.
+      - `WINMM.dll`: Cung cấp bộ đếm độ chính xác cao `timeBeginPeriod`, `timeEndPeriod`, và `PlaySoundA`.
+      - Hardware Identification: Cung cấp `GetAdaptersInfo`, `Netbios`, `PropVariantToInt64` phục vụ việc xác thực hệ thống.
 - **`dinput_bridge.cpp`**:
   - Đóng vai trò cầu nối xử lý thiết bị nhập liệu (Keyboard, Mouse, Gamepad) theo chuẩn COM DirectInput 8:
     - Bắt chặn hàm khởi tạo `DirectInput8Create` từ `DINPUT8.dll`.

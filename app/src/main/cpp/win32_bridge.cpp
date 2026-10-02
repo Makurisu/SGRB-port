@@ -21,10 +21,24 @@
 #include <errno.h>
 #include <sched.h>
 #include <uchar.h>
+#include <sys/syscall.h>
+
+#if defined(__x86_64__)
+#ifndef SYS_arch_prctl
+#define SYS_arch_prctl 158
+#endif
+#ifndef ARCH_SET_GS
+#define ARCH_SET_GS 0x1001
+#endif
+#ifndef ARCH_GET_GS
+#define ARCH_GET_GS 0x1004
+#endif
+#endif
 
 #define LOG_TAG "SGRE_Win32Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
 
@@ -39,8 +53,94 @@ static void* const DUMMY_MODULE = reinterpret_cast<void*>(0x20002000);
 static void* const DUMMY_WINDOW = reinterpret_cast<void*>(0x30003000);
 static void* const DUMMY_DC = reinterpret_cast<void*>(0x40004000);
 
-// Biến lưu ImageBase thực tế trong RAM
+// Biến lưu ImageBase thực tế trong RAM và TLS info
 static void* gLoadedImageBase = nullptr;
+static uint32_t gTlsRva = 0;
+static uint64_t gOriginalImageBase = 0;
+
+} // namespace
+
+extern "C" void Win32Bridge_SetTlsInfo(uint32_t tlsRva, uint64_t origImageBase) {
+    gTlsRva = tlsRva;
+    gOriginalImageBase = origImageBase;
+}
+
+extern "C" bool Win32Bridge_SetupCurrentThreadTEB() {
+#if defined(__x86_64__)
+    void* memory = mmap(nullptr, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (memory == MAP_FAILED) {
+        LOGE("Không thể mmap bộ nhớ cho Windows TEB/PEB: errno=%d", errno);
+        return false;
+    }
+    memset(memory, 0, 65536);
+
+    uint8_t* teb = static_cast<uint8_t*>(memory);
+    uint8_t* peb = teb + 8192;
+    uint8_t* params = peb + 4096;
+    uint64_t* tlsArray = reinterpret_cast<uint64_t*>(params + 4096);
+    uint8_t* tlsData = reinterpret_cast<uint8_t*>(tlsArray + 128);
+
+    *reinterpret_cast<uint64_t*>(teb + 0x30) = reinterpret_cast<uint64_t>(teb);
+    *reinterpret_cast<uint64_t*>(teb + 0x40) = static_cast<uint64_t>(getpid());
+    *reinterpret_cast<uint64_t*>(teb + 0x48) = static_cast<uint64_t>(pthread_self());
+    *reinterpret_cast<uint64_t*>(teb + 0x58) = reinterpret_cast<uint64_t>(tlsArray);
+    *reinterpret_cast<uint64_t*>(teb + 0x60) = reinterpret_cast<uint64_t>(peb);
+
+    tlsArray[0] = reinterpret_cast<uint64_t>(tlsData);
+
+    if (gTlsRva != 0 && gLoadedImageBase != nullptr) {
+        uint8_t* basePtr = static_cast<uint8_t*>(gLoadedImageBase);
+        struct ImageTlsDirectory64 {
+            uint64_t startAddressOfRawData;
+            uint64_t endAddressOfRawData;
+            uint64_t addressOfIndex;
+            uint64_t addressOfCallBacks;
+            uint32_t sizeOfZeroFill;
+            uint32_t characteristics;
+        };
+        auto* tlsDir = reinterpret_cast<ImageTlsDirectory64*>(basePtr + gTlsRva);
+        int64_t delta = reinterpret_cast<intptr_t>(gLoadedImageBase) - static_cast<int64_t>(gOriginalImageBase);
+
+        if (tlsDir->addressOfIndex != 0) {
+            uint32_t* pIndex = reinterpret_cast<uint32_t*>(tlsDir->addressOfIndex);
+            if (reinterpret_cast<uintptr_t>(pIndex) < reinterpret_cast<uintptr_t>(gLoadedImageBase)) {
+                pIndex = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(pIndex) + delta);
+            }
+            *pIndex = 0;
+        }
+
+        if (tlsDir->startAddressOfRawData != 0 && tlsDir->endAddressOfRawData > tlsDir->startAddressOfRawData) {
+            uint8_t* rawStart = reinterpret_cast<uint8_t*>(tlsDir->startAddressOfRawData);
+            uint8_t* rawEnd = reinterpret_cast<uint8_t*>(tlsDir->endAddressOfRawData);
+            if (reinterpret_cast<uintptr_t>(rawStart) < reinterpret_cast<uintptr_t>(gLoadedImageBase)) {
+                rawStart += delta;
+                rawEnd += delta;
+            }
+            size_t rawSize = rawEnd - rawStart;
+            if (rawSize < 32768) {
+                memcpy(tlsData, rawStart, rawSize);
+            }
+        }
+    }
+
+    *reinterpret_cast<uint64_t*>(peb + 0x10) = reinterpret_cast<uint64_t>(gLoadedImageBase);
+    *reinterpret_cast<uint64_t*>(peb + 0x20) = reinterpret_cast<uint64_t>(params);
+    *reinterpret_cast<uint32_t*>(params + 0x00) = 4096;
+    *reinterpret_cast<uint32_t*>(params + 0x04) = 512;
+    *reinterpret_cast<uint32_t*>(params + 0x08) = 0x00000001;
+
+    long ret = syscall(SYS_arch_prctl, ARCH_SET_GS, teb);
+    if (ret != 0) {
+        LOGE("syscall(SYS_arch_prctl, ARCH_SET_GS) thất bại: ret=%ld, errno=%d", ret, errno);
+        return false;
+    }
+    return true;
+#else
+    return true;
+#endif
+}
+
+namespace {
 
 // Generic fallback stub cho các hàm chưa dùng tới
 int64_t WINAPI stub_GenericSuccess() { return 0; } // S_OK hoặc return 0 / NULL
@@ -327,6 +427,102 @@ int32_t WINAPI stub_ReleaseSemaphore(void*, int32_t, int32_t*) { return 1; }
 uint32_t WINAPI stub_WaitForSingleObject(void*, uint32_t) { return 0; }
 uint32_t WINAPI stub_WaitForSingleObjectEx(void*, uint32_t, int32_t) { return 0; }
 int32_t WINAPI stub_SwitchToThread() { sched_yield(); return 1; }
+
+// Win32 Threading Subsystem
+struct Win32ThreadInfo {
+    pthread_t pth;
+    uint32_t threadId;
+    uint32_t (*startRoutine)(void*);
+    void* param;
+    uint32_t exitCode;
+    bool finished;
+};
+
+static std::mutex gThreadMutex;
+static std::unordered_map<uintptr_t, Win32ThreadInfo*> gThreadMap;
+static uint32_t gNextThreadId = 1000;
+static uintptr_t gNextThreadHandle = 0x20000;
+
+static void* win32ThreadTrampoline(void* arg) {
+    auto* info = static_cast<Win32ThreadInfo*>(arg);
+    Win32Bridge_SetupCurrentThreadTEB();
+    LOGI("Win32 Worker Thread %u bắt đầu thực thi startRoutine=%p", info->threadId, info->startRoutine);
+    if (info->startRoutine) {
+        info->exitCode = info->startRoutine(info->param);
+    }
+    info->finished = true;
+    LOGI("Win32 Worker Thread %u kết thúc với exitCode=%u", info->threadId, info->exitCode);
+    return nullptr;
+}
+
+void* WINAPI stub_CreateThread(
+    void*,
+    size_t dwStackSize,
+    uint32_t (*lpStartAddress)(void*),
+    void* lpParameter,
+    uint32_t,
+    uint32_t* lpThreadId
+) {
+    auto* info = new Win32ThreadInfo();
+    uint32_t tid = 0;
+    uintptr_t hThread = 0;
+    {
+        std::lock_guard<std::mutex> lock(gThreadMutex);
+        tid = ++gNextThreadId;
+        hThread = ++gNextThreadHandle;
+        info->threadId = tid;
+        info->startRoutine = lpStartAddress;
+        info->param = lpParameter;
+        info->exitCode = 0x103; // STILL_ACTIVE
+        info->finished = false;
+        gThreadMap[hThread] = info;
+    }
+    if (lpThreadId) *lpThreadId = tid;
+
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    size_t stackSize = (dwStackSize > 0) ? std::max<size_t>(dwStackSize, 1024 * 1024) : (2 * 1024 * 1024);
+    pthread_attr_setstacksize(&attr, stackSize);
+
+    int ret = pthread_create(&info->pth, &attr, win32ThreadTrampoline, info);
+    pthread_attr_destroy(&attr);
+
+    if (ret != 0) {
+        LOGE("stub_CreateThread: pthread_create thất bại! errno=%d", ret);
+        delete info;
+        return nullptr;
+    }
+
+    LOGI("stub_CreateThread: Khởi tạo Win32 Thread Handle=%p, ThreadID=%u, StartAddress=%p",
+         reinterpret_cast<void*>(hThread), tid, lpStartAddress);
+    return reinterpret_cast<void*>(hThread);
+}
+
+uint32_t WINAPI stub_ResumeThread(void*) { return 0; }
+int32_t WINAPI stub_SetThreadPriority(void*, int32_t) { return 1; }
+uint32_t WINAPI stub_SetThreadIdealProcessor(void*, uint32_t) { return 0; }
+
+int32_t WINAPI stub_GetExitCodeThread(void* hThread, uint32_t* lpExitCode) {
+    if (!lpExitCode) return 0;
+    std::lock_guard<std::mutex> lock(gThreadMutex);
+    auto it = gThreadMap.find(reinterpret_cast<uintptr_t>(hThread));
+    if (it != gThreadMap.end()) {
+        *lpExitCode = it->second->finished ? it->second->exitCode : 0x103;
+        return 1;
+    }
+    *lpExitCode = 0;
+    return 1;
+}
+
+int32_t WINAPI stub_TerminateThread(void*, uint32_t) { return 1; }
+void WINAPI stub_ExitThread(uint32_t) { pthread_exit(nullptr); }
+void WINAPI stub_FreeLibraryAndExitThread(void*, uint32_t) { pthread_exit(nullptr); }
+
+int32_t WINAPI stub_GetProcessAffinityMask(void*, uint64_t* lpProcessAffinityMask, uint64_t* lpSystemAffinityMask) {
+    if (lpProcessAffinityMask) *lpProcessAffinityMask = 0xF;
+    if (lpSystemAffinityMask) *lpSystemAffinityMask = 0xF;
+    return 1;
+}
 
 // Console & Standard Handles
 void* WINAPI stub_GetStdHandle(uint32_t nStdHandle) {
@@ -1388,8 +1584,28 @@ int32_t WINAPI stub_PeekMessageA(void* lpMsg, void*, uint32_t, uint32_t, uint32_
 }
 
 int32_t WINAPI stub_TranslateMessage(const void*) { return 1; }
-int64_t WINAPI stub_DispatchMessageA(const void*) { return 0; }
-int64_t WINAPI stub_DefWindowProcA(void*, uint32_t, uint64_t, int64_t) { return 0; }
+
+// Game Window Procedure pointer capture
+using Win32WndProc = int64_t (WINAPI *)(void* hwnd, uint32_t msg, uint64_t wParam, int64_t lParam);
+static Win32WndProc gGameWndProc = nullptr;
+
+int64_t WINAPI stub_DispatchMessageA(const void* lpMsg) {
+    if (!lpMsg) return 0;
+    const auto* msg = reinterpret_cast<const Win32Msg*>(lpMsg);
+    if (gGameWndProc) {
+        return gGameWndProc(msg->hwnd, msg->message, msg->wParam, msg->lParam);
+    }
+    return 0;
+}
+
+int64_t WINAPI stub_DefWindowProcA(void*, uint32_t msg, uint64_t, int64_t) {
+    switch (msg) {
+        case 0x0084: return 1; // WM_NCHITTEST -> HTCLIENT
+        case 0x0020: return 1; // WM_SETCURSOR -> TRUE
+        default: return 0;
+    }
+}
+
 void WINAPI stub_PostQuitMessage(int32_t) {}
 
 // Window state & focus lifecycle
@@ -1414,7 +1630,33 @@ int32_t WINAPI stub_ShowCursor(int32_t) { return 0; }
 void* WINAPI stub_SetCursor(void*) { return nullptr; }
 void* WINAPI stub_LoadCursorA(void*, const char*) { return reinterpret_cast<void*>(0x1234); }
 void* WINAPI stub_LoadIconA(void*, const char*) { return reinterpret_cast<void*>(0x5678); }
-uint16_t WINAPI stub_RegisterClassExA(const void*) { return 0x1234; }
+
+uint16_t WINAPI stub_RegisterClassExA(const void* lpwcx) {
+    if (lpwcx) {
+        struct Win32WndClassExA {
+            uint32_t cbSize;
+            uint32_t style;
+            Win32WndProc lpfnWndProc;
+            int32_t cbClsExtra;
+            int32_t cbWndExtra;
+            void* hInstance;
+            void* hIcon;
+            void* hCursor;
+            void* hbrBackground;
+            const char* lpszMenuName;
+            const char* lpszClassName;
+            void* hIconSm;
+        };
+        const auto* wcx = reinterpret_cast<const Win32WndClassExA*>(lpwcx);
+        if (wcx->lpfnWndProc) {
+            gGameWndProc = wcx->lpfnWndProc;
+            LOGI("stub_RegisterClassExA: Ghi nhận Game WndProc=%p, ClassName='%s'",
+                 gGameWndProc, wcx->lpszClassName ? wcx->lpszClassName : "");
+        }
+    }
+    return 0x1234;
+}
+
 int32_t WINAPI stub_AdjustWindowRectEx(void*, uint32_t, int32_t, uint32_t) { return 1; }
 int32_t WINAPI stub_SystemParametersInfoA(uint32_t, uint32_t, void*, uint32_t) { return 1; }
 void* WINAPI stub_MonitorFromWindow(void*, uint32_t) { return reinterpret_cast<void*>(0x9999); }
@@ -1484,6 +1726,171 @@ uint32_t WINAPI stub_GetDlgItemTextW(void*, int32_t, char16_t* lpString, int32_t
 }
 int64_t WINAPI stub_SendMessageW(void*, uint32_t, uint64_t, int64_t) { return 0; }
 int64_t WINAPI stub_DialogBoxParamW(void*, const char16_t*, void*, void*, int64_t) { return 1; }
+
+uint32_t WINAPI stub_GetWindowThreadProcessId(void*, uint32_t* lpdwProcessId) {
+    if (lpdwProcessId) *lpdwProcessId = static_cast<uint32_t>(getpid());
+    return static_cast<uint32_t>(pthread_self());
+}
+intptr_t WINAPI stub_SetClassLongPtrA(void*, int32_t, intptr_t) { return 0; }
+void* WINAPI stub_FindWindowA(const char*, const char*) { return DUMMY_WINDOW; }
+int32_t WINAPI stub_SetPropA(void*, const char*, void*) { return 1; }
+void* WINAPI stub_GetPropA(void*, const char*) { return nullptr; }
+void* WINAPI stub_RemovePropA(void*, const char*) { return nullptr; }
+int32_t WINAPI stub_EnumDisplayMonitors(void*, void*, int32_t (WINAPI *lpfnEnum)(void*, void*, void*, int64_t), int64_t lParam) {
+    if (lpfnEnum) {
+        lpfnEnum(reinterpret_cast<void*>(0x9999), nullptr, nullptr, lParam);
+    }
+    return 1;
+}
+void* WINAPI stub_MonitorFromRect(const void*, uint32_t) { return reinterpret_cast<void*>(0x9999); }
+
+// GDI32 Subsystem
+int32_t WINAPI stub_GetDeviceCaps(void*, int32_t nIndex) {
+    switch (nIndex) {
+        case 8: return 1920;  // HORZRES
+        case 10: return 1080; // VERTRES
+        case 12: return 32;   // BITSPIXEL
+        case 14: return 1;    // PLANES
+        case 88: return 96;   // LOGPIXELSX
+        case 90: return 96;   // LOGPIXELSY
+        default: return 1;
+    }
+}
+void* WINAPI stub_GetStockObject(int32_t) { return reinterpret_cast<void*>(0x8888); }
+
+// WINMM Subsystem
+uint32_t WINAPI stub_timeBeginPeriod(uint32_t) { return 0; }
+uint32_t WINAPI stub_timeEndPeriod(uint32_t) { return 0; }
+int32_t WINAPI stub_PlaySoundA(const char*, void*, uint32_t) { return 1; }
+
+// OLE32 Subsystem
+int32_t WINAPI stub_CoInitializeEx(void*, uint32_t) { return 0; } // S_OK
+void WINAPI stub_CoUninitialize() {}
+int32_t WINAPI stub_CoCreateGuid(void* pguid) {
+    if (pguid) {
+        static uint32_t seed = 0xABCDEF01;
+        seed += 13;
+        memset(pguid, static_cast<int>(seed & 0xFF), 16);
+    }
+    return 0; // S_OK
+}
+int32_t WINAPI stub_CoCreateInstance(const void*, void*, uint32_t, const void*, void** ppv) {
+    if (ppv) *ppv = nullptr;
+    return static_cast<int32_t>(0x80004002); // E_NOINTERFACE
+}
+void WINAPI stub_CoTaskMemFree(void* ptr) { if (ptr) free(ptr); }
+int32_t WINAPI stub_PropVariantClear(void* pvar) {
+    if (pvar) memset(pvar, 0, 24);
+    return 0;
+}
+
+// ADVAPI32 Crypto Subsystem
+int32_t WINAPI stub_CryptAcquireContextA(void** phProv, const char*, const char*, uint32_t, uint32_t) {
+    if (phProv) *phProv = reinterpret_cast<void*>(0x70001);
+    return 1;
+}
+int32_t WINAPI stub_CryptReleaseContext(void*, uint32_t) { return 1; }
+int32_t WINAPI stub_CryptImportKey(void*, const void*, uint32_t, void*, uint32_t, void** phKey) {
+    if (phKey) *phKey = reinterpret_cast<void*>(0x70002);
+    return 1;
+}
+int32_t WINAPI stub_CryptSetKeyParam(void*, uint32_t, const void*, uint32_t) { return 1; }
+int32_t WINAPI stub_CryptEncrypt(void*, void*, int32_t, uint32_t, uint8_t*, uint32_t*, uint32_t) { return 1; }
+int32_t WINAPI stub_CryptDecrypt(void*, void*, int32_t, uint32_t, uint8_t*, uint32_t*) { return 1; }
+int32_t WINAPI stub_CryptDestroyKey(void*) { return 1; }
+int32_t WINAPI stub_CryptDestroyHash(void*) { return 1; }
+
+// KERNEL32 Misc & Locale
+int32_t WINAPI stub_GetCPInfo(uint32_t, void* lpCPInfo) {
+    if (lpCPInfo) {
+        struct CPINFO {
+            uint32_t MaxCharSize;
+            uint8_t DefaultChar[2];
+            uint8_t LeadByte[12];
+        };
+        auto* cp = reinterpret_cast<CPINFO*>(lpCPInfo);
+        cp->MaxCharSize = 2;
+    }
+    return 1;
+}
+int32_t WINAPI stub_GetLocaleInfoW(uint32_t, uint32_t, char16_t* lpLCData, int32_t cchData) {
+    if (lpLCData && cchData > 0) lpLCData[0] = 0;
+    return 1;
+}
+uint32_t WINAPI stub_GetUserDefaultLCID() { return 0x0409; }
+int32_t WINAPI stub_IsValidLocale(uint32_t, uint32_t) { return 1; }
+int32_t WINAPI stub_EnumSystemLocalesW(void*, uint32_t) { return 1; }
+int32_t WINAPI stub_CompareStringW(uint32_t, uint32_t, const char16_t* lpStr1, int32_t cch1, const char16_t* lpStr2, int32_t cch2) {
+    if (!lpStr1 || !lpStr2) return 2; // CSTR_EQUAL
+    size_t len1 = cch1 >= 0 ? cch1 : utf16Len(lpStr1);
+    size_t len2 = cch2 >= 0 ? cch2 : utf16Len(lpStr2);
+    size_t minLen = std::min(len1, len2);
+    for (size_t i = 0; i < minLen; ++i) {
+        if (lpStr1[i] < lpStr2[i]) return 1; // CSTR_LESS_THAN
+        if (lpStr1[i] > lpStr2[i]) return 3; // CSTR_GREATER_THAN
+    }
+    if (len1 < len2) return 1;
+    if (len1 > len2) return 3;
+    return 2; // CSTR_EQUAL
+}
+int32_t WINAPI stub_LCMapStringW(uint32_t, uint32_t, const char16_t*, int32_t cchSrc, char16_t* lpDestStr, int32_t cchDest) {
+    if (cchDest > 0 && lpDestStr) lpDestStr[0] = 0;
+    return cchSrc > 0 ? cchSrc : 1;
+}
+int32_t WINAPI stub_LCMapStringEx(const char16_t*, uint32_t, const char16_t*, int32_t cchSrc, char16_t* lpDestStr, int32_t cchDest, void*, void*, intptr_t) {
+    if (cchDest > 0 && lpDestStr) lpDestStr[0] = 0;
+    return cchSrc > 0 ? cchSrc : 1;
+}
+int32_t WINAPI stub_GetStringTypeW(uint32_t, const char16_t*, int32_t cchSrc, uint16_t* lpCharType) {
+    if (lpCharType && cchSrc > 0) {
+        for (int32_t i = 0; i < cchSrc; ++i) lpCharType[i] = 0x0008; // C1_ALPHA
+    }
+    return 1;
+}
+uint32_t WINAPI stub_GetTimeZoneInformation(void* lpTimeZoneInformation) {
+    if (lpTimeZoneInformation) memset(lpTimeZoneInformation, 0, 172);
+    return 0; // TIME_ZONE_ID_UNKNOWN
+}
+int32_t WINAPI stub_GetVersionExA(void* lpVersionInformation) {
+    if (lpVersionInformation) {
+        struct OSVERSIONINFOA {
+            uint32_t dwOSVersionInfoSize;
+            uint32_t dwMajorVersion;
+            uint32_t dwMinorVersion;
+            uint32_t dwBuildNumber;
+            uint32_t dwPlatformId;
+            char szCSDVersion[128];
+        };
+        auto* vi = reinterpret_cast<OSVERSIONINFOA*>(lpVersionInformation);
+        vi->dwMajorVersion = 10;
+        vi->dwMinorVersion = 0;
+        vi->dwBuildNumber = 19045;
+        vi->dwPlatformId = 2; // VER_PLATFORM_WIN32_NT
+        vi->szCSDVersion[0] = '\0';
+    }
+    return 1;
+}
+int32_t WINAPI stub_SetEnvironmentVariableW(const char16_t*, const char16_t*) { return 1; }
+uint32_t WINAPI stub_FormatMessageA(uint32_t, const void*, uint32_t, uint32_t, char* lpBuffer, uint32_t nSize, void*) {
+    if (lpBuffer && nSize > 0) lpBuffer[0] = '\0';
+    return 0;
+}
+void* WINAPI stub_FindResourceA(void*, const char*, const char*) { return reinterpret_cast<void*>(0x3001); }
+void* WINAPI stub_LoadResource(void*, void*) { return reinterpret_cast<void*>(0x3002); }
+void* WINAPI stub_LockResource(void*) { return reinterpret_cast<void*>(0x3003); }
+uint32_t WINAPI stub_SizeofResource(void*, void*) { return 0; }
+int32_t WINAPI stub_FreeResource(void*) { return 1; }
+
+// Network & Hardware Identification Stubs
+int32_t WINAPI stub_GetAdaptersInfo(void*, uint32_t* pOutBufLen) {
+    if (pOutBufLen) *pOutBufLen = 0;
+    return 232; // ERROR_NO_DATA
+}
+int8_t WINAPI stub_Netbios(void*) { return 0x23; }
+int32_t WINAPI stub_PropVariantToInt64(const void*, int64_t* pret) {
+    if (pret) *pret = 0;
+    return 0; // S_OK
+}
 
 // Bảng ánh xạ hàm API
 static std::unordered_map<std::string, void*> gFunctionMap;
@@ -1739,6 +2146,79 @@ void Win32Bridge_Init() {
     // XAudio2 Audio Subsystem Registration
     gFunctionMap["XAudio2Create"] = reinterpret_cast<void*>(&XAudio2Create);
 
+    // Threading Registration
+    gFunctionMap["CreateThread"] = reinterpret_cast<void*>(&stub_CreateThread);
+    gFunctionMap["ResumeThread"] = reinterpret_cast<void*>(&stub_ResumeThread);
+    gFunctionMap["SetThreadPriority"] = reinterpret_cast<void*>(&stub_SetThreadPriority);
+    gFunctionMap["SetThreadIdealProcessor"] = reinterpret_cast<void*>(&stub_SetThreadIdealProcessor);
+    gFunctionMap["GetExitCodeThread"] = reinterpret_cast<void*>(&stub_GetExitCodeThread);
+    gFunctionMap["TerminateThread"] = reinterpret_cast<void*>(&stub_TerminateThread);
+    gFunctionMap["ExitThread"] = reinterpret_cast<void*>(&stub_ExitThread);
+    gFunctionMap["FreeLibraryAndExitThread"] = reinterpret_cast<void*>(&stub_FreeLibraryAndExitThread);
+    gFunctionMap["GetProcessAffinityMask"] = reinterpret_cast<void*>(&stub_GetProcessAffinityMask);
+
+    // ADVAPI32 Crypto Registration
+    gFunctionMap["CryptAcquireContextA"] = reinterpret_cast<void*>(&stub_CryptAcquireContextA);
+    gFunctionMap["CryptReleaseContext"] = reinterpret_cast<void*>(&stub_CryptReleaseContext);
+    gFunctionMap["CryptImportKey"] = reinterpret_cast<void*>(&stub_CryptImportKey);
+    gFunctionMap["CryptSetKeyParam"] = reinterpret_cast<void*>(&stub_CryptSetKeyParam);
+    gFunctionMap["CryptEncrypt"] = reinterpret_cast<void*>(&stub_CryptEncrypt);
+    gFunctionMap["CryptDecrypt"] = reinterpret_cast<void*>(&stub_CryptDecrypt);
+    gFunctionMap["CryptDestroyKey"] = reinterpret_cast<void*>(&stub_CryptDestroyKey);
+    gFunctionMap["CryptDestroyHash"] = reinterpret_cast<void*>(&stub_CryptDestroyHash);
+
+    // GDI32 Registration
+    gFunctionMap["GetDeviceCaps"] = reinterpret_cast<void*>(&stub_GetDeviceCaps);
+    gFunctionMap["GetStockObject"] = reinterpret_cast<void*>(&stub_GetStockObject);
+
+    // WINMM Registration
+    gFunctionMap["timeBeginPeriod"] = reinterpret_cast<void*>(&stub_timeBeginPeriod);
+    gFunctionMap["timeEndPeriod"] = reinterpret_cast<void*>(&stub_timeEndPeriod);
+    gFunctionMap["PlaySoundA"] = reinterpret_cast<void*>(&stub_PlaySoundA);
+
+    // OLE32 Registration
+    gFunctionMap["CoInitializeEx"] = reinterpret_cast<void*>(&stub_CoInitializeEx);
+    gFunctionMap["CoUninitialize"] = reinterpret_cast<void*>(&stub_CoUninitialize);
+    gFunctionMap["CoCreateGuid"] = reinterpret_cast<void*>(&stub_CoCreateGuid);
+    gFunctionMap["CoCreateInstance"] = reinterpret_cast<void*>(&stub_CoCreateInstance);
+    gFunctionMap["CoTaskMemFree"] = reinterpret_cast<void*>(&stub_CoTaskMemFree);
+    gFunctionMap["PropVariantClear"] = reinterpret_cast<void*>(&stub_PropVariantClear);
+
+    // KERNEL32 Misc, Resource & Locale Registration
+    gFunctionMap["GetCPInfo"] = reinterpret_cast<void*>(&stub_GetCPInfo);
+    gFunctionMap["GetLocaleInfoW"] = reinterpret_cast<void*>(&stub_GetLocaleInfoW);
+    gFunctionMap["GetUserDefaultLCID"] = reinterpret_cast<void*>(&stub_GetUserDefaultLCID);
+    gFunctionMap["IsValidLocale"] = reinterpret_cast<void*>(&stub_IsValidLocale);
+    gFunctionMap["EnumSystemLocalesW"] = reinterpret_cast<void*>(&stub_EnumSystemLocalesW);
+    gFunctionMap["CompareStringW"] = reinterpret_cast<void*>(&stub_CompareStringW);
+    gFunctionMap["LCMapStringW"] = reinterpret_cast<void*>(&stub_LCMapStringW);
+    gFunctionMap["LCMapStringEx"] = reinterpret_cast<void*>(&stub_LCMapStringEx);
+    gFunctionMap["GetStringTypeW"] = reinterpret_cast<void*>(&stub_GetStringTypeW);
+    gFunctionMap["GetTimeZoneInformation"] = reinterpret_cast<void*>(&stub_GetTimeZoneInformation);
+    gFunctionMap["GetVersionExA"] = reinterpret_cast<void*>(&stub_GetVersionExA);
+    gFunctionMap["SetEnvironmentVariableW"] = reinterpret_cast<void*>(&stub_SetEnvironmentVariableW);
+    gFunctionMap["FormatMessageA"] = reinterpret_cast<void*>(&stub_FormatMessageA);
+    gFunctionMap["FindResourceA"] = reinterpret_cast<void*>(&stub_FindResourceA);
+    gFunctionMap["LoadResource"] = reinterpret_cast<void*>(&stub_LoadResource);
+    gFunctionMap["LockResource"] = reinterpret_cast<void*>(&stub_LockResource);
+    gFunctionMap["SizeofResource"] = reinterpret_cast<void*>(&stub_SizeofResource);
+    gFunctionMap["FreeResource"] = reinterpret_cast<void*>(&stub_FreeResource);
+
+    // USER32 Window Properties, Monitors & Thread Process ID Registration
+    gFunctionMap["GetWindowThreadProcessId"] = reinterpret_cast<void*>(&stub_GetWindowThreadProcessId);
+    gFunctionMap["SetClassLongPtrA"] = reinterpret_cast<void*>(&stub_SetClassLongPtrA);
+    gFunctionMap["FindWindowA"] = reinterpret_cast<void*>(&stub_FindWindowA);
+    gFunctionMap["SetPropA"] = reinterpret_cast<void*>(&stub_SetPropA);
+    gFunctionMap["GetPropA"] = reinterpret_cast<void*>(&stub_GetPropA);
+    gFunctionMap["RemovePropA"] = reinterpret_cast<void*>(&stub_RemovePropA);
+    gFunctionMap["EnumDisplayMonitors"] = reinterpret_cast<void*>(&stub_EnumDisplayMonitors);
+    gFunctionMap["MonitorFromRect"] = reinterpret_cast<void*>(&stub_MonitorFromRect);
+
+    // Network & Hardware Identification Registration
+    gFunctionMap["GetAdaptersInfo"] = reinterpret_cast<void*>(&stub_GetAdaptersInfo);
+    gFunctionMap["Netbios"] = reinterpret_cast<void*>(&stub_Netbios);
+    gFunctionMap["PropVariantToInt64"] = reinterpret_cast<void*>(&stub_PropVariantToInt64);
+
     LOGI("Bảng Win32 Bridge đã khởi tạo thành công %zu hàm stub native!", gFunctionMap.size());
 }
 
@@ -1759,7 +2239,9 @@ void* Win32Bridge_ResolveSymbol(const char* dllName, const char* funcName) {
         return nullptr;
     }
 
-    // Fallback cho IAT resolving tĩnh: Trả về stub_GenericSuccess để tránh crash null-pointer dereference
+    // Fallback cho IAT resolving tĩnh: Cảnh báo và trả về stub_GenericSuccess để tránh crash null-pointer
+    LOGW("Win32Bridge_ResolveSymbol: CẢNH BÁO: API chưa triển khai: [%s]::%s -> fallback stub_GenericSuccess",
+         dllName, funcName);
     return reinterpret_cast<void*>(&stub_GenericSuccess);
 }
 
