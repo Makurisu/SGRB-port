@@ -6,12 +6,18 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include <cstdlib>
 #include <chrono>
 #include <pthread.h>
 #include <unistd.h>
 #include <mutex>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <errno.h>
 #include <sched.h>
 #include <wchar.h>
 
@@ -336,14 +342,711 @@ int32_t WINAPI stub_ReadConsoleW(void*, void*, uint32_t, uint32_t* lpRead, void*
     return 1;
 }
 
-// File & Path Information
-uint32_t WINAPI stub_GetFileAttributesW(const wchar_t*) { return 0x80; } // FILE_ATTRIBUTE_NORMAL
+// ============================================================================
+// VIRTUAL FILE SYSTEM (VFS) CHO WIN32 FILE I/O
+// ============================================================================
+
+struct Win32FileTime {
+    uint32_t dwLowDateTime;
+    uint32_t dwHighDateTime;
+};
+
+struct Win32ByHandleFileInformation {
+    uint32_t dwFileAttributes;
+    Win32FileTime ftCreationTime;
+    Win32FileTime ftLastAccessTime;
+    Win32FileTime ftLastWriteTime;
+    uint32_t dwVolumeSerialNumber;
+    uint32_t nFileSizeHigh;
+    uint32_t nFileSizeLow;
+    uint32_t nNumberOfLinks;
+    uint32_t nFileIndexHigh;
+    uint32_t nFileIndexLow;
+};
+
+struct Win32FindDataW {
+    uint32_t dwFileAttributes;
+    Win32FileTime ftCreationTime;
+    Win32FileTime ftLastAccessTime;
+    Win32FileTime ftLastWriteTime;
+    uint32_t nFileSizeHigh;
+    uint32_t nFileSizeLow;
+    uint32_t dwReserved0;
+    uint32_t dwReserved1;
+    wchar_t cFileName[260];
+    wchar_t cAlternateFileName[14];
+};
+
+struct Win32FindDataA {
+    uint32_t dwFileAttributes;
+    Win32FileTime ftCreationTime;
+    Win32FileTime ftLastAccessTime;
+    Win32FileTime ftLastWriteTime;
+    uint32_t nFileSizeHigh;
+    uint32_t nFileSizeLow;
+    uint32_t dwReserved0;
+    uint32_t dwReserved1;
+    char cFileName[260];
+    char cAlternateFileName[14];
+};
+
+struct VfsFileHandle {
+    int fd;
+    std::string path;
+    uint32_t accessMode;
+};
+
+struct VfsFindState {
+    DIR* dir;
+    std::string pattern;
+    std::string dirPath;
+};
+
+static std::string gVfsDataDir = "/storage/emulated/0/Android/data/com.makurisu.sgrb/files/data";
+static std::mutex gVfsMutex;
+static std::unordered_map<uintptr_t, VfsFileHandle> gVfsHandles;
+static std::unordered_map<uintptr_t, VfsFindState> gVfsFindStates;
+static uintptr_t gNextHandleId = 0x10000;
+
+void Win32Bridge_SetDataDirectory(const char* dataDir) {
+    if (dataDir && dataDir[0] != '\0') {
+        gVfsDataDir = dataDir;
+        LOGI("Win32Bridge VFS: Gán thư mục dữ liệu gốc = '%s'", gVfsDataDir.c_str());
+    }
+}
+
+static std::string normalizeWinPathW(const wchar_t* wpath) {
+    if (!wpath) return "";
+    std::string s;
+    for (size_t i = 0; wpath[i] != 0; ++i) {
+        wchar_t wc = wpath[i];
+        if (wc == L'\\') s.push_back('/');
+        else if (wc < 128) s.push_back(static_cast<char>(wc));
+        else {
+            s.push_back(static_cast<char>(wc & 0xFF));
+        }
+    }
+    if (s.size() >= 2 && s[1] == ':') {
+        s = s.substr(2);
+    }
+    while (!s.empty() && s[0] == '/') {
+        s = s.substr(1);
+    }
+    return s;
+}
+
+static std::string normalizeWinPathA(const char* apath) {
+    if (!apath) return "";
+    std::string s;
+    for (size_t i = 0; apath[i] != 0; ++i) {
+        char c = apath[i];
+        if (c == '\\') s.push_back('/');
+        else s.push_back(c);
+    }
+    if (s.size() >= 2 && s[1] == ':') {
+        s = s.substr(2);
+    }
+    while (!s.empty() && s[0] == '/') {
+        s = s.substr(1);
+    }
+    return s;
+}
+
+// Tìm kiếm đường dẫn theo cơ chế Case-Insensitive (vì Windows không phân biệt hoa thường, còn Android Linux thì có)
+static std::string resolveCaseInsensitivePath(const std::string& rootDir, const std::string& relPath) {
+    if (relPath.empty()) return rootDir;
+
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start < relPath.size()) {
+        size_t end = relPath.find('/', start);
+        if (end == std::string::npos) end = relPath.size();
+        if (end > start) {
+            std::string part = relPath.substr(start, end - start);
+            if (part != ".") {
+                parts.push_back(part);
+            }
+        }
+        start = end + 1;
+    }
+
+    std::string currentPath = rootDir;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        const std::string& target = parts[i];
+        std::string nextPath = currentPath + "/" + target;
+
+        struct stat st;
+        if (stat(nextPath.c_str(), &st) == 0) {
+            currentPath = nextPath;
+            continue;
+        }
+
+        DIR* dir = opendir(currentPath.c_str());
+        if (!dir) {
+            for (size_t j = i; j < parts.size(); ++j) {
+                currentPath += "/" + parts[j];
+            }
+            return currentPath;
+        }
+
+        bool found = false;
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            if (strcasecmp(entry->d_name, target.c_str()) == 0) {
+                currentPath = currentPath + "/" + entry->d_name;
+                found = true;
+                break;
+            }
+        }
+        closedir(dir);
+
+        if (!found) {
+            for (size_t j = i; j < parts.size(); ++j) {
+                currentPath += "/" + parts[j];
+            }
+            return currentPath;
+        }
+    }
+    return currentPath;
+}
+
+static void ensureParentDirExists(const std::string& filePath) {
+    size_t lastSlash = filePath.rfind('/');
+    if (lastSlash != std::string::npos && lastSlash > 0) {
+        std::string dirPath = filePath.substr(0, lastSlash);
+        size_t pos = 1;
+        while (pos < dirPath.size()) {
+            pos = dirPath.find('/', pos);
+            if (pos == std::string::npos) pos = dirPath.size();
+            std::string sub = dirPath.substr(0, pos);
+            mkdir(sub.c_str(), 0777);
+            pos++;
+        }
+    }
+}
+
+void* WINAPI stub_CreateFileW(
+    const wchar_t* lpFileName,
+    uint32_t dwDesiredAccess,
+    uint32_t /* dwShareMode */,
+    void* /* lpSecurityAttributes */,
+    uint32_t dwCreationDisposition,
+    uint32_t /* dwFlagsAndAttributes */,
+    void* /* hTemplateFile */
+) {
+    if (!lpFileName) return reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+
+    std::string relPath = normalizeWinPathW(lpFileName);
+    std::string fullPath = resolveCaseInsensitivePath(gVfsDataDir, relPath);
+
+    LOGI("CreateFileW: '%ls' -> mapped: '%s', disp=%u, access=0x%X",
+         lpFileName, fullPath.c_str(), dwCreationDisposition, dwDesiredAccess);
+
+    int flags = 0;
+    bool isWrite = (dwDesiredAccess & 0x40000000) != 0;
+    bool isRead = (dwDesiredAccess & 0x80000000) != 0;
+
+    if (isWrite && isRead) flags |= O_RDWR;
+    else if (isWrite) flags |= O_WRONLY;
+    else flags |= O_RDONLY;
+
+    switch (dwCreationDisposition) {
+        case 1: // CREATE_NEW
+            flags |= O_CREAT | O_EXCL;
+            ensureParentDirExists(fullPath);
+            break;
+        case 2: // CREATE_ALWAYS
+            flags |= O_CREAT | O_TRUNC;
+            ensureParentDirExists(fullPath);
+            break;
+        case 3: // OPEN_EXISTING
+            break;
+        case 4: // OPEN_ALWAYS
+            flags |= O_CREAT;
+            ensureParentDirExists(fullPath);
+            break;
+        case 5: // TRUNCATE_EXISTING
+            flags |= O_TRUNC;
+            break;
+    }
+
+    int fd = open(fullPath.c_str(), flags, 0666);
+    if (fd < 0) {
+        LOGW("CreateFileW: Thất bại khi mở file: '%s' (errno=%d: %s)", fullPath.c_str(), errno, strerror(errno));
+        return reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+    }
+
+    std::lock_guard<std::mutex> lock(gVfsMutex);
+    uintptr_t handleId = ++gNextHandleId;
+    gVfsHandles[handleId] = { fd, fullPath, dwDesiredAccess };
+    LOGI("-> Mở file thành công! Handle=%p, fd=%d", reinterpret_cast<void*>(handleId), fd);
+    return reinterpret_cast<void*>(handleId);
+}
+
+void* WINAPI stub_CreateFileA(
+    const char* lpFileName,
+    uint32_t dwDesiredAccess,
+    uint32_t /* dwShareMode */,
+    void* /* lpSecurityAttributes */,
+    uint32_t dwCreationDisposition,
+    uint32_t /* dwFlagsAndAttributes */,
+    void* /* hTemplateFile */
+) {
+    if (!lpFileName) return reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+
+    std::string relPath = normalizeWinPathA(lpFileName);
+    std::string fullPath = resolveCaseInsensitivePath(gVfsDataDir, relPath);
+
+    LOGI("CreateFileA: '%s' -> mapped: '%s', disp=%u, access=0x%X",
+         lpFileName, fullPath.c_str(), dwCreationDisposition, dwDesiredAccess);
+
+    int flags = 0;
+    bool isWrite = (dwDesiredAccess & 0x40000000) != 0;
+    bool isRead = (dwDesiredAccess & 0x80000000) != 0;
+
+    if (isWrite && isRead) flags |= O_RDWR;
+    else if (isWrite) flags |= O_WRONLY;
+    else flags |= O_RDONLY;
+
+    switch (dwCreationDisposition) {
+        case 1:
+            flags |= O_CREAT | O_EXCL;
+            ensureParentDirExists(fullPath);
+            break;
+        case 2:
+            flags |= O_CREAT | O_TRUNC;
+            ensureParentDirExists(fullPath);
+            break;
+        case 3:
+            break;
+        case 4:
+            flags |= O_CREAT;
+            ensureParentDirExists(fullPath);
+            break;
+        case 5:
+            flags |= O_TRUNC;
+            break;
+    }
+
+    int fd = open(fullPath.c_str(), flags, 0666);
+    if (fd < 0) {
+        LOGW("CreateFileA: Thất bại khi mở file: '%s' (errno=%d: %s)", fullPath.c_str(), errno, strerror(errno));
+        return reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+    }
+
+    std::lock_guard<std::mutex> lock(gVfsMutex);
+    uintptr_t handleId = ++gNextHandleId;
+    gVfsHandles[handleId] = { fd, fullPath, dwDesiredAccess };
+    LOGI("-> Mở file thành công! Handle=%p, fd=%d", reinterpret_cast<void*>(handleId), fd);
+    return reinterpret_cast<void*>(handleId);
+}
+
+int32_t WINAPI stub_ReadFile(
+    void* hFile,
+    void* lpBuffer,
+    uint32_t nNumberOfBytesToRead,
+    uint32_t* lpNumberOfBytesRead,
+    void* /* lpOverlapped */
+) {
+    if (!hFile || hFile == reinterpret_cast<void*>(static_cast<intptr_t>(-1)) || !lpBuffer) {
+        if (lpNumberOfBytesRead) *lpNumberOfBytesRead = 0;
+        return 0;
+    }
+
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hFile));
+        if (it != gVfsHandles.end()) fd = it->second.fd;
+    }
+
+    if (fd < 0) {
+        LOGW("ReadFile: Handle không hợp lệ: %p", hFile);
+        if (lpNumberOfBytesRead) *lpNumberOfBytesRead = 0;
+        return 0;
+    }
+
+    ssize_t bytesRead = read(fd, lpBuffer, nNumberOfBytesToRead);
+    if (bytesRead < 0) {
+        LOGW("ReadFile: Lỗi đọc fd=%d (errno=%d)", fd, errno);
+        if (lpNumberOfBytesRead) *lpNumberOfBytesRead = 0;
+        return 0;
+    }
+
+    if (lpNumberOfBytesRead) *lpNumberOfBytesRead = static_cast<uint32_t>(bytesRead);
+    return 1;
+}
+
+int32_t WINAPI stub_WriteFile(
+    void* hFile,
+    const void* lpBuffer,
+    uint32_t nNumberOfBytesToWrite,
+    uint32_t* lpNumberOfBytesWritten,
+    void* /* lpOverlapped */
+) {
+    if (!hFile || hFile == reinterpret_cast<void*>(static_cast<intptr_t>(-1)) || !lpBuffer) {
+        if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = 0;
+        return 0;
+    }
+
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hFile));
+        if (it != gVfsHandles.end()) fd = it->second.fd;
+    }
+
+    if (fd < 0) {
+        if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = 0;
+        return 0;
+    }
+
+    ssize_t bytesWritten = write(fd, lpBuffer, nNumberOfBytesToWrite);
+    if (bytesWritten < 0) {
+        if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = 0;
+        return 0;
+    }
+
+    if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = static_cast<uint32_t>(bytesWritten);
+    return 1;
+}
+
+uint32_t WINAPI stub_SetFilePointer(
+    void* hFile,
+    int32_t lDistanceToMove,
+    int32_t* lpDistanceToMoveHigh,
+    uint32_t dwMoveMethod
+) {
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hFile));
+        if (it != gVfsHandles.end()) fd = it->second.fd;
+    }
+    if (fd < 0) return 0xFFFFFFFF;
+
+    int64_t offset = lDistanceToMove;
+    if (lpDistanceToMoveHigh) {
+        offset |= (static_cast<int64_t>(*lpDistanceToMoveHigh) << 32);
+    }
+
+    int whence = SEEK_SET;
+    if (dwMoveMethod == 1) whence = SEEK_CUR;
+    else if (dwMoveMethod == 2) whence = SEEK_END;
+
+    off64_t res = lseek64(fd, offset, whence);
+    if (res == -1) return 0xFFFFFFFF;
+
+    if (lpDistanceToMoveHigh) {
+        *lpDistanceToMoveHigh = static_cast<int32_t>(res >> 32);
+    }
+    return static_cast<uint32_t>(res & 0xFFFFFFFF);
+}
+
+int32_t WINAPI stub_SetFilePointerEx(
+    void* hFile,
+    int64_t liDistanceToMove,
+    int64_t* lpNewFilePointer,
+    uint32_t dwMoveMethod
+) {
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hFile));
+        if (it != gVfsHandles.end()) fd = it->second.fd;
+    }
+    if (fd < 0) return 0;
+
+    int whence = SEEK_SET;
+    if (dwMoveMethod == 1) whence = SEEK_CUR;
+    else if (dwMoveMethod == 2) whence = SEEK_END;
+
+    off64_t res = lseek64(fd, liDistanceToMove, whence);
+    if (res == -1) return 0;
+
+    if (lpNewFilePointer) *lpNewFilePointer = res;
+    return 1;
+}
+
+uint32_t WINAPI stub_GetFileSize(void* hFile, uint32_t* lpFileSizeHigh) {
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hFile));
+        if (it != gVfsHandles.end()) fd = it->second.fd;
+    }
+    if (fd < 0) return 0xFFFFFFFF;
+
+    struct stat64 st;
+    if (fstat64(fd, &st) != 0) return 0xFFFFFFFF;
+
+    if (lpFileSizeHigh) *lpFileSizeHigh = static_cast<uint32_t>(st.st_size >> 32);
+    return static_cast<uint32_t>(st.st_size & 0xFFFFFFFF);
+}
+
+int32_t WINAPI stub_GetFileSizeEx(void* hFile, int64_t* lpFileSize) {
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hFile));
+        if (it != gVfsHandles.end()) fd = it->second.fd;
+    }
+    if (fd < 0 || !lpFileSize) return 0;
+
+    struct stat64 st;
+    if (fstat64(fd, &st) != 0) return 0;
+
+    *lpFileSize = st.st_size;
+    return 1;
+}
+
+int32_t WINAPI stub_GetFileInformationByHandle(void* hFile, void* lpFileInformation) {
+    if (!hFile || !lpFileInformation) return 0;
+
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hFile));
+        if (it != gVfsHandles.end()) fd = it->second.fd;
+    }
+    if (fd < 0) return 0;
+
+    struct stat64 st;
+    if (fstat64(fd, &st) != 0) return 0;
+
+    auto* info = reinterpret_cast<Win32ByHandleFileInformation*>(lpFileInformation);
+    memset(info, 0, sizeof(Win32ByHandleFileInformation));
+    info->dwFileAttributes = S_ISDIR(st.st_mode) ? 0x10 : 0x80;
+    info->nFileSizeHigh = static_cast<uint32_t>(st.st_size >> 32);
+    info->nFileSizeLow = static_cast<uint32_t>(st.st_size & 0xFFFFFFFF);
+    info->nNumberOfLinks = 1;
+    return 1;
+}
+
+int32_t WINAPI stub_CloseHandle(void* hObject) {
+    if (!hObject || hObject == reinterpret_cast<void*>(static_cast<intptr_t>(-1))) {
+        return 1;
+    }
+
+    std::lock_guard<std::mutex> lock(gVfsMutex);
+    auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hObject));
+    if (it != gVfsHandles.end()) {
+        close(it->second.fd);
+        gVfsHandles.erase(it);
+        return 1;
+    }
+
+    auto fit = gVfsFindStates.find(reinterpret_cast<uintptr_t>(hObject));
+    if (fit != gVfsFindStates.end()) {
+        if (fit->second.dir) closedir(fit->second.dir);
+        gVfsFindStates.erase(fit);
+        return 1;
+    }
+
+    return 1;
+}
+
+uint32_t WINAPI stub_GetFileAttributesW(const wchar_t* lpFileName) {
+    if (!lpFileName) return 0xFFFFFFFF;
+
+    std::string relPath = normalizeWinPathW(lpFileName);
+    std::string fullPath = resolveCaseInsensitivePath(gVfsDataDir, relPath);
+
+    struct stat64 st;
+    if (stat64(fullPath.c_str(), &st) != 0) {
+        LOGI("GetFileAttributesW: Không tìm thấy '%s'", fullPath.c_str());
+        return 0xFFFFFFFF;
+    }
+
+    if (S_ISDIR(st.st_mode)) return 0x10; // FILE_ATTRIBUTE_DIRECTORY
+    return 0x80; // FILE_ATTRIBUTE_NORMAL
+}
+
+uint32_t WINAPI stub_GetFileAttributesA(const char* lpFileName) {
+    if (!lpFileName) return 0xFFFFFFFF;
+
+    std::string relPath = normalizeWinPathA(lpFileName);
+    std::string fullPath = resolveCaseInsensitivePath(gVfsDataDir, relPath);
+
+    struct stat64 st;
+    if (stat64(fullPath.c_str(), &st) != 0) {
+        return 0xFFFFFFFF;
+    }
+
+    if (S_ISDIR(st.st_mode)) return 0x10;
+    return 0x80;
+}
+
+void* WINAPI stub_FindFirstFileW(const wchar_t* lpFileName, void* lpFindFileData) {
+    if (!lpFileName || !lpFindFileData) return reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+
+    std::string normPath = normalizeWinPathW(lpFileName);
+    size_t lastSlash = normPath.rfind('/');
+    std::string dirPart = (lastSlash != std::string::npos) ? normPath.substr(0, lastSlash) : "";
+    std::string patPart = (lastSlash != std::string::npos) ? normPath.substr(lastSlash + 1) : normPath;
+
+    std::string fullDirPath = resolveCaseInsensitivePath(gVfsDataDir, dirPart);
+    DIR* dir = opendir(fullDirPath.c_str());
+    if (!dir) return reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+
+    auto* findData = reinterpret_cast<Win32FindDataW*>(lpFindFileData);
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+
+        bool match = (patPart == "*" || patPart == "*.*");
+        if (!match) {
+            if (patPart.size() > 2 && patPart[0] == '*' && patPart[1] == '.') {
+                std::string ext = patPart.substr(1);
+                std::string name = entry->d_name;
+                if (name.size() >= ext.size() &&
+                    strcasecmp(name.c_str() + name.size() - ext.size(), ext.c_str()) == 0) {
+                    match = true;
+                }
+            } else if (strcasecmp(entry->d_name, patPart.c_str()) == 0) {
+                match = true;
+            }
+        }
+
+        if (match) {
+            memset(findData, 0, sizeof(Win32FindDataW));
+            std::string itemFullPath = fullDirPath + "/" + entry->d_name;
+            struct stat64 st;
+            if (stat64(itemFullPath.c_str(), &st) == 0) {
+                findData->dwFileAttributes = S_ISDIR(st.st_mode) ? 0x10 : 0x80;
+                findData->nFileSizeHigh = static_cast<uint32_t>(st.st_size >> 32);
+                findData->nFileSizeLow = static_cast<uint32_t>(st.st_size & 0xFFFFFFFF);
+            } else {
+                findData->dwFileAttributes = 0x80;
+            }
+            for (size_t k = 0; k < 259 && entry->d_name[k] != 0; ++k) {
+                findData->cFileName[k] = static_cast<wchar_t>(static_cast<uint8_t>(entry->d_name[k]));
+            }
+
+            std::lock_guard<std::mutex> lock(gVfsMutex);
+            uintptr_t findId = ++gNextHandleId;
+            gVfsFindStates[findId] = { dir, patPart, fullDirPath };
+            return reinterpret_cast<void*>(findId);
+        }
+    }
+
+    closedir(dir);
+    return reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+}
+
+int32_t WINAPI stub_FindNextFileW(void* hFindFile, void* lpFindFileData) {
+    if (!hFindFile || !lpFindFileData) return 0;
+
+    DIR* dir = nullptr;
+    std::string patPart;
+    std::string fullDirPath;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsFindStates.find(reinterpret_cast<uintptr_t>(hFindFile));
+        if (it != gVfsFindStates.end()) {
+            dir = it->second.dir;
+            patPart = it->second.pattern;
+            fullDirPath = it->second.dirPath;
+        }
+    }
+    if (!dir) return 0;
+
+    auto* findData = reinterpret_cast<Win32FindDataW*>(lpFindFileData);
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+
+        bool match = (patPart == "*" || patPart == "*.*");
+        if (!match) {
+            if (patPart.size() > 2 && patPart[0] == '*' && patPart[1] == '.') {
+                std::string ext = patPart.substr(1);
+                std::string name = entry->d_name;
+                if (name.size() >= ext.size() &&
+                    strcasecmp(name.c_str() + name.size() - ext.size(), ext.c_str()) == 0) {
+                    match = true;
+                }
+            } else if (strcasecmp(entry->d_name, patPart.c_str()) == 0) {
+                match = true;
+            }
+        }
+
+        if (match) {
+            memset(findData, 0, sizeof(Win32FindDataW));
+            std::string itemFullPath = fullDirPath + "/" + entry->d_name;
+            struct stat64 st;
+            if (stat64(itemFullPath.c_str(), &st) == 0) {
+                findData->dwFileAttributes = S_ISDIR(st.st_mode) ? 0x10 : 0x80;
+                findData->nFileSizeHigh = static_cast<uint32_t>(st.st_size >> 32);
+                findData->nFileSizeLow = static_cast<uint32_t>(st.st_size & 0xFFFFFFFF);
+            } else {
+                findData->dwFileAttributes = 0x80;
+            }
+            for (size_t k = 0; k < 259 && entry->d_name[k] != 0; ++k) {
+                findData->cFileName[k] = static_cast<wchar_t>(static_cast<uint8_t>(entry->d_name[k]));
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int32_t WINAPI stub_FindClose(void* hFindFile) {
+    if (!hFindFile) return 1;
+    std::lock_guard<std::mutex> lock(gVfsMutex);
+    auto it = gVfsFindStates.find(reinterpret_cast<uintptr_t>(hFindFile));
+    if (it != gVfsFindStates.end()) {
+        if (it->second.dir) closedir(it->second.dir);
+        gVfsFindStates.erase(it);
+    }
+    return 1;
+}
+
+int32_t WINAPI stub_FlushFileBuffers(void* hFile) {
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hFile));
+        if (it != gVfsHandles.end()) fd = it->second.fd;
+    }
+    if (fd >= 0) fsync(fd);
+    return 1;
+}
+
+int32_t WINAPI stub_SetEndOfFile(void* hFile) {
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(gVfsMutex);
+        auto it = gVfsHandles.find(reinterpret_cast<uintptr_t>(hFile));
+        if (it != gVfsHandles.end()) fd = it->second.fd;
+    }
+    if (fd >= 0) {
+        off64_t curr = lseek64(fd, 0, SEEK_CUR);
+        if (curr >= 0) ftruncate64(fd, curr);
+    }
+    return 1;
+}
+
+int32_t WINAPI stub_DeleteFileW(const wchar_t* lpFileName) {
+    if (!lpFileName) return 0;
+    std::string relPath = normalizeWinPathW(lpFileName);
+    std::string fullPath = resolveCaseInsensitivePath(gVfsDataDir, relPath);
+    return unlink(fullPath.c_str()) == 0 ? 1 : 0;
+}
+
+int32_t WINAPI stub_DeleteFileA(const char* lpFileName) {
+    if (!lpFileName) return 0;
+    std::string relPath = normalizeWinPathA(lpFileName);
+    std::string fullPath = resolveCaseInsensitivePath(gVfsDataDir, relPath);
+    return unlink(fullPath.c_str()) == 0 ? 1 : 0;
+}
+
 int32_t WINAPI stub_GetCurrentDirectoryW(uint32_t nBufferLength, wchar_t* lpBuffer) {
     if (lpBuffer && nBufferLength > 3) {
         lpBuffer[0] = L'C'; lpBuffer[1] = L':'; lpBuffer[2] = L'\\'; lpBuffer[3] = L'\0';
     }
     return 3;
 }
+
 int32_t WINAPI stub_SetCurrentDirectoryW(const wchar_t*) { return 1; }
 uint32_t WINAPI stub_GetModuleFileNameA(void*, char* lpFilename, uint32_t nSize) {
     if (lpFilename && nSize > 14) {
@@ -699,10 +1402,30 @@ void Win32Bridge_Init() {
 
     // File & Path Information Registration
     gFunctionMap["GetFileAttributesW"] = reinterpret_cast<void*>(&stub_GetFileAttributesW);
+    gFunctionMap["GetFileAttributesA"] = reinterpret_cast<void*>(&stub_GetFileAttributesA);
     gFunctionMap["GetCurrentDirectoryW"] = reinterpret_cast<void*>(&stub_GetCurrentDirectoryW);
     gFunctionMap["SetCurrentDirectoryW"] = reinterpret_cast<void*>(&stub_SetCurrentDirectoryW);
     gFunctionMap["GetModuleFileNameA"] = reinterpret_cast<void*>(&stub_GetModuleFileNameA);
     gFunctionMap["GetModuleFileNameW"] = reinterpret_cast<void*>(&stub_GetModuleFileNameW);
+
+    // Virtual File System (VFS) File Operations Registration
+    gFunctionMap["CreateFileW"] = reinterpret_cast<void*>(&stub_CreateFileW);
+    gFunctionMap["CreateFileA"] = reinterpret_cast<void*>(&stub_CreateFileA);
+    gFunctionMap["ReadFile"] = reinterpret_cast<void*>(&stub_ReadFile);
+    gFunctionMap["WriteFile"] = reinterpret_cast<void*>(&stub_WriteFile);
+    gFunctionMap["SetFilePointer"] = reinterpret_cast<void*>(&stub_SetFilePointer);
+    gFunctionMap["SetFilePointerEx"] = reinterpret_cast<void*>(&stub_SetFilePointerEx);
+    gFunctionMap["GetFileSize"] = reinterpret_cast<void*>(&stub_GetFileSize);
+    gFunctionMap["GetFileSizeEx"] = reinterpret_cast<void*>(&stub_GetFileSizeEx);
+    gFunctionMap["GetFileInformationByHandle"] = reinterpret_cast<void*>(&stub_GetFileInformationByHandle);
+    gFunctionMap["CloseHandle"] = reinterpret_cast<void*>(&stub_CloseHandle);
+    gFunctionMap["FindFirstFileW"] = reinterpret_cast<void*>(&stub_FindFirstFileW);
+    gFunctionMap["FindNextFileW"] = reinterpret_cast<void*>(&stub_FindNextFileW);
+    gFunctionMap["FindClose"] = reinterpret_cast<void*>(&stub_FindClose);
+    gFunctionMap["FlushFileBuffers"] = reinterpret_cast<void*>(&stub_FlushFileBuffers);
+    gFunctionMap["SetEndOfFile"] = reinterpret_cast<void*>(&stub_SetEndOfFile);
+    gFunctionMap["DeleteFileW"] = reinterpret_cast<void*>(&stub_DeleteFileW);
+    gFunctionMap["DeleteFileA"] = reinterpret_cast<void*>(&stub_DeleteFileA);
 
     // Stack & Exception Handling Registration
     gFunctionMap["RtlPcToFileHeader"] = reinterpret_cast<void*>(&stub_RtlPcToFileHeader);

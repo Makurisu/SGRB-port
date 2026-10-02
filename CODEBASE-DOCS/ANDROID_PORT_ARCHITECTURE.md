@@ -99,6 +99,10 @@ sequenceDiagram
     - **Synchronization & Threading**: Cung cấp các nguyên ngữ đồng bộ hoá Windows Event (`CreateEventA`, `SetEvent`), Semaphore (`CreateSemaphore`), SRWLock, Condition Variable, `SwitchToThread` (`sched_yield`).
     - **String & Locale Subsystem**: Chuyển đổi mã ký tự UTF-8/UTF-16 qua `MultiByteToWideChar`, `WideCharToMultiByte`.
     - **CRT & Exception Subsystem**: Hỗ trợ PE ImageBase tracking, `RtlPcToFileHeader`, `IsProcessorFeaturePresent` (vô hiệu hoá `PF_FASTFAIL_AVAILABLE`), TLS/FLS slot management.
+    - **Virtual File System (VFS)**:
+      - Cung cấp lớp trừu tượng file I/O Win32 hoàn chỉnh: `CreateFileW`, `CreateFileA`, `ReadFile`, `WriteFile`, `SetFilePointer`, `SetFilePointerEx`, `GetFileSize`, `GetFileSizeEx`, `GetFileInformationByHandle`, `CloseHandle`, `GetFileAttributesW`, `GetFileAttributesA`, `FindFirstFileW`, `FindNextFileW`, `FindClose`, `FlushFileBuffers`, `SetEndOfFile`, `DeleteFileW`, `DeleteFileA`.
+      - **Case-Insensitive Path Resolution**: Tự động chuẩn hoá đường dẫn Windows (`\`, loại bỏ drive letter `C:`) và quét thư mục đệ quy qua `strcasecmp` để ánh xạ chính xác file assets trên filesystem Linux/Android (ext4/f2fs).
+      - **Thread-safe Handle Management**: Quản lý bảng con trỏ handle an toàn với POSIX file descriptors, phân định rõ ràng giữa file handle, find handle và dummy system handles.
 - **`dinput_bridge.cpp`**:
   - Đóng vai trò cầu nối xử lý thiết bị nhập liệu (Keyboard, Mouse, Gamepad) theo chuẩn COM DirectInput 8:
     - Bắt chặn hàm khởi tạo `DirectInput8Create` từ `DINPUT8.dll`.

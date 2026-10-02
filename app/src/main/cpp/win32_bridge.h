@@ -14,6 +14,9 @@ extern "C" {
 // Thiết lập ImageBase thực tế của binary game trong RAM
 void Win32Bridge_SetLoadedImageBase(void* imageBase);
 
+// Thiết lập đường dẫn thư mục gốc dữ liệu game trên Android
+void Win32Bridge_SetDataDirectory(const char* dataDir);
+
 // Khởi tạo bảng Win32 Stub Table & Universal Function Resolver
 void Win32Bridge_Init();
 

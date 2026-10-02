@@ -128,6 +128,7 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
     }
 
     LOGI("Native Init hoàn tất, data dir: %s", gDataDirectory.c_str());
+    Win32Bridge_SetDataDirectory(gDataDirectory.c_str());
 
     GamePayloadInfo payloadInfo = PayloadLoader::inspectPayload(gDataDirectory);
     if (payloadInfo.isExeValid) {
