@@ -97,12 +97,16 @@ sequenceDiagram
     - **Safe Heap & Memory Management**: Quản lý cấp phát an toàn với bảng theo dõi `gHeapAllocations` và mutex đa luồng, hỗ trợ cờ `HEAP_ZERO_MEMORY`, ngăn chặn crash `SIGSEGV` trong jemalloc khi game hoặc CRT giải phóng con trỏ ngoại vi hoặc unallocated buffer.
     - **Virtual Memory Subsystem**: Giả lập `VirtualAlloc`, `VirtualFree`, `VirtualProtect`, `VirtualQuery` ánh xạ trực tiếp sang Linux `mmap`/`munmap`/`mprotect`.
     - **Synchronization & Threading**: Cung cấp các nguyên ngữ đồng bộ hoá Windows Event (`CreateEventA`, `SetEvent`), Semaphore (`CreateSemaphore`), SRWLock, Condition Variable, `SwitchToThread` (`sched_yield`).
-    - **String & Locale Subsystem**: Chuyển đổi mã ký tự UTF-8/UTF-16 qua `MultiByteToWideChar`, `WideCharToMultiByte`.
+    - **String & Locale Subsystem**: Chuyển đổi mã ký tự UTF-8/UTF-16 qua `MultiByteToWideChar`, `WideCharToMultiByte` với chuẩn `char16_t` (2-byte UTF-16LE của Windows), loại bỏ triệt để lỗi mismatch kích thước `sizeof(wchar_t) == 4` trên Linux/Android NDK gây lỗi nhảy cóc ký tự (corrupted paths).
     - **CRT & Exception Subsystem**: Hỗ trợ PE ImageBase tracking, `RtlPcToFileHeader`, `IsProcessorFeaturePresent` (vô hiệu hoá `PF_FASTFAIL_AVAILABLE`), TLS/FLS slot management.
     - **Virtual File System (VFS)**:
-      - Cung cấp lớp trừu tượng file I/O Win32 hoàn chỉnh: `CreateFileW`, `CreateFileA`, `ReadFile`, `WriteFile`, `SetFilePointer`, `SetFilePointerEx`, `GetFileSize`, `GetFileSizeEx`, `GetFileInformationByHandle`, `CloseHandle`, `GetFileAttributesW`, `GetFileAttributesA`, `FindFirstFileW`, `FindNextFileW`, `FindClose`, `FlushFileBuffers`, `SetEndOfFile`, `DeleteFileW`, `DeleteFileA`.
+      - Cung cấp lớp trừu tượng file I/O Win32 hoàn chỉnh: `CreateFileW`, `CreateFileA`, `ReadFile`, `WriteFile`, `SetFilePointer`, `SetFilePointerEx`, `GetFileSize`, `GetFileSizeEx`, `GetFileInformationByHandle`, `CloseHandle`, `GetFileAttributesW`, `GetFileAttributesA`, `FindFirstFileW`, `FindFirstFileExW`, `FindNextFileW`, `FindClose`, `FlushFileBuffers`, `SetEndOfFile`, `DeleteFileW`, `DeleteFileA`.
+      - **Windows ABI Compatibility**: Cấu trúc `Win32FindDataW` được định nghĩa chính xác với `char16_t` (kích thước chuẩn 592 bytes), ngăn chặn hiện tượng tràn bộ nhớ stack khi game duyệt file.
       - **Case-Insensitive Path Resolution**: Tự động chuẩn hoá đường dẫn Windows (`\`, loại bỏ drive letter `C:`) và quét thư mục đệ quy qua `strcasecmp` để ánh xạ chính xác file assets trên filesystem Linux/Android (ext4/f2fs).
       - **Thread-safe Handle Management**: Quản lý bảng con trỏ handle an toàn với POSIX file descriptors, phân định rõ ràng giữa file handle, find handle và dummy system handles.
+    - **SHELL32 Subsystem**:
+      - Bắt chặn `SHGetSpecialFolderPathW` để điều hướng thư mục Documents / AppData của Windows sang thư mục lưu trữ cục bộ ảo `C:\saves` (ánh xạ trực tiếp vào `data/saves`), tự động tạo thư mục nếu có cờ `fCreate`.
+      - Bắt chặn `SHCreateDirectoryExW` để tạo cấu trúc thư mục lồng nhau an toàn cho save data.
 - **`dinput_bridge.cpp`**:
   - Đóng vai trò cầu nối xử lý thiết bị nhập liệu (Keyboard, Mouse, Gamepad) theo chuẩn COM DirectInput 8:
     - Bắt chặn hàm khởi tạo `DirectInput8Create` từ `DINPUT8.dll`.
