@@ -352,7 +352,7 @@ int32_t SteamInternal_SteamAPI_Init(void* pOutErrMsg, int nOutErrMsgSize);
 void* SteamInternal_FindOrCreateUserInterface(int32_t hSteamUser, const char* pszVersion);
 void SteamAPI_RegisterCallback(void* pCallback, int iCallback);
 void SteamAPI_UnregisterCallback(void* pCallback);
-void SteamInternal_ContextInit(void* pContext);
+void* SteamInternal_ContextInit(void* pContext);
 }
 
 bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& info) {

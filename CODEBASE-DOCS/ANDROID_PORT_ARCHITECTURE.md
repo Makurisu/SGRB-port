@@ -88,9 +88,9 @@ sequenceDiagram
     - `SteamAPI_RestartAppIfNecessary()`: Trả về `false` để ngăn chặn việc game tự restart qua client Steam.
     - `SteamAPI_RunCallbacks()`: Duy trì chu kỳ xử lý sự kiện.
     - `SteamInternal_SteamAPI_Init()`: Xác thực khởi tạo thành công chuẩn `ESteamAPIInitResult` (trả về `0 = k_ESteamAPIInitResult_OK`).
-    - `SteamInternal_FindOrCreateUserInterface()`: Trả về dummy vtable an toàn.
+    - `SteamInternal_FindOrCreateUserInterface(hUser, version)`: Cấp phát mock C++ interface với vtable 64 slots (`gSteamVtable`) trả về con trỏ tới `gMockSteamID` (76561197960287930ULL), hỗ trợ các giao diện `SteamUser023`, `SteamFriends018`, `STEAMAPPS_INTERFACE_VERSION009`.
     - `SteamAPI_RegisterCallback()` & `SteamAPI_UnregisterCallback()`.
-    - `SteamInternal_ContextInit()`.
+    - `SteamInternal_ContextInit(pContextInitData)`: Tự động gọi con trỏ hàm callback `pfnInit(&pInterface)` theo cấu trúc ngữ cảnh của Valve, liên kết interface hợp lệ và trả về `&pInterface` cho caller, ngăn chặn hoàn toàn lỗi crash null-pointer dereference (`SEGV_MAPERR fault addr 0x31`) tại RVA `0x395E46` khi game gọi `SteamUser()->GetSteamID()`.
   - Vượt qua toàn bộ kiểm tra Steam DRM mà không phụ thuộc vào `steam_api64.dll` của Windows.
 - **`win32_bridge.cpp`**:
   - Đóng vai trò hệ thống cầu nối Win32 API / CRT subsystem cho Windows binary chạy trên Android:
