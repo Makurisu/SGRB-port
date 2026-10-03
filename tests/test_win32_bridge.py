@@ -234,6 +234,109 @@ class TestWin32BridgeLogic(unittest.TestCase):
         self.assertFalse(thread_map[h2]["suspended"])
         self.assertEqual(resume_thread(h2), 0) # Đã resume rồi thì trả về 0
 
+    def test_win32_event_synchronization(self):
+        # Giả lập Win32 Event subsystem
+        sync_map = {}
+        WAIT_OBJECT_0 = 0
+        WAIT_TIMEOUT = 0x102
+
+        def create_event(manual_reset, initial_state):
+            handle = 0x50001 + len(sync_map)
+            sync_map[handle] = {
+                "type": "event",
+                "manual_reset": manual_reset,
+                "signaled": initial_state
+            }
+            return handle
+
+        def set_event(h):
+            if h in sync_map and sync_map[h]["type"] == "event":
+                sync_map[h]["signaled"] = True
+                return 1
+            return 0
+
+        def reset_event(h):
+            if h in sync_map and sync_map[h]["type"] == "event":
+                sync_map[h]["signaled"] = False
+                return 1
+            return 0
+
+        def wait_event(h):
+            if h in sync_map and sync_map[h]["type"] == "event":
+                if sync_map[h]["signaled"]:
+                    if not sync_map[h]["manual_reset"]:
+                        sync_map[h]["signaled"] = False # Auto-reset
+                    return WAIT_OBJECT_0
+                return WAIT_TIMEOUT
+            return WAIT_TIMEOUT
+
+        # 1. Auto-reset event
+        h_auto = create_event(manual_reset=False, initial_state=False)
+        self.assertEqual(wait_event(h_auto), WAIT_TIMEOUT) # Chưa signal thì timeout
+
+        set_event(h_auto)
+        self.assertEqual(wait_event(h_auto), WAIT_OBJECT_0) # Nhận tín hiệu thành công
+        self.assertEqual(wait_event(h_auto), WAIT_TIMEOUT) # Tự động reset về false
+
+        # 2. Manual-reset event
+        h_manual = create_event(manual_reset=True, initial_state=False)
+        set_event(h_manual)
+        self.assertEqual(wait_event(h_manual), WAIT_OBJECT_0)
+        self.assertEqual(wait_event(h_manual), WAIT_OBJECT_0) # Vẫn giữ tín hiệu
+
+        reset_event(h_manual)
+        self.assertEqual(wait_event(h_manual), WAIT_TIMEOUT) # Đã reset thành công
+
+    def test_win32_semaphore_synchronization(self):
+        # Giả lập Win32 Semaphore subsystem
+        sync_map = {}
+        WAIT_OBJECT_0 = 0
+        WAIT_TIMEOUT = 0x102
+
+        def create_semaphore(initial_count, max_count):
+            handle = 0x50001 + len(sync_map)
+            sync_map[handle] = {
+                "type": "semaphore",
+                "count": initial_count,
+                "max_count": max_count
+            }
+            return handle
+
+        def release_semaphore(h, release_count):
+            if h in sync_map and sync_map[h]["type"] == "semaphore":
+                obj = sync_map[h]
+                if obj["count"] + release_count > obj["max_count"]:
+                    return 0
+                obj["count"] += release_count
+                return 1
+            return 0
+
+        def wait_semaphore(h):
+            if h in sync_map and sync_map[h]["type"] == "semaphore":
+                obj = sync_map[h]
+                if obj["count"] > 0:
+                    obj["count"] -= 1
+                    return WAIT_OBJECT_0
+                return WAIT_TIMEOUT
+            return WAIT_TIMEOUT
+
+        # Khởi tạo Semaphore rỗng (0 task)
+        h_sem = create_semaphore(initial_count=0, max_count=10)
+        self.assertEqual(wait_semaphore(h_sem), WAIT_TIMEOUT) # Chưa có task, worker thread phải chờ
+
+        # Đẩy 3 tasks vào Semaphore
+        ok = release_semaphore(h_sem, 3)
+        self.assertEqual(ok, 1)
+        self.assertEqual(sync_map[h_sem]["count"], 3)
+
+        # 3 worker threads lần lượt nhận 3 tasks
+        self.assertEqual(wait_semaphore(h_sem), WAIT_OBJECT_0)
+        self.assertEqual(wait_semaphore(h_sem), WAIT_OBJECT_0)
+        self.assertEqual(wait_semaphore(h_sem), WAIT_OBJECT_0)
+
+        # Hết task, worker thread tiếp theo phải timeout
+        self.assertEqual(wait_semaphore(h_sem), WAIT_TIMEOUT)
+
     def test_window_procedure_dispatch(self):
         # Giả lập Window Procedure callback và DispatchMessage
         captured_messages = []

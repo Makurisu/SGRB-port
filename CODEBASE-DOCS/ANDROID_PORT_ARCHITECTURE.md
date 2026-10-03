@@ -96,7 +96,15 @@ sequenceDiagram
   - Đóng vai trò hệ thống cầu nối Win32 API / CRT subsystem cho Windows binary chạy trên Android:
     - **Safe Heap & Memory Management**: Quản lý cấp phát an toàn với bảng theo dõi `gHeapAllocations` và mutex đa luồng, hỗ trợ cờ `HEAP_ZERO_MEMORY`, ngăn chặn crash `SIGSEGV` trong jemalloc khi game hoặc CRT giải phóng con trỏ ngoại vi hoặc unallocated buffer.
     - **Virtual Memory Subsystem**: Giả lập `VirtualAlloc`, `VirtualFree`, `VirtualProtect`, `VirtualQuery` ánh xạ trực tiếp sang Linux `mmap`/`munmap`/`mprotect`.
-    - **Synchronization & Threading**: Cung cấp các nguyên ngữ đồng bộ hoá Windows Event (`CreateEventA`, `SetEvent`), Semaphore (`CreateSemaphore`), SRWLock, Condition Variable, `SwitchToThread` (`sched_yield`).
+    - **Synchronization Subsystem (Events, Semaphores & WaitForSingleObject)**:
+      - Quản lý các đối tượng đồng bộ Win32 qua cấu trúc `Win32SyncObject` luồng an toàn với `std::mutex` và `std::condition_variable`.
+      - **Win32 Events (`CreateEventA/W`, `CreateEventExA/W`, `SetEvent`, `ResetEvent`)**: Hỗ trợ đầy đủ cờ Manual-Reset và Auto-Reset. Tự động chuyển trạng thái `signaled` về `false` khi có luồng chờ đợi nhận tín hiệu thành công trong chế độ Auto-Reset.
+      - **Win32 Semaphores (`CreateSemaphoreA/W`, `ReleaseSemaphore`)**: Quản lý bộ đếm `currentCount` và `maxCount` theo chuẩn Win32. Đảm bảo worker thread trong thread pool tạm dừng (`wait`) khi chưa có công việc, và thức tỉnh đồng bộ khi hàm chính đẩy task và gọi `ReleaseSemaphore`.
+      - **Wait Functions (`WaitForSingleObject`, `WaitForSingleObjectEx`)**:
+        - Hỗ trợ chờ đợi trên cả Thread Handle, Event Handle và Semaphore Handle với các chế độ thời gian `0` (non-blocking check), `INFINITE` (`0xFFFFFFFF`) hoặc thời gian chờ mili-giây (`std::chrono::milliseconds`).
+        - Trả về chuẩn xác `WAIT_OBJECT_0` (0x0), `WAIT_TIMEOUT` (0x102) hoặc `WAIT_FAILED` (0xFFFFFFFF).
+        - Ngăn chặn hoàn toàn hiện tượng worker thread thức tỉnh sớm khi hàng đợi rỗng dẫn đến gọi con trỏ hàm rác/null (`call rdx` với `rdx = 0`) gây crash `SIGSEGV` tại RVA `0x4BFA90`.
+      - Cung cấp `SwitchToThread` (`sched_yield`), SRWLock, Condition Variable.
     - **String & Locale Subsystem**: Chuyển đổi mã ký tự UTF-8/UTF-16 qua `MultiByteToWideChar`, `WideCharToMultiByte` với chuẩn `char16_t` (2-byte UTF-16LE của Windows), loại bỏ triệt để lỗi mismatch kích thước `sizeof(wchar_t) == 4` trên Linux/Android NDK gây lỗi nhảy cóc ký tự (corrupted paths).
     - **CRT & Exception Subsystem**: Hỗ trợ PE ImageBase tracking, `RtlPcToFileHeader`, `IsProcessorFeaturePresent` (vô hiệu hoá `PF_FASTFAIL_AVAILABLE`), TLS/FLS slot management.
     - **Virtual File System (VFS)**:
