@@ -417,18 +417,6 @@ char* WINAPI stub_lstrcpynA(char* lpString1, const char* lpString2, int32_t iMax
     return lpString1;
 }
 
-// Synchronization & Events
-void* WINAPI stub_CreateEventA(void*, int32_t, int32_t, const char*) { return reinterpret_cast<void*>(0x50005001); }
-void* WINAPI stub_CreateEventExA(void*, const char*, uint32_t, uint32_t) { return reinterpret_cast<void*>(0x50005002); }
-int32_t WINAPI stub_SetEvent(void*) { return 1; }
-int32_t WINAPI stub_ResetEvent(void*) { return 1; }
-void* WINAPI stub_CreateSemaphoreA(void*, int32_t, int32_t, const char*) { return reinterpret_cast<void*>(0x50005003); }
-void* WINAPI stub_CreateSemaphoreW(void*, int32_t, int32_t, const char16_t*) { return reinterpret_cast<void*>(0x50005004); }
-int32_t WINAPI stub_ReleaseSemaphore(void*, int32_t, int32_t*) { return 1; }
-uint32_t WINAPI stub_WaitForSingleObject(void*, uint32_t) { return 0; }
-uint32_t WINAPI stub_WaitForSingleObjectEx(void*, uint32_t, int32_t) { return 0; }
-int32_t WINAPI stub_SwitchToThread() { sched_yield(); return 1; }
-
 // Win32 Threading Subsystem
 using Win32ThreadStartRoutine = uint32_t (WINAPI *)(void* lpThreadParameter);
 
@@ -448,6 +436,277 @@ static std::mutex gThreadMutex;
 static std::unordered_map<uintptr_t, Win32ThreadInfo*> gThreadMap;
 static uint32_t gNextThreadId = 1000;
 static uintptr_t gNextThreadHandle = 0x20000;
+
+// Forward declaration của bộ chuyển đổi chuỗi UTF-16
+static std::string normalizeWinPathW(const char16_t* wpath);
+
+// Hằng số trả về cho Win32 Wait Functions
+constexpr uint32_t WIN32_WAIT_OBJECT_0 = 0x00000000;
+constexpr uint32_t WIN32_WAIT_TIMEOUT  = 0x00000102;
+constexpr uint32_t WIN32_WAIT_FAILED   = 0xFFFFFFFF;
+constexpr uint32_t WIN32_INFINITE      = 0xFFFFFFFF;
+
+// Win32 Synchronization Subsystem (Events & Semaphores)
+enum class Win32SyncType {
+    Event,
+    Semaphore
+};
+
+struct Win32SyncObject {
+    Win32SyncType type;
+    std::string name;
+    std::mutex mtx;
+    std::condition_variable cv;
+
+    // Cấu hình Event
+    bool manualReset{false};
+    bool signaled{false};
+
+    // Cấu hình Semaphore
+    int32_t currentCount{0};
+    int32_t maxCount{0};
+};
+
+static std::mutex gSyncMutex;
+static std::unordered_map<uintptr_t, std::shared_ptr<Win32SyncObject>> gSyncMap;
+static uintptr_t gNextSyncHandle = 0x50000;
+
+void* WINAPI stub_CreateEventA(void*, int32_t bManualReset, int32_t bInitialState, const char* lpName) {
+    auto sync = std::make_shared<Win32SyncObject>();
+    sync->type = Win32SyncType::Event;
+    sync->manualReset = (bManualReset != 0);
+    sync->signaled = (bInitialState != 0);
+    if (lpName) sync->name = lpName;
+
+    std::lock_guard<std::mutex> lock(gSyncMutex);
+    uintptr_t handle = ++gNextSyncHandle;
+    gSyncMap[handle] = sync;
+    LOGI("stub_CreateEventA: handle=%p, manualReset=%d, initialState=%d, name='%s'",
+         reinterpret_cast<void*>(handle), bManualReset, bInitialState, lpName ? lpName : "");
+    return reinterpret_cast<void*>(handle);
+}
+
+void* WINAPI stub_CreateEventW(void* lpEventAttributes, int32_t bManualReset, int32_t bInitialState, const char16_t* lpName) {
+    std::string nameStr;
+    if (lpName) nameStr = normalizeWinPathW(lpName);
+    return stub_CreateEventA(lpEventAttributes, bManualReset, bInitialState, nameStr.empty() ? nullptr : nameStr.c_str());
+}
+
+void* WINAPI stub_CreateEventExA(void* lpEventAttributes, const char* lpName, uint32_t dwFlags, uint32_t) {
+    int32_t manualReset = (dwFlags & 0x00000001) != 0; // CREATE_EVENT_MANUAL_RESET
+    int32_t initialState = (dwFlags & 0x00000002) != 0; // CREATE_EVENT_INITIAL_SET
+    return stub_CreateEventA(lpEventAttributes, manualReset, initialState, lpName);
+}
+
+void* WINAPI stub_CreateEventExW(void* lpEventAttributes, const char16_t* lpName, uint32_t dwFlags, uint32_t dwDesiredAccess) {
+    int32_t manualReset = (dwFlags & 0x00000001) != 0;
+    int32_t initialState = (dwFlags & 0x00000002) != 0;
+    return stub_CreateEventW(lpEventAttributes, manualReset, initialState, lpName);
+}
+
+int32_t WINAPI stub_SetEvent(void* hEvent) {
+    std::shared_ptr<Win32SyncObject> sync;
+    {
+        std::lock_guard<std::mutex> lock(gSyncMutex);
+        auto it = gSyncMap.find(reinterpret_cast<uintptr_t>(hEvent));
+        if (it != gSyncMap.end()) {
+            sync = it->second;
+        }
+    }
+    if (!sync || sync->type != Win32SyncType::Event) return 0;
+
+    {
+        std::lock_guard<std::mutex> lock(sync->mtx);
+        sync->signaled = true;
+    }
+    if (sync->manualReset) {
+        sync->cv.notify_all();
+    } else {
+        sync->cv.notify_one();
+    }
+    return 1;
+}
+
+int32_t WINAPI stub_ResetEvent(void* hEvent) {
+    std::shared_ptr<Win32SyncObject> sync;
+    {
+        std::lock_guard<std::mutex> lock(gSyncMutex);
+        auto it = gSyncMap.find(reinterpret_cast<uintptr_t>(hEvent));
+        if (it != gSyncMap.end()) {
+            sync = it->second;
+        }
+    }
+    if (!sync || sync->type != Win32SyncType::Event) return 0;
+
+    {
+        std::lock_guard<std::mutex> lock(sync->mtx);
+        sync->signaled = false;
+    }
+    return 1;
+}
+
+void* WINAPI stub_CreateSemaphoreA(void*, int32_t lInitialCount, int32_t lMaximumCount, const char* lpName) {
+    auto sync = std::make_shared<Win32SyncObject>();
+    sync->type = Win32SyncType::Semaphore;
+    sync->currentCount = lInitialCount;
+    sync->maxCount = lMaximumCount;
+    if (lpName) sync->name = lpName;
+
+    std::lock_guard<std::mutex> lock(gSyncMutex);
+    uintptr_t handle = ++gNextSyncHandle;
+    gSyncMap[handle] = sync;
+    LOGI("stub_CreateSemaphoreA: handle=%p, initialCount=%d, maxCount=%d, name='%s'",
+         reinterpret_cast<void*>(handle), lInitialCount, lMaximumCount, lpName ? lpName : "");
+    return reinterpret_cast<void*>(handle);
+}
+
+void* WINAPI stub_CreateSemaphoreW(void* lpSemaphoreAttributes, int32_t lInitialCount, int32_t lMaximumCount, const char16_t* lpName) {
+    std::string nameStr;
+    if (lpName) nameStr = normalizeWinPathW(lpName);
+    return stub_CreateSemaphoreA(lpSemaphoreAttributes, lInitialCount, lMaximumCount, nameStr.empty() ? nullptr : nameStr.c_str());
+}
+
+int32_t WINAPI stub_ReleaseSemaphore(void* hSemaphore, int32_t lReleaseCount, int32_t* lpPreviousCount) {
+    if (lReleaseCount <= 0) return 0;
+
+    std::shared_ptr<Win32SyncObject> sync;
+    {
+        std::lock_guard<std::mutex> lock(gSyncMutex);
+        auto it = gSyncMap.find(reinterpret_cast<uintptr_t>(hSemaphore));
+        if (it != gSyncMap.end()) {
+            sync = it->second;
+        }
+    }
+    if (!sync || sync->type != Win32SyncType::Semaphore) return 0;
+
+    {
+        std::lock_guard<std::mutex> lock(sync->mtx);
+        if (lpPreviousCount) {
+            *lpPreviousCount = sync->currentCount;
+        }
+        if (sync->maxCount > 0 && sync->currentCount + lReleaseCount > sync->maxCount) {
+            return 0; // Vượt quá giới hạn tối đa
+        }
+        sync->currentCount += lReleaseCount;
+    }
+
+    if (lReleaseCount == 1) {
+        sync->cv.notify_one();
+    } else {
+        sync->cv.notify_all();
+    }
+    return 1;
+}
+
+uint32_t WINAPI stub_WaitForSingleObject(void* hHandle, uint32_t dwMilliseconds) {
+    if (!hHandle) return WIN32_WAIT_FAILED;
+
+    // 1. Kiểm tra nếu hHandle là thread handle
+    Win32ThreadInfo* threadInfo = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gThreadMutex);
+        auto tit = gThreadMap.find(reinterpret_cast<uintptr_t>(hHandle));
+        if (tit != gThreadMap.end()) {
+            threadInfo = tit->second;
+        }
+    }
+
+    if (threadInfo) {
+        if (threadInfo->finished) return WIN32_WAIT_OBJECT_0;
+        if (dwMilliseconds == 0) return WIN32_WAIT_TIMEOUT;
+
+        std::unique_lock<std::mutex> lock(threadInfo->suspendMutex);
+        if (dwMilliseconds == WIN32_INFINITE) {
+            threadInfo->suspendCond.wait(lock, [threadInfo] { return threadInfo->finished; });
+            return WIN32_WAIT_OBJECT_0;
+        } else {
+            bool ok = threadInfo->suspendCond.wait_for(
+                lock,
+                std::chrono::milliseconds(dwMilliseconds),
+                [threadInfo] { return threadInfo->finished; }
+            );
+            return ok ? WIN32_WAIT_OBJECT_0 : WIN32_WAIT_TIMEOUT;
+        }
+    }
+
+    // 2. Kiểm tra nếu hHandle là đối tượng đồng bộ (Event, Semaphore)
+    std::shared_ptr<Win32SyncObject> sync;
+    {
+        std::lock_guard<std::mutex> lock(gSyncMutex);
+        auto it = gSyncMap.find(reinterpret_cast<uintptr_t>(hHandle));
+        if (it != gSyncMap.end()) {
+            sync = it->second;
+        }
+    }
+
+    if (!sync) {
+        // Handle chưa nhận dạng: trả về WAIT_OBJECT_0 để tương thích ngược với dummy handles
+        return WIN32_WAIT_OBJECT_0;
+    }
+
+    std::unique_lock<std::mutex> lock(sync->mtx);
+    if (sync->type == Win32SyncType::Event) {
+        if (sync->signaled) {
+            if (!sync->manualReset) {
+                sync->signaled = false; // Auto-reset
+            }
+            return WIN32_WAIT_OBJECT_0;
+        }
+        if (dwMilliseconds == 0) return WIN32_WAIT_TIMEOUT;
+
+        if (dwMilliseconds == WIN32_INFINITE) {
+            sync->cv.wait(lock, [&] { return sync->signaled; });
+            if (!sync->manualReset) {
+                sync->signaled = false;
+            }
+            return WIN32_WAIT_OBJECT_0;
+        } else {
+            bool ok = sync->cv.wait_for(
+                lock,
+                std::chrono::milliseconds(dwMilliseconds),
+                [&] { return sync->signaled; }
+            );
+            if (ok) {
+                if (!sync->manualReset) {
+                    sync->signaled = false;
+                }
+                return WIN32_WAIT_OBJECT_0;
+            }
+            return WIN32_WAIT_TIMEOUT;
+        }
+    } else if (sync->type == Win32SyncType::Semaphore) {
+        if (sync->currentCount > 0) {
+            sync->currentCount--;
+            return WIN32_WAIT_OBJECT_0;
+        }
+        if (dwMilliseconds == 0) return WIN32_WAIT_TIMEOUT;
+
+        if (dwMilliseconds == WIN32_INFINITE) {
+            sync->cv.wait(lock, [&] { return sync->currentCount > 0; });
+            sync->currentCount--;
+            return WIN32_WAIT_OBJECT_0;
+        } else {
+            bool ok = sync->cv.wait_for(
+                lock,
+                std::chrono::milliseconds(dwMilliseconds),
+                [&] { return sync->currentCount > 0; }
+            );
+            if (ok) {
+                sync->currentCount--;
+                return WIN32_WAIT_OBJECT_0;
+            }
+            return WIN32_WAIT_TIMEOUT;
+        }
+    }
+
+    return WIN32_WAIT_FAILED;
+}
+
+uint32_t WINAPI stub_WaitForSingleObjectEx(void* hHandle, uint32_t dwMilliseconds, int32_t) {
+    return stub_WaitForSingleObject(hHandle, dwMilliseconds);
+}
+
+int32_t WINAPI stub_SwitchToThread() { sched_yield(); return 1; }
 
 static void* win32ThreadTrampoline(void* arg) {
     auto* info = static_cast<Win32ThreadInfo*>(arg);
@@ -472,6 +731,7 @@ static void* win32ThreadTrampoline(void* arg) {
         }
     }
     info->finished = true;
+    info->suspendCond.notify_all();
     LOGI("Win32 Worker Thread %u kết thúc với exitCode=%u", info->threadId, info->exitCode);
     return nullptr;
 }
@@ -1093,6 +1353,15 @@ int32_t WINAPI stub_GetFileInformationByHandle(void* hFile, void* lpFileInformat
 int32_t WINAPI stub_CloseHandle(void* hObject) {
     if (!hObject || hObject == reinterpret_cast<void*>(static_cast<intptr_t>(-1))) {
         return 1;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(gSyncMutex);
+        auto sit = gSyncMap.find(reinterpret_cast<uintptr_t>(hObject));
+        if (sit != gSyncMap.end()) {
+            gSyncMap.erase(sit);
+            return 1;
+        }
     }
 
     std::lock_guard<std::mutex> lock(gVfsMutex);
@@ -2066,7 +2335,9 @@ void Win32Bridge_Init() {
 
     // Synchronization Registration
     gFunctionMap["CreateEventA"] = reinterpret_cast<void*>(&stub_CreateEventA);
+    gFunctionMap["CreateEventW"] = reinterpret_cast<void*>(&stub_CreateEventW);
     gFunctionMap["CreateEventExA"] = reinterpret_cast<void*>(&stub_CreateEventExA);
+    gFunctionMap["CreateEventExW"] = reinterpret_cast<void*>(&stub_CreateEventExW);
     gFunctionMap["SetEvent"] = reinterpret_cast<void*>(&stub_SetEvent);
     gFunctionMap["ResetEvent"] = reinterpret_cast<void*>(&stub_ResetEvent);
     gFunctionMap["CreateSemaphoreA"] = reinterpret_cast<void*>(&stub_CreateSemaphoreA);
