@@ -81,6 +81,40 @@ class TestWin32BridgeLogic(unittest.TestCase):
         self.assertEqual(resolve_case_insensitive("MOVIE/OP.MP4"), "movie/op.mp4")
         self.assertIsNone(resolve_case_insensitive("non_existent.bin"))
 
+    def test_vfs_resource_prefix_fallback(self):
+        # Giả lập fallback tiền tố windata/, winweb/, wind3d11data/
+        mock_fs = {
+            "script_info.psb.m": "SCRIPT_INFO_DATA",
+            "script_body.bin": "SCRIPT_BODY_DATA",
+            "wind3d11data/scenario_info.psb.m": "SCENARIO_INFO_DATA"
+        }
+
+        def resolve_with_fallback(query_path):
+            norm = query_path.replace("\\", "/").lower()
+            if norm in mock_fs:
+                return norm
+            parts = norm.split("/")
+            if len(parts) > 1 and parts[0].startswith("win"):
+                stripped = "/".join(parts[1:])
+                if stripped in mock_fs:
+                    return stripped
+                fallback_d3d = "wind3d11data/" + stripped
+                if fallback_d3d in mock_fs:
+                    return fallback_d3d
+            fallback_d3d = "wind3d11data/" + norm
+            if fallback_d3d in mock_fs:
+                return fallback_d3d
+            return None
+
+        # Truy vấn trực tiếp
+        self.assertEqual(resolve_with_fallback("script_info.psb.m"), "script_info.psb.m")
+        # Truy vấn qua tiền tố windata/
+        self.assertEqual(resolve_with_fallback("windata/script_info.psb.m"), "script_info.psb.m")
+        # Truy vấn qua tiền tố winweb/
+        self.assertEqual(resolve_with_fallback("winweb/script_info.psb.m"), "script_info.psb.m")
+        # Truy vấn file nằm trong wind3d11data/ qua tiền tố windata/
+        self.assertEqual(resolve_with_fallback("windata/scenario_info.psb.m"), "wind3d11data/scenario_info.psb.m")
+
     def test_vfs_file_attributes(self):
         FILE_ATTRIBUTE_DIRECTORY = 0x10
         FILE_ATTRIBUTE_NORMAL = 0x80

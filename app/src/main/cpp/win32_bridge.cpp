@@ -1032,6 +1032,46 @@ static std::string resolveCaseInsensitivePath(const std::string& rootDir, const 
             return currentPath;
         }
     }
+
+    struct stat st;
+    if (stat(currentPath.c_str(), &st) == 0) {
+        return currentPath;
+    }
+
+    // Nếu không tìm thấy, thử các fallback đường dẫn đặc trưng của Mages Engine:
+    // 1. Nếu relPath bắt đầu bằng tiền tố như 'windata/', 'winweb/', 'wind3d11data/', 'win/':
+    //    Thử bỏ tiền tố đó để tìm trực tiếp trong rootDir
+    if (parts.size() > 1 && (parts[0].rfind("win", 0) == 0)) {
+        std::string stripped;
+        for (size_t k = 1; k < parts.size(); ++k) {
+            if (!stripped.empty()) stripped += "/";
+            stripped += parts[k];
+        }
+
+        // Thử tìm trực tiếp ở rootDir
+        std::string fallbackRoot = rootDir + "/" + stripped;
+        if (stat(fallbackRoot.c_str(), &st) == 0) {
+            LOGI("VFS Fallback: '%s' -> tìm thấy tại root: '%s'", relPath.c_str(), fallbackRoot.c_str());
+            return fallbackRoot;
+        }
+
+        // Thử tìm trong wind3d11data/
+        std::string fallbackD3d = rootDir + "/wind3d11data/" + stripped;
+        if (stat(fallbackD3d.c_str(), &st) == 0) {
+            LOGI("VFS Fallback: '%s' -> tìm thấy tại wind3d11data: '%s'", relPath.c_str(), fallbackD3d.c_str());
+            return fallbackD3d;
+        }
+    }
+
+    // 2. Nếu relPath không có tiền tố wind3d11data, thử tìm trong wind3d11data/
+    if (parts.size() >= 1 && parts[0] != "wind3d11data") {
+        std::string fallbackD3d = rootDir + "/wind3d11data/" + relPath;
+        if (stat(fallbackD3d.c_str(), &st) == 0) {
+            LOGI("VFS Fallback: '%s' -> tìm thấy tại wind3d11data: '%s'", relPath.c_str(), fallbackD3d.c_str());
+            return fallbackD3d;
+        }
+    }
+
     return currentPath;
 }
 
@@ -1392,6 +1432,9 @@ uint32_t WINAPI stub_GetFileAttributesW(const char16_t* lpFileName) {
 
     struct stat64 st;
     if (stat64(fullPath.c_str(), &st) != 0) {
+        if (relPath == "windata" || relPath == "winweb" || relPath == "wind3d11data") {
+            return 0x10; // FILE_ATTRIBUTE_DIRECTORY
+        }
         LOGI("GetFileAttributesW: Không tìm thấy '%s'", fullPath.c_str());
         return 0xFFFFFFFF;
     }
@@ -1408,6 +1451,9 @@ uint32_t WINAPI stub_GetFileAttributesA(const char* lpFileName) {
 
     struct stat64 st;
     if (stat64(fullPath.c_str(), &st) != 0) {
+        if (relPath == "windata" || relPath == "winweb" || relPath == "wind3d11data") {
+            return 0x10; // FILE_ATTRIBUTE_DIRECTORY
+        }
         return 0xFFFFFFFF;
     }
 
