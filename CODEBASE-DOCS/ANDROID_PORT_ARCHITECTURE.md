@@ -79,6 +79,8 @@ sequenceDiagram
       - `ID3D11ShaderReflection` (32 slots cho `GetDesc`, `GetConstantBufferByIndex`, `GetResourceBindingDesc`)
       - `ID3D11ShaderReflectionConstantBuffer`, `ID3D11ShaderReflectionVariable`, `ID3D11ShaderReflectionType` (16 slots)
     - **COM QueryInterface GUID Dispatcher**: Tự động bóc tách và phân giải chính xác 16-byte COM GUIDs chuẩn Microsoft (`IID_ID3D11Multithread`, `IID_IDXGIDevice1`, `IID_IDXGIFactory2`, `IID_IDXGISwapChain`, `IID_ID3D11Texture2D`, `IID_ID3D11ShaderReflection`...), chuyển hướng chính xác đến từng đối tượng mock tương ứng.
+    - **SlotDispatcher Compile-Time Telemetry Engine**: Sử dụng C++ template meta-programming (`std::make_index_sequence<128>`) tự động sinh 128 con trỏ hàm fallback độc lập cho `ID3D11Device` và `ID3D11DeviceContext`. Bắt chặn và log chính xác số thứ tự slot phương thức đồ hoạ được M2 Engine gọi đến mà không làm crash hay spam logcat, phục vụ phân tích pipeline dựng hình.
+    - **EGL Native Visual ID Synchronization**: Truy vấn thuộc tính `EGL_NATIVE_VISUAL_ID` từ EGL configuration và đồng bộ trực tiếp vào `ANativeWindow_setBuffersGeometry` kết hợp `SurfaceHolder.setFormat(PixelFormat.RGBA_8888)`, loại bỏ hoàn toàn lỗi `EGL_BAD_MATCH (0x3009)` trên Android SurfaceView.
     - Fallback generic stub an toàn tuyệt đối (không đọc/ghi con trỏ bừa bãi), loại bỏ hoàn toàn nguy cơ ghi đè bộ nhớ không hợp lệ (`SEGV_MAPERR`).
     - Xác lập `D3D_FEATURE_LEVEL_11_0` (0xb000) và mã kết quả `S_OK` (0) để engine đồ họa game kích hoạt thành công mà không phụ thuộc vào `d3d11.dll` native của Windows.
 - **`steam_hook.cpp`**:

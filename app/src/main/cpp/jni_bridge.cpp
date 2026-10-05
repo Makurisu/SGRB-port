@@ -39,9 +39,11 @@ static void renderLoop() {
     const EGLint attribs[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_BLUE_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
         EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, 24,
         EGL_NONE
     };
 
@@ -50,6 +52,12 @@ static void renderLoop() {
     if (!eglChooseConfig(display, attribs, &config, 1, &numConfigs) || numConfigs <= 0) {
         LOGE("eglChooseConfig thất bại");
         return;
+    }
+
+    EGLint visualId = 0;
+    eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID, &visualId);
+    if (gNativeWindow != nullptr) {
+        ANativeWindow_setBuffersGeometry(gNativeWindow, 0, 0, visualId);
     }
 
     EGLSurface surface = eglCreateWindowSurface(display, config, gNativeWindow, nullptr);

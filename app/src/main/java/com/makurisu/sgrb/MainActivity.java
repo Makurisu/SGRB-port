@@ -7,6 +7,7 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
+import android.graphics.PixelFormat;
 import android.widget.Toast;
 
 import java.io.File;
@@ -38,6 +39,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, To
         hideSystemUI();
 
         surfaceView = new SurfaceView(this);
+        surfaceView.getHolder().setFormat(PixelFormat.RGBA_8888);
         setContentView(surfaceView);
 
         touchInputHandler = new TouchInputHandler(this);
