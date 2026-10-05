@@ -429,6 +429,122 @@ class TestWin32BridgeLogic(unittest.TestCase):
         self.assertEqual(get_device_caps(VERTRES), 1080)
         self.assertEqual(get_device_caps(BITSPIXEL), 32)
 
+    def test_window_property_subsystem(self):
+        # Kiểm tra giả lập SetPropA, GetPropA, RemovePropA
+        props = {}
+
+        def set_prop(hwnd, prop, data):
+            if not hwnd or not prop:
+                return False
+            key = (hwnd, prop)
+            props[key] = data
+            return True
+
+        def get_prop(hwnd, prop):
+            if not hwnd or not prop:
+                return None
+            return props.get((hwnd, prop), None)
+
+        def remove_prop(hwnd, prop):
+            if not hwnd or not prop:
+                return None
+            return props.pop((hwnd, prop), None)
+
+        dummy_hwnd = 0x1111
+        instance_ptr = 0x763870001000
+        prop_name = "__OWN_INSTANCE__"
+
+        # Ban đầu chưa có property
+        self.assertIsNone(get_prop(dummy_hwnd, prop_name))
+
+        # Đặt property
+        self.assertTrue(set_prop(dummy_hwnd, prop_name, instance_ptr))
+        self.assertEqual(get_prop(dummy_hwnd, prop_name), instance_ptr)
+
+        # Cửa sổ khác không thấy property này
+        other_hwnd = 0x2222
+        self.assertIsNone(get_prop(other_hwnd, prop_name))
+
+        # Kiểm tra với atom (<= 0xFFFF)
+        atom_val = 0x1234
+        self.assertTrue(set_prop(dummy_hwnd, atom_val, 0x9999))
+        self.assertEqual(get_prop(dummy_hwnd, atom_val), 0x9999)
+
+        # Xóa property
+        removed = remove_prop(dummy_hwnd, prop_name)
+        self.assertEqual(removed, instance_ptr)
+        self.assertIsNone(get_prop(dummy_hwnd, prop_name))
+
+    def test_window_long_subsystem(self):
+        # Kiểm tra giả lập GetWindowLongPtrA, SetWindowLongPtrA
+        window_longs = {}
+        GWL_STYLE = -16
+        GWLP_USERDATA = -21
+        WS_VISIBLE = 0x10000000
+
+        def get_window_long_ptr(hwnd, index):
+            if (hwnd, index) in window_longs:
+                return window_longs[(hwnd, index)]
+            if index == GWL_STYLE:
+                return WS_VISIBLE
+            return 0
+
+        def set_window_long_ptr(hwnd, index, new_val):
+            old = get_window_long_ptr(hwnd, index)
+            window_longs[(hwnd, index)] = new_val
+            return old
+
+        dummy_hwnd = 0x1111
+        # Mặc định GWL_STYLE trả về WS_VISIBLE
+        self.assertEqual(get_window_long_ptr(dummy_hwnd, GWL_STYLE), WS_VISIBLE)
+
+        # Gán GWLP_USERDATA
+        old_val = set_window_long_ptr(dummy_hwnd, GWLP_USERDATA, 0x12345678)
+        self.assertEqual(old_val, 0)
+        self.assertEqual(get_window_long_ptr(dummy_hwnd, GWLP_USERDATA), 0x12345678)
+
+    def test_initial_activation_message_sequence(self):
+        # Kiểm tra chuỗi 7 thông điệp khởi tạo vòng đời cửa sổ Win32
+        WM_CREATE = 0x0001
+        WM_SHOWWINDOW = 0x0018
+        WM_ACTIVATEAPP = 0x001C
+        WM_ACTIVATE = 0x0006
+        WM_SETFOCUS = 0x0007
+        WM_SIZE = 0x0005
+        WM_PAINT = 0x000F
+
+        queue = [
+            {"msg": WM_CREATE, "wParam": 0, "lParam": 0},
+            {"msg": WM_SHOWWINDOW, "wParam": 1, "lParam": 0},
+            {"msg": WM_ACTIVATEAPP, "wParam": 1, "lParam": 0},
+            {"msg": WM_ACTIVATE, "wParam": 1, "lParam": 0},
+            {"msg": WM_SETFOCUS, "wParam": 0, "lParam": 0},
+            {"msg": WM_SIZE, "wParam": 0, "lParam": (1080 << 16) | 1920},
+            {"msg": WM_PAINT, "wParam": 0, "lParam": 0},
+        ]
+
+        received = []
+        is_active = False
+        is_sized = False
+
+        for m in queue:
+            received.append(m["msg"])
+            if m["msg"] == WM_ACTIVATE and m["wParam"] == 1:
+                is_active = True
+            elif m["msg"] == WM_SIZE:
+                is_sized = True
+
+        self.assertEqual(len(received), 7)
+        self.assertEqual(received[0], WM_CREATE)
+        self.assertEqual(received[1], WM_SHOWWINDOW)
+        self.assertEqual(received[2], WM_ACTIVATEAPP)
+        self.assertEqual(received[3], WM_ACTIVATE)
+        self.assertEqual(received[4], WM_SETFOCUS)
+        self.assertEqual(received[5], WM_SIZE)
+        self.assertEqual(received[6], WM_PAINT)
+        self.assertTrue(is_active)
+        self.assertTrue(is_sized)
+
 if __name__ == "__main__":
     unittest.main()
 

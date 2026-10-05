@@ -520,6 +520,7 @@ int32_t WINAPI stub_SetEvent(void* hEvent) {
         std::lock_guard<std::mutex> lock(sync->mtx);
         sync->signaled = true;
     }
+    LOGI("stub_SetEvent: handle=%p, name='%s', manual=%d", hEvent, sync->name.c_str(), sync->manualReset ? 1 : 0);
     if (sync->manualReset) {
         sync->cv.notify_all();
     } else {
@@ -543,6 +544,7 @@ int32_t WINAPI stub_ResetEvent(void* hEvent) {
         std::lock_guard<std::mutex> lock(sync->mtx);
         sync->signaled = false;
     }
+    LOGI("stub_ResetEvent: handle=%p, name='%s'", hEvent, sync->name.c_str());
     return 1;
 }
 
@@ -580,16 +582,21 @@ int32_t WINAPI stub_ReleaseSemaphore(void* hSemaphore, int32_t lReleaseCount, in
     }
     if (!sync || sync->type != Win32SyncType::Semaphore) return 0;
 
+    int32_t prev = 0;
     {
         std::lock_guard<std::mutex> lock(sync->mtx);
+        prev = sync->currentCount;
         if (lpPreviousCount) {
-            *lpPreviousCount = sync->currentCount;
+            *lpPreviousCount = prev;
         }
         if (sync->maxCount > 0 && sync->currentCount + lReleaseCount > sync->maxCount) {
             return 0; // Vượt quá giới hạn tối đa
         }
         sync->currentCount += lReleaseCount;
     }
+
+    LOGI("stub_ReleaseSemaphore: handle=%p, count=%d (prev=%d) -> newCount=%d",
+         hSemaphore, lReleaseCount, prev, prev + lReleaseCount);
 
     if (lReleaseCount == 1) {
         sync->cv.notify_one();
@@ -601,6 +608,10 @@ int32_t WINAPI stub_ReleaseSemaphore(void* hSemaphore, int32_t lReleaseCount, in
 
 uint32_t WINAPI stub_WaitForSingleObject(void* hHandle, uint32_t dwMilliseconds) {
     if (!hHandle) return WIN32_WAIT_FAILED;
+
+    if (dwMilliseconds != 0) {
+        LOGI("stub_WaitForSingleObject: Chờ handle=%p với timeout=%u ms", hHandle, dwMilliseconds);
+    }
 
     // 1. Kiểm tra nếu hHandle là thread handle
     Win32ThreadInfo* threadInfo = nullptr;
@@ -1914,15 +1925,20 @@ int32_t WINAPI stub_PeekMessageA(void* lpMsg, void*, uint32_t, uint32_t, uint32_
         // Bơm các thông điệp Win32 ban đầu để kích hoạt game engine
         std::lock_guard<std::mutex> lock(gMsgMutex);
         Win32Msg m1{ DUMMY_WINDOW, 0x0001, 0, 0, 0, {960, 540}, 0 }; // WM_CREATE
-        Win32Msg m2{ DUMMY_WINDOW, 0x0005, 0, (1080 << 16) | 1920, 0, {960, 540}, 0 }; // WM_SIZE
-        Win32Msg m3{ DUMMY_WINDOW, 0x0006, 1, 0, 0, {960, 540}, 0 }; // WM_ACTIVATE (WA_ACTIVE)
-        Win32Msg m4{ DUMMY_WINDOW, 0x0007, 0, 0, 0, {960, 540}, 0 }; // WM_SETFOCUS
-        Win32Msg m5{ DUMMY_WINDOW, 0x000F, 0, 0, 0, {960, 540}, 0 }; // WM_PAINT
+        Win32Msg m2{ DUMMY_WINDOW, 0x0018, 1, 0, 0, {960, 540}, 0 }; // WM_SHOWWINDOW (SW_SHOW)
+        Win32Msg m3{ DUMMY_WINDOW, 0x001C, 1, 0, 0, {960, 540}, 0 }; // WM_ACTIVATEAPP (bActive=TRUE)
+        Win32Msg m4{ DUMMY_WINDOW, 0x0006, 1, 0, 0, {960, 540}, 0 }; // WM_ACTIVATE (WA_ACTIVE)
+        Win32Msg m5{ DUMMY_WINDOW, 0x0007, 0, 0, 0, {960, 540}, 0 }; // WM_SETFOCUS
+        Win32Msg m6{ DUMMY_WINDOW, 0x0005, 0, (1080 << 16) | 1920, 0, {960, 540}, 0 }; // WM_SIZE (1920x1080)
+        Win32Msg m7{ DUMMY_WINDOW, 0x000F, 0, 0, 0, {960, 540}, 0 }; // WM_PAINT
         gMsgQueue.push(m1);
         gMsgQueue.push(m2);
         gMsgQueue.push(m3);
         gMsgQueue.push(m4);
         gMsgQueue.push(m5);
+        gMsgQueue.push(m6);
+        gMsgQueue.push(m7);
+        LOGI("stub_PeekMessageA: Đã bơm 7 thông điệp vòng đời khởi tạo (WM_CREATE, SHOWWINDOW, ACTIVATEAPP, ACTIVATE, SETFOCUS, SIZE, PAINT)");
     }
 
     std::lock_guard<std::mutex> lock(gMsgMutex);
@@ -1947,6 +1963,9 @@ int64_t WINAPI stub_DispatchMessageA(const void* lpMsg) {
     if (!lpMsg) return 0;
     const auto* msg = reinterpret_cast<const Win32Msg*>(lpMsg);
     if (gGameWndProc) {
+        LOGI("stub_DispatchMessageA: msg=0x%04X, hwnd=%p, wParam=0x%llX, lParam=0x%llX",
+             msg->message, msg->hwnd, static_cast<unsigned long long>(msg->wParam),
+             static_cast<unsigned long long>(msg->lParam));
         return gGameWndProc(msg->hwnd, msg->message, msg->wParam, msg->lParam);
     }
     return 0;
@@ -2041,10 +2060,52 @@ int32_t WINAPI stub_GetKeyboardState(void* lpKeyState) {
     return 1;
 }
 int32_t WINAPI stub_AttachThreadInput(uint32_t, uint32_t, int32_t) { return 1; }
-int32_t WINAPI stub_GetWindowLongA(void*, int32_t) { return 0x10000000; } // WS_VISIBLE
-int32_t WINAPI stub_SetWindowLongA(void*, int32_t, int32_t) { return 0; }
-intptr_t WINAPI stub_GetWindowLongPtrA(void*, int32_t) { return 0; }
-intptr_t WINAPI stub_SetWindowLongPtrA(void*, int32_t, intptr_t) { return 0; }
+
+static std::mutex gWindowLongMutex;
+static std::map<std::pair<void*, int32_t>, intptr_t> gWindowLongMap;
+
+int32_t WINAPI stub_GetWindowLongA(void* hWnd, int32_t nIndex) {
+    std::lock_guard<std::mutex> lock(gWindowLongMutex);
+    auto it = gWindowLongMap.find({hWnd, nIndex});
+    if (it != gWindowLongMap.end()) {
+        return static_cast<int32_t>(it->second);
+    }
+    if (nIndex == -16) return 0x10000000; // GWL_STYLE: WS_VISIBLE
+    return 0;
+}
+
+int32_t WINAPI stub_SetWindowLongA(void* hWnd, int32_t nIndex, int32_t dwNewLong) {
+    std::lock_guard<std::mutex> lock(gWindowLongMutex);
+    int32_t old = 0;
+    auto it = gWindowLongMap.find({hWnd, nIndex});
+    if (it != gWindowLongMap.end()) {
+        old = static_cast<int32_t>(it->second);
+    }
+    gWindowLongMap[{hWnd, nIndex}] = dwNewLong;
+    return old;
+}
+
+intptr_t WINAPI stub_GetWindowLongPtrA(void* hWnd, int32_t nIndex) {
+    std::lock_guard<std::mutex> lock(gWindowLongMutex);
+    auto it = gWindowLongMap.find({hWnd, nIndex});
+    if (it != gWindowLongMap.end()) {
+        return it->second;
+    }
+    if (nIndex == -16) return 0x10000000; // GWL_STYLE: WS_VISIBLE
+    return 0;
+}
+
+intptr_t WINAPI stub_SetWindowLongPtrA(void* hWnd, int32_t nIndex, intptr_t dwNewLong) {
+    std::lock_guard<std::mutex> lock(gWindowLongMutex);
+    intptr_t old = 0;
+    auto it = gWindowLongMap.find({hWnd, nIndex});
+    if (it != gWindowLongMap.end()) {
+        old = it->second;
+    }
+    gWindowLongMap[{hWnd, nIndex}] = dwNewLong;
+    return old;
+}
+
 int32_t WINAPI stub_GetWindowPlacement(void*, void* lpwndpl) {
     if (lpwndpl) {
         struct Win32WindowPlacement {
@@ -2087,9 +2148,78 @@ uint32_t WINAPI stub_GetWindowThreadProcessId(void*, uint32_t* lpdwProcessId) {
 }
 intptr_t WINAPI stub_SetClassLongPtrA(void*, int32_t, intptr_t) { return 0; }
 void* WINAPI stub_FindWindowA(const char*, const char*) { return DUMMY_WINDOW; }
-int32_t WINAPI stub_SetPropA(void*, const char*, void*) { return 1; }
-void* WINAPI stub_GetPropA(void*, const char*) { return nullptr; }
-void* WINAPI stub_RemovePropA(void*, const char*) { return nullptr; }
+
+struct Win32PropKey {
+    void* hwnd;
+    uint16_t atom;
+    std::string str;
+
+    bool operator<(const Win32PropKey& o) const {
+        if (hwnd != o.hwnd) return hwnd < o.hwnd;
+        if (atom != o.atom) return atom < o.atom;
+        return str < o.str;
+    }
+};
+
+static std::mutex gPropMutex;
+static std::map<Win32PropKey, void*> gPropMap;
+
+int32_t WINAPI stub_SetPropA(void* hWnd, const char* lpString, void* hData) {
+    if (!hWnd || !lpString) return 0;
+    Win32PropKey key{};
+    key.hwnd = hWnd;
+    if (reinterpret_cast<uintptr_t>(lpString) <= 0xFFFF) {
+        key.atom = static_cast<uint16_t>(reinterpret_cast<uintptr_t>(lpString));
+    } else {
+        key.atom = 0;
+        key.str = lpString;
+    }
+    std::lock_guard<std::mutex> lock(gPropMutex);
+    gPropMap[key] = hData;
+    LOGI("stub_SetPropA: hwnd=%p, prop='%s', atom=%u -> data=%p",
+         hWnd, key.str.c_str(), key.atom, hData);
+    return 1;
+}
+
+void* WINAPI stub_GetPropA(void* hWnd, const char* lpString) {
+    if (!hWnd || !lpString) return nullptr;
+    Win32PropKey key{};
+    key.hwnd = hWnd;
+    if (reinterpret_cast<uintptr_t>(lpString) <= 0xFFFF) {
+        key.atom = static_cast<uint16_t>(reinterpret_cast<uintptr_t>(lpString));
+    } else {
+        key.atom = 0;
+        key.str = lpString;
+    }
+    std::lock_guard<std::mutex> lock(gPropMutex);
+    auto it = gPropMap.find(key);
+    if (it != gPropMap.end()) {
+        return it->second;
+    }
+    return nullptr;
+}
+
+void* WINAPI stub_RemovePropA(void* hWnd, const char* lpString) {
+    if (!hWnd || !lpString) return nullptr;
+    Win32PropKey key{};
+    key.hwnd = hWnd;
+    if (reinterpret_cast<uintptr_t>(lpString) <= 0xFFFF) {
+        key.atom = static_cast<uint16_t>(reinterpret_cast<uintptr_t>(lpString));
+    } else {
+        key.atom = 0;
+        key.str = lpString;
+    }
+    std::lock_guard<std::mutex> lock(gPropMutex);
+    auto it = gPropMap.find(key);
+    if (it != gPropMap.end()) {
+        void* val = it->second;
+        gPropMap.erase(it);
+        LOGI("stub_RemovePropA: hwnd=%p, prop='%s', atom=%u -> removed %p",
+             hWnd, key.str.c_str(), key.atom, val);
+        return val;
+    }
+    return nullptr;
+}
 int32_t WINAPI stub_EnumDisplayMonitors(void*, void*, int32_t (WINAPI *lpfnEnum)(void*, void*, void*, int64_t), int64_t lParam) {
     if (lpfnEnum) {
         lpfnEnum(reinterpret_cast<void*>(0x9999), nullptr, nullptr, lParam);
