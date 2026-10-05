@@ -339,6 +339,24 @@ bool PayloadLoader::applyRelocations(void* baseAddress, const GamePayloadInfo& i
     }
 
     LOGI("Đã hoàn tất Relocation: %u con trỏ 64-bit đã được fixup chuẩn xác theo RAM Android!", fixupCount);
+
+    // Fixup hàm CRT section query (RVA 0x5AC240):
+    // Trong binary gốc biên dịch với ImageBase cố định 0x140000000, lệnh tại RVA 0x5AC24D là:
+    //   lea rdi, [rip - 0x5ac254] (tính rdi = 0x140000000, trỏ về DOS header).
+    // Khi nạp vào RAM Android với ASLR ngẫu nhiên (delta != 0), rip = basePtr + 0x5ac254,
+    // dẫn đến rdi = (basePtr + 0x5ac254) - 0x5ac254 = basePtr!
+    // Hàm này kiểm tra xem con trỏ rbx truyền vào (RVA trong .rdata) có thuộc PE image không:
+    //   mov eax, 1; ret -> return 1 (thuộc vùng nhớ hợp lệ)
+    // Giúp loại bỏ lỗi crash null pointer dereference trong hàm kiểm tra ngoại lệ SEH của CRT.
+    uint8_t* pFunc = basePtr + 0x5ac240;
+    pFunc[0] = 0xB8; // mov eax, 1
+    pFunc[1] = 0x01;
+    pFunc[2] = 0x00;
+    pFunc[3] = 0x00;
+    pFunc[4] = 0x00;
+    pFunc[5] = 0xC3; // ret
+    LOGI("Đã áp dụng hotfix CRT SEH section-check tại RVA 0x5AC240 (mov eax, 1; ret)");
+
     return true;
 }
 

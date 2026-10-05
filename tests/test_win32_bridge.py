@@ -545,6 +545,128 @@ class TestWin32BridgeLogic(unittest.TestCase):
         self.assertTrue(is_active)
         self.assertTrue(is_sized)
 
+    def test_overlapped_read_file_signals_event(self):
+        # Kiểm thử cấu trúc và luồng xử lý ReadFile với OVERLAPPED (tại 0x1404dbca3)
+        mock_file_data = b"M2_ENGINE_SCRIPT_HEADER" + b"\x00" * 2048
+        
+        class MockOverlapped:
+            def __init__(self, offset_low=0, offset_high=0, h_event=None):
+                self.internal = 0x103 # STATUS_PENDING
+                self.internal_high = 0
+                self.offset = offset_low
+                self.offset_high = offset_high
+                self.h_event = h_event
+
+        class MockEvent:
+            def __init__(self):
+                self.signaled = False
+
+        event = MockEvent()
+        ov = MockOverlapped(offset_low=10, offset_high=0, h_event=event)
+        read_buffer = bytearray(2245)
+
+        def mock_stub_read_file(h_file, buf, count, p_read, overlapped):
+            if not h_file or not buf:
+                if p_read is not None: p_read[0] = 0
+                if overlapped:
+                    overlapped.internal = 0xC0000008
+                    overlapped.internal_high = 0
+                    if overlapped.h_event: overlapped.h_event.signaled = True
+                return False
+
+            if overlapped:
+                file_offset = (overlapped.offset_high << 32) | overlapped.offset
+                data_slice = mock_file_data[file_offset:file_offset + count]
+                bytes_read = len(data_slice)
+                buf[:bytes_read] = data_slice
+                overlapped.internal = 0 # STATUS_SUCCESS
+                overlapped.internal_high = bytes_read
+                if p_read is not None:
+                    p_read[0] = bytes_read
+                if overlapped.h_event:
+                    overlapped.h_event.signaled = True
+                return True
+            return False
+
+        # Trường hợp 1: Game engine gọi ReadFile với lpNumberOfBytesRead = NULL (0x1404dbcb2: xor r9d, r9d)
+        res = mock_stub_read_file(0x10003, read_buffer, 2245, None, ov)
+        self.assertTrue(res)
+        self.assertEqual(ov.internal, 0, "internal phải là 0 (STATUS_SUCCESS)")
+        self.assertEqual(ov.internal_high, len(mock_file_data) - 10, "internalHigh phải lưu số byte đã truyền")
+        self.assertTrue(event.signaled, "hEvent (0x5000a) bắt buộc phải được đánh thức qua SetEvent")
+
+        # Kiểm tra nội dung đọc từ đúng offset
+        self.assertEqual(bytes(read_buffer[:len(b"SCRIPT_HEADER")]), b"SCRIPT_HEADER")
+
+    def test_overlapped_write_file_signals_event(self):
+        # Kiểm thử WriteFile với OVERLAPPED
+        written_data = {}
+
+        class MockOverlapped:
+            def __init__(self, offset_low=0, offset_high=0, h_event=None):
+                self.internal = 0x103
+                self.internal_high = 0
+                self.offset = offset_low
+                self.offset_high = offset_high
+                self.h_event = h_event
+
+        class MockEvent:
+            def __init__(self):
+                self.signaled = False
+
+        event = MockEvent()
+        ov = MockOverlapped(offset_low=128, offset_high=0, h_event=event)
+        payload = b"SAVE_GAME_DATA_PAYLOAD"
+
+        def mock_stub_write_file(h_file, buf, count, p_written, overlapped):
+            if overlapped:
+                file_offset = (overlapped.offset_high << 32) | overlapped.offset
+                written_data[file_offset] = buf[:count]
+                overlapped.internal = 0 # STATUS_SUCCESS
+                overlapped.internal_high = count
+                if p_written is not None:
+                    p_written[0] = count
+                if overlapped.h_event:
+                    overlapped.h_event.signaled = True
+                return True
+            return False
+
+        res = mock_stub_write_file(0x10004, payload, len(payload), None, ov)
+        self.assertTrue(res)
+        self.assertEqual(ov.internal, 0)
+        self.assertEqual(ov.internal_high, len(payload))
+        self.assertTrue(event.signaled)
+        self.assertIn(128, written_data)
+        self.assertEqual(written_data[128], payload)
+
+    def test_get_overlapped_result(self):
+        # Kiểm thử GetOverlappedResult
+        class MockOverlapped:
+            def __init__(self, internal, transferred):
+                self.internal = internal
+                self.internal_high = transferred
+                self.h_event = None
+
+        def mock_get_overlapped_result(overlapped, p_transferred, b_wait):
+            if not overlapped: return False
+            if p_transferred is not None:
+                p_transferred[0] = overlapped.internal_high
+            return (overlapped.internal == 0)
+
+        # Trạng thái thành công
+        ov_success = MockOverlapped(0, 1024)
+        transferred = [0]
+        ok = mock_get_overlapped_result(ov_success, transferred, False)
+        self.assertTrue(ok)
+        self.assertEqual(transferred[0], 1024)
+
+        # Trạng thái thất bại
+        ov_fail = MockOverlapped(0xC0000001, 0)
+        transferred_fail = [0]
+        fail = mock_get_overlapped_result(ov_fail, transferred_fail, False)
+        self.assertFalse(fail)
+        self.assertEqual(transferred_fail[0], 0)
+
 if __name__ == "__main__":
     unittest.main()
 

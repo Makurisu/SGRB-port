@@ -906,6 +906,20 @@ struct Win32FindDataA {
     char cAlternateFileName[14];
 };
 
+struct Win32Overlapped {
+    uintptr_t internal;      // Offset 0x00: NTSTATUS / Error code (0 = STATUS_SUCCESS)
+    uintptr_t internalHigh;  // Offset 0x08: Số byte đã truyền (Bytes transferred)
+    union {
+        struct {
+            uint32_t offset;     // Offset 0x10: Vị trí đọc/ghi file (Low 32-bit)
+            uint32_t offsetHigh; // Offset 0x14: Vị trí đọc/ghi file (High 32-bit)
+        };
+        void* pointer;
+    };
+    void* hEvent;            // Offset 0x18: Event handle đồng bộ
+};
+static_assert(sizeof(Win32Overlapped) == 32, "Win32Overlapped must be exactly 32 bytes on 64-bit Windows ABI");
+
 struct VfsFileHandle {
     int fd;
     std::string path;
@@ -1042,7 +1056,7 @@ static std::string resolveCaseInsensitivePath(const std::string& rootDir, const 
             for (size_t j = i; j < parts.size(); ++j) {
                 currentPath += "/" + parts[j];
             }
-            return currentPath;
+            break;
         }
     }
 
@@ -1053,7 +1067,7 @@ static std::string resolveCaseInsensitivePath(const std::string& rootDir, const 
 
     // Nếu không tìm thấy, thử các fallback đường dẫn đặc trưng của Mages Engine:
     // 1. Nếu relPath bắt đầu bằng tiền tố như 'windata/', 'winweb/', 'wind3d11data/', 'win/':
-    //    Thử bỏ tiền tố đó để tìm trực tiếp trong rootDir
+    //    Thử bỏ tiền tố đó để tìm trực tiếp trong rootDir hoặc wind3d11data/
     if (parts.size() > 1 && (parts[0].rfind("win", 0) == 0)) {
         std::string stripped;
         for (size_t k = 1; k < parts.size(); ++k) {
@@ -1061,18 +1075,18 @@ static std::string resolveCaseInsensitivePath(const std::string& rootDir, const 
             stripped += parts[k];
         }
 
-        // Thử tìm trực tiếp ở rootDir
-        std::string fallbackRoot = rootDir + "/" + stripped;
-        if (stat(fallbackRoot.c_str(), &st) == 0) {
-            LOGI("VFS Fallback: '%s' -> tìm thấy tại root: '%s'", relPath.c_str(), fallbackRoot.c_str());
-            return fallbackRoot;
-        }
-
         // Thử tìm trong wind3d11data/
         std::string fallbackD3d = rootDir + "/wind3d11data/" + stripped;
         if (stat(fallbackD3d.c_str(), &st) == 0) {
             LOGI("VFS Fallback: '%s' -> tìm thấy tại wind3d11data: '%s'", relPath.c_str(), fallbackD3d.c_str());
             return fallbackD3d;
+        }
+
+        // Thử tìm trực tiếp ở rootDir
+        std::string fallbackRoot = rootDir + "/" + stripped;
+        if (stat(fallbackRoot.c_str(), &st) == 0) {
+            LOGI("VFS Fallback: '%s' -> tìm thấy tại root: '%s'", relPath.c_str(), fallbackRoot.c_str());
+            return fallbackRoot;
         }
     }
 
@@ -1224,10 +1238,16 @@ int32_t WINAPI stub_ReadFile(
     void* lpBuffer,
     uint32_t nNumberOfBytesToRead,
     uint32_t* lpNumberOfBytesRead,
-    void* /* lpOverlapped */
+    void* lpOverlapped
 ) {
+    auto* ov = reinterpret_cast<Win32Overlapped*>(lpOverlapped);
     if (!hFile || hFile == reinterpret_cast<void*>(static_cast<intptr_t>(-1)) || !lpBuffer) {
         if (lpNumberOfBytesRead) *lpNumberOfBytesRead = 0;
+        if (ov) {
+            ov->internal = 0xC0000008; // STATUS_INVALID_HANDLE
+            ov->internalHigh = 0;
+            if (ov->hEvent) stub_SetEvent(ov->hEvent);
+        }
         return 0;
     }
 
@@ -1241,10 +1261,41 @@ int32_t WINAPI stub_ReadFile(
     if (fd < 0) {
         LOGW("ReadFile: Handle không hợp lệ: %p", hFile);
         if (lpNumberOfBytesRead) *lpNumberOfBytesRead = 0;
+        if (ov) {
+            ov->internal = 0xC0000008; // STATUS_INVALID_HANDLE
+            ov->internalHigh = 0;
+            if (ov->hEvent) stub_SetEvent(ov->hEvent);
+        }
         return 0;
     }
 
-    ssize_t bytesRead = read(fd, lpBuffer, nNumberOfBytesToRead);
+    ssize_t bytesRead = 0;
+    if (ov) {
+        off64_t fileOffset = (static_cast<off64_t>(ov->offsetHigh) << 32) | static_cast<off64_t>(ov->offset);
+        bytesRead = pread64(fd, lpBuffer, nNumberOfBytesToRead, fileOffset);
+        if (bytesRead < 0) {
+            LOGW("ReadFile (OVERLAPPED): Lỗi đọc fd=%d offset=%lld (errno=%d: %s)",
+                 fd, static_cast<long long>(fileOffset), errno, strerror(errno));
+            ov->internal = 0xC0000001; // STATUS_UNSUCCESSFUL
+            ov->internalHigh = 0;
+            if (lpNumberOfBytesRead) *lpNumberOfBytesRead = 0;
+            if (ov->hEvent) stub_SetEvent(ov->hEvent);
+            return 0;
+        }
+
+        ov->internal = 0; // STATUS_SUCCESS
+        ov->internalHigh = static_cast<uintptr_t>(bytesRead);
+        if (lpNumberOfBytesRead) *lpNumberOfBytesRead = static_cast<uint32_t>(bytesRead);
+        if (ov->hEvent) {
+            stub_SetEvent(ov->hEvent);
+            LOGI("ReadFile (OVERLAPPED): Đã phát tín hiệu SetEvent hEvent=%p", ov->hEvent);
+        }
+        LOGI("ReadFile (OVERLAPPED): Handle=%p, fd=%d, offset=%lld, bytesToRead=%u -> read=%zd, internal=0, internalHigh=%lu",
+             hFile, fd, static_cast<long long>(fileOffset), nNumberOfBytesToRead, bytesRead, static_cast<unsigned long>(ov->internalHigh));
+        return 1;
+    }
+
+    bytesRead = read(fd, lpBuffer, nNumberOfBytesToRead);
     if (bytesRead < 0) {
         LOGW("ReadFile: Lỗi đọc fd=%d (errno=%d)", fd, errno);
         if (lpNumberOfBytesRead) *lpNumberOfBytesRead = 0;
@@ -1261,10 +1312,16 @@ int32_t WINAPI stub_WriteFile(
     const void* lpBuffer,
     uint32_t nNumberOfBytesToWrite,
     uint32_t* lpNumberOfBytesWritten,
-    void* /* lpOverlapped */
+    void* lpOverlapped
 ) {
+    auto* ov = reinterpret_cast<Win32Overlapped*>(lpOverlapped);
     if (!hFile || hFile == reinterpret_cast<void*>(static_cast<intptr_t>(-1)) || !lpBuffer) {
         if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = 0;
+        if (ov) {
+            ov->internal = 0xC0000008; // STATUS_INVALID_HANDLE
+            ov->internalHigh = 0;
+            if (ov->hEvent) stub_SetEvent(ov->hEvent);
+        }
         return 0;
     }
 
@@ -1277,10 +1334,39 @@ int32_t WINAPI stub_WriteFile(
 
     if (fd < 0) {
         if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = 0;
+        if (ov) {
+            ov->internal = 0xC0000008; // STATUS_INVALID_HANDLE
+            ov->internalHigh = 0;
+            if (ov->hEvent) stub_SetEvent(ov->hEvent);
+        }
         return 0;
     }
 
-    ssize_t bytesWritten = write(fd, lpBuffer, nNumberOfBytesToWrite);
+    ssize_t bytesWritten = 0;
+    if (ov) {
+        off64_t fileOffset = (static_cast<off64_t>(ov->offsetHigh) << 32) | static_cast<off64_t>(ov->offset);
+        bytesWritten = pwrite64(fd, lpBuffer, nNumberOfBytesToWrite, fileOffset);
+        if (bytesWritten < 0) {
+            ov->internal = 0xC0000001; // STATUS_UNSUCCESSFUL
+            ov->internalHigh = 0;
+            if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = 0;
+            if (ov->hEvent) stub_SetEvent(ov->hEvent);
+            return 0;
+        }
+
+        ov->internal = 0; // STATUS_SUCCESS
+        ov->internalHigh = static_cast<uintptr_t>(bytesWritten);
+        if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = static_cast<uint32_t>(bytesWritten);
+        if (ov->hEvent) {
+            stub_SetEvent(ov->hEvent);
+            LOGI("WriteFile (OVERLAPPED): Đã phát tín hiệu SetEvent hEvent=%p", ov->hEvent);
+        }
+        LOGI("WriteFile (OVERLAPPED): Handle=%p, fd=%d, offset=%lld, bytesToWrite=%u -> written=%zd",
+             hFile, fd, static_cast<long long>(fileOffset), nNumberOfBytesToWrite, bytesWritten);
+        return 1;
+    }
+
+    bytesWritten = write(fd, lpBuffer, nNumberOfBytesToWrite);
     if (bytesWritten < 0) {
         if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = 0;
         return 0;
@@ -1400,6 +1486,35 @@ int32_t WINAPI stub_GetFileInformationByHandle(void* hFile, void* lpFileInformat
     info->nFileSizeHigh = static_cast<uint32_t>(st.st_size >> 32);
     info->nFileSizeLow = static_cast<uint32_t>(st.st_size & 0xFFFFFFFF);
     info->nNumberOfLinks = 1;
+    return 1;
+}
+
+int32_t WINAPI stub_GetOverlappedResult(
+    void* /* hFile */,
+    void* lpOverlapped,
+    uint32_t* lpNumberOfBytesTransferred,
+    int32_t bWait
+) {
+    if (!lpOverlapped) return 0;
+    auto* ov = reinterpret_cast<Win32Overlapped*>(lpOverlapped);
+
+    if (bWait && ov->hEvent) {
+        stub_WaitForSingleObject(ov->hEvent, WIN32_INFINITE);
+    }
+
+    if (lpNumberOfBytesTransferred) {
+        *lpNumberOfBytesTransferred = static_cast<uint32_t>(ov->internalHigh);
+    }
+
+    // internal == 0 tương ứng với STATUS_SUCCESS
+    return (ov->internal == 0) ? 1 : 0;
+}
+
+int32_t WINAPI stub_CancelIo(void* /* hFile */) {
+    return 1;
+}
+
+int32_t WINAPI stub_CancelIoEx(void* /* hFile */, void* /* lpOverlapped */) {
     return 1;
 }
 
@@ -2551,6 +2666,9 @@ void Win32Bridge_Init() {
     gFunctionMap["GetFileSize"] = reinterpret_cast<void*>(&stub_GetFileSize);
     gFunctionMap["GetFileSizeEx"] = reinterpret_cast<void*>(&stub_GetFileSizeEx);
     gFunctionMap["GetFileInformationByHandle"] = reinterpret_cast<void*>(&stub_GetFileInformationByHandle);
+    gFunctionMap["GetOverlappedResult"] = reinterpret_cast<void*>(&stub_GetOverlappedResult);
+    gFunctionMap["CancelIo"] = reinterpret_cast<void*>(&stub_CancelIo);
+    gFunctionMap["CancelIoEx"] = reinterpret_cast<void*>(&stub_CancelIoEx);
     gFunctionMap["CloseHandle"] = reinterpret_cast<void*>(&stub_CloseHandle);
     gFunctionMap["FindFirstFileW"] = reinterpret_cast<void*>(&stub_FindFirstFileW);
     gFunctionMap["FindFirstFileExW"] = reinterpret_cast<void*>(&stub_FindFirstFileExW);
