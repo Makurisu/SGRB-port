@@ -2,6 +2,7 @@
 #include "d3d11_bridge.h"
 #include "dinput_bridge.h"
 #include "xaudio2_bridge.h"
+#include "media_foundation_bridge.h"
 #include <android/log.h>
 #include <cstring>
 #include <string>
@@ -2573,6 +2574,23 @@ void Win32Bridge_Init() {
     gFunctionMap["GetAdaptersInfo"] = reinterpret_cast<void*>(&stub_GetAdaptersInfo);
     gFunctionMap["Netbios"] = reinterpret_cast<void*>(&stub_Netbios);
     gFunctionMap["PropVariantToInt64"] = reinterpret_cast<void*>(&stub_PropVariantToInt64);
+
+    // Media Foundation (MFPlat.DLL & MFReadWrite.dll) Registration
+    gFunctionMap["MFStartup"] = reinterpret_cast<void*>(&stub_MFStartup);
+    gFunctionMap["MFShutdown"] = reinterpret_cast<void*>(&stub_MFShutdown);
+    gFunctionMap["MFCreateAttributes"] = reinterpret_cast<void*>(&stub_MFCreateAttributes);
+    gFunctionMap["MFCreateMediaType"] = reinterpret_cast<void*>(&stub_MFCreateMediaType);
+    gFunctionMap["MFCreateDXGIDeviceManager"] = reinterpret_cast<void*>(&stub_MFCreateDXGIDeviceManager);
+    gFunctionMap["MFCreateMemoryBuffer"] = reinterpret_cast<void*>(&stub_MFCreateMemoryBuffer);
+    gFunctionMap["MFCreateSample"] = reinterpret_cast<void*>(&stub_MFCreateSample);
+    gFunctionMap["MFCalculateImageSize"] = reinterpret_cast<void*>(&stub_MFCalculateImageSize);
+    gFunctionMap["MFGetStrideForBitmapInfoHeader"] = reinterpret_cast<void*>(&stub_MFGetStrideForBitmapInfoHeader);
+    gFunctionMap["MFllMulDiv"] = reinterpret_cast<void*>(&stub_MFllMulDiv);
+    gFunctionMap["MFCreateSourceResolver"] = reinterpret_cast<void*>(&stub_MFCreateSourceResolver);
+    gFunctionMap["MFCreateAsyncResult"] = reinterpret_cast<void*>(&stub_MFCreateAsyncResult);
+    gFunctionMap["MFInvokeCallback"] = reinterpret_cast<void*>(&stub_MFInvokeCallback);
+    gFunctionMap["MFCreateSourceReaderFromMediaSource"] = reinterpret_cast<void*>(&stub_MFCreateSourceReaderFromMediaSource);
+    gFunctionMap["MFCreateSourceReaderFromURL"] = reinterpret_cast<void*>(&stub_MFCreateSourceReaderFromURL);
 
     LOGI("Bảng Win32 Bridge đã khởi tạo thành công %zu hàm stub native!", gFunctionMap.size());
 }
