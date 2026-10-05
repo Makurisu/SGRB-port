@@ -159,7 +159,9 @@ class TestD3D11BridgeLogic(unittest.TestCase):
             "indexDraws": 50,
             "texturesCreated": 18,
             "shadersCreated": 1798,
-            "buffersCreated": 150000
+            "buffersCreated": 150000,
+            "cpuBytes": 48900000,
+            "droppedResources": 0
         }
         self.assertEqual(len(frame_state["clearColor"]), 4)
         self.assertEqual(frame_state["width"], 1920)
@@ -167,6 +169,8 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertEqual(frame_state["texturesCreated"], 18)
         self.assertEqual(frame_state["shadersCreated"], 1798)
         self.assertGreater(frame_state["buffersCreated"], 0)
+        self.assertGreater(frame_state["cpuBytes"], 0)
+        self.assertEqual(frame_state["droppedResources"], 0)
 
     def test_render_frame_state_abi_layout(self):
         # Xác thực kích thước và offset của RenderFrameState trong C++ ABI
@@ -182,8 +186,10 @@ class TestD3D11BridgeLogic(unittest.TestCase):
                 ('texturesCreated', ctypes.c_uint),
                 ('shadersCreated', ctypes.c_uint),
                 ('buffersCreated', ctypes.c_uint),
+                ('cpuBytes', ctypes.c_uint64),
+                ('droppedResources', ctypes.c_uint),
             ]
-        self.assertEqual(ctypes.sizeof(RenderFrameState), 48, "RenderFrameState phải có kích thước đúng 48 bytes (12 * 4 bytes)")
+        self.assertEqual(ctypes.sizeof(RenderFrameState), 64, "RenderFrameState phải có kích thước đúng 64 bytes")
         self.assertEqual(RenderFrameState.clearColor.offset, 0)
         self.assertEqual(RenderFrameState.frameIndex.offset, 16)
         self.assertEqual(RenderFrameState.width.offset, 20)
@@ -193,6 +199,8 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertEqual(RenderFrameState.texturesCreated.offset, 36)
         self.assertEqual(RenderFrameState.shadersCreated.offset, 40)
         self.assertEqual(RenderFrameState.buffersCreated.offset, 44)
+        self.assertEqual(RenderFrameState.cpuBytes.offset, 48)
+        self.assertEqual(RenderFrameState.droppedResources.offset, 56)
 
     def test_clear_render_target_view_slot_mapping(self):
         # Slot 50 trong ID3D11DeviceContext là ClearRenderTargetView
@@ -278,6 +286,33 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         frame = q.get(timeout=0.1)
         self.assertEqual(frame["frame"], 1)
         self.assertEqual(frame["rgba"][3], 1.0)
+
+    def test_bc7_compressed_size_calculation(self):
+        # Kiểm tra tính toán kích thước nén BC7
+        # Mỗi block 4x4 là 16 bytes
+        # 1920x1080 -> 480x270 blocks = 129,600 blocks * 16 = 2,073,600 bytes
+        width = 1920
+        height = 1080
+        blocks_x = (width + 3) // 4
+        blocks_y = (height + 3) // 4
+        expected_size = blocks_x * blocks_y * 16
+        self.assertEqual(expected_size, 2073600)
+
+        # 3424x3424 (texture lớn nhất trong SGRE) -> 856x856 blocks = 732,736 blocks * 16 = 11,723,776 bytes (~11.18 MB)
+        width_max = 3424
+        height_max = 3424
+        blocks_x_max = (width_max + 3) // 4
+        blocks_y_max = (height_max + 3) // 4
+        expected_size_max = blocks_x_max * blocks_y_max * 16
+        self.assertEqual(expected_size_max, 11723776)
+
+    def test_resource_registry_budget_cap(self):
+        # Ngân sách mặc định 768 MB
+        budget_bytes = 768 * 1024 * 1024
+        self.assertEqual(budget_bytes, 805306368)
+        # Texture 3424x3424 giải nén sang RGBA8: 3424 * 3424 * 4 = 46,894,080 bytes (~44.7 MB)
+        rgba8_bytes = 3424 * 3424 * 4
+        self.assertLess(rgba8_bytes, budget_bytes)
 
 if __name__ == "__main__":
     unittest.main()

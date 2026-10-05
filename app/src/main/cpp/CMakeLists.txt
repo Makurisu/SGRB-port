@@ -8,6 +8,8 @@ add_library(sgre_wrapper SHARED
     steam_hook.cpp
     payload_loader.cpp
     d3d11_bridge.cpp
+    bc7_decoder.cpp
+    resource_registry.cpp
     dinput_bridge.cpp
     xaudio2_bridge.cpp
     win32_bridge.cpp

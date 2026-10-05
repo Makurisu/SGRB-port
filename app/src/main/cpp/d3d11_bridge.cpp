@@ -1,8 +1,10 @@
 #include "d3d11_bridge.h"
+#include "resource_registry.h"
 #include <android/log.h>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <new>
 #include <utility>
 #include <mutex>
 #include <condition_variable>
@@ -75,6 +77,9 @@ static SGRE_COM_Mock gMockShaderType = { gShaderReflectionTypeVtable };
 // Vùng nhớ đệm an toàn cho ID3D11DeviceContext::Map
 static uint8_t sMappedScratchMemory[16 * 1024 * 1024]; // 16 MB
 
+// Quản lý tài nguyên CPU
+static sgre::ResourceRegistry sRegistry(sgre::kDefaultCpuBudgetBytes);
+
 // COM IUnknown methods
 static int64_t WINAPI mock_COM_QueryInterface(void* thisPtr, const void* riid, void** ppvObject) {
     if (!ppvObject) return 0x80004003; // E_POINTER
@@ -138,8 +143,33 @@ static int64_t WINAPI mock_COM_QueryInterface(void* thisPtr, const void* riid, v
     return 0; // S_OK
 }
 
-static uint32_t WINAPI mock_COM_AddRef(void*) { return 1; }
-static uint32_t WINAPI mock_COM_Release(void*) { return 1; }
+static uint32_t WINAPI mock_COM_AddRef(void* thisPtr) {
+    int32_t ref = sRegistry.addRef(thisPtr);
+    return ref > 0 ? static_cast<uint32_t>(ref) : 1;
+}
+static uint32_t WINAPI mock_COM_Release(void* thisPtr) {
+    int32_t ref = sRegistry.release(thisPtr);
+    if (ref == 0) {
+        // Handle đã bị huỷ khỏi sRegistry, giải phóng wrapper struct nếu không phải static mock
+        if (thisPtr != &gMockDevice &&
+            thisPtr != &gMockContext &&
+            thisPtr != &gMockMultithread &&
+            thisPtr != &gMockDXGIDevice &&
+            thisPtr != &gMockDXGIAdapter &&
+            thisPtr != &gMockDXGIFactory &&
+            thisPtr != &gMockSwapChain &&
+            thisPtr != &gMockTexture2D &&
+            thisPtr != &gMockGenericResource &&
+            thisPtr != &gMockShaderReflection &&
+            thisPtr != &gMockShaderConstantBuffer &&
+            thisPtr != &gMockShaderVariable &&
+            thisPtr != &gMockShaderType) {
+            delete reinterpret_cast<SGRE_COM_Mock*>(thisPtr);
+        }
+        return 0;
+    }
+    return ref > 0 ? static_cast<uint32_t>(ref) : 1;
+}
 
 // Fallback method tuyệt đối an toàn: KHÔNG dereference bất kỳ con trỏ nào
 static int64_t WINAPI mock_COM_Generic(void*, void*, void*, void*, void*, void*, void*, void*) {
@@ -260,7 +290,7 @@ static std::atomic<uint32_t> sTotalTexturesCreated{0};
 static std::atomic<uint32_t> sTotalShadersCreated{0};
 static std::atomic<uint32_t> sTotalDrawIndexedCalls{0};
 static std::atomic<uint32_t> sTotalDrawCalls{0};
-static RenderFrameState sCurrentFrameState = { {0.0f, 0.0f, 0.0f, 1.0f}, 0, 1920, 1080, 0, 0, 0, 0, 0 };
+static RenderFrameState sCurrentFrameState = { {0.0f, 0.0f, 0.0f, 1.0f}, 0, 1920, 1080, 0, 0, 0, 0, 0, 0, 0 };
 static bool sNewFrameAvailable = false;
 
 // IDXGIFactory methods
@@ -327,6 +357,9 @@ static int64_t WINAPI mock_SwapChain_Present(void*, uint32_t syncInterval, uint3
         sCurrentFrameState.texturesCreated = sTotalTexturesCreated.load();
         sCurrentFrameState.shadersCreated = sTotalShadersCreated.load();
         sCurrentFrameState.buffersCreated = sTotalBuffersCreated.load();
+        const auto stats = sRegistry.stats();
+        sCurrentFrameState.cpuBytes = stats.cpuBytes;
+        sCurrentFrameState.droppedResources = stats.droppedResources;
         sNewFrameAvailable = true;
     }
     sFrameCond.notify_one();
@@ -457,6 +490,9 @@ static int64_t WINAPI mock_SwapChain_Present1(void*, uint32_t syncInterval, uint
         sCurrentFrameState.texturesCreated = sTotalTexturesCreated.load();
         sCurrentFrameState.shadersCreated = sTotalShadersCreated.load();
         sCurrentFrameState.buffersCreated = sTotalBuffersCreated.load();
+        const auto stats = sRegistry.stats();
+        sCurrentFrameState.cpuBytes = stats.cpuBytes;
+        sCurrentFrameState.droppedResources = stats.droppedResources;
         sNewFrameAvailable = true;
     }
     sFrameCond.notify_one();
@@ -525,23 +561,62 @@ struct MockRect {
 // ID3D11Device methods
 static int64_t WINAPI mock_Device_CreateBuffer(void*, const void* pDesc, const void* pInitialData, void** ppBuffer) {
     sTotalBuffersCreated++;
+    auto* mockBuf = new SGRE_COM_Mock{ gGenericResourceVtable };
     if (pDesc) {
         const auto* desc = reinterpret_cast<const MockBufferDesc*>(pDesc);
         LOGI("ID3D11Device::CreateBuffer: ByteWidth=%u, Usage=%u, BindFlags=0x%x, InitialData=%p",
              desc->byteWidth, desc->usage, desc->bindFlags, pInitialData);
+
+        sgre::BufferDesc bufDesc{};
+        bufDesc.byteWidth = desc->byteWidth;
+        bufDesc.usage = desc->usage;
+        bufDesc.bindFlags = desc->bindFlags;
+        bufDesc.cpuAccessFlags = desc->cpuAccessFlags;
+        bufDesc.miscFlags = desc->miscFlags;
+        bufDesc.structureByteStride = desc->structureByteStride;
+
+        const void* initMem = nullptr;
+        if (pInitialData) {
+            const auto* subData = reinterpret_cast<const MockSubresourceData*>(pInitialData);
+            initMem = subData->pSysMem;
+        }
+        sRegistry.registerBuffer(mockBuf, bufDesc, initMem);
     }
-    if (ppBuffer) *ppBuffer = &gMockGenericResource;
+    if (ppBuffer) *ppBuffer = mockBuf;
     return 0;
 }
 
 static int64_t WINAPI mock_Device_CreateTexture2D(void*, const void* pDesc, const void* pInitialData, void** ppTexture2D) {
     sTotalTexturesCreated++;
+    auto* mockTex = new SGRE_COM_Mock{ gTexture2DVtable };
     if (pDesc) {
         const auto* desc = reinterpret_cast<const MockTexture2DDesc*>(pDesc);
         LOGI("ID3D11Device::CreateTexture2D: %ux%u, Mips=%u, Array=%u, Format=%u, BindFlags=0x%x, InitialData=%p",
              desc->width, desc->height, desc->mipLevels, desc->arraySize, desc->format, desc->bindFlags, pInitialData);
+
+        sgre::TextureDesc texDesc{};
+        texDesc.width = desc->width;
+        texDesc.height = desc->height;
+        texDesc.mipLevels = desc->mipLevels;
+        texDesc.arraySize = desc->arraySize;
+        texDesc.format = desc->format;
+        texDesc.sampleCount = desc->sampleCount;
+        texDesc.sampleQuality = desc->sampleQuality;
+        texDesc.usage = desc->usage;
+        texDesc.bindFlags = desc->bindFlags;
+        texDesc.cpuAccessFlags = desc->cpuAccessFlags;
+        texDesc.miscFlags = desc->miscFlags;
+
+        const void* initMem = nullptr;
+        uint32_t initPitch = 0;
+        if (pInitialData) {
+            const auto* subData = reinterpret_cast<const MockSubresourceData*>(pInitialData);
+            initMem = subData->pSysMem;
+            initPitch = subData->sysMemPitch;
+        }
+        sRegistry.registerTexture(mockTex, texDesc, initMem, initPitch);
     }
-    if (ppTexture2D) *ppTexture2D = &gMockTexture2D;
+    if (ppTexture2D) *ppTexture2D = mockTex;
     return 0;
 }
 
@@ -611,9 +686,16 @@ static int64_t WINAPI mock_Context_Map(void*, void* pResource, uint32_t subresou
             uint32_t depthPitch;
         } *mapped = reinterpret_cast<MockMappedSubresource*>(pMappedResource);
 
-        mapped->pData = sMappedScratchMemory;
-        mapped->rowPitch = 4096;
-        mapped->depthPitch = 4096 * 1080;
+        sgre::MappedView view{};
+        if (pResource && sRegistry.map(pResource, view)) {
+            mapped->pData = view.data;
+            mapped->rowPitch = view.rowPitch;
+            mapped->depthPitch = view.depthPitch;
+        } else {
+            mapped->pData = sMappedScratchMemory;
+            mapped->rowPitch = 4096;
+            mapped->depthPitch = 4096 * 1080;
+        }
     }
     return 0; // S_OK
 }
@@ -648,13 +730,19 @@ static void WINAPI mock_Context_RSSetScissorRects(void*, uint32_t numRects, cons
 }
 
 static void WINAPI mock_Context_UpdateSubresource(
-    void*, void* pDstResource, uint32_t dstSubresource, const void*,
+    void*, void* pDstResource, uint32_t dstSubresource, const void* pDstBox,
     const void* pSrcData, uint32_t srcRowPitch, uint32_t srcDepthPitch
 ) {
     static uint32_t sUpdateCount = 0;
     if (++sUpdateCount % 60 == 1) {
         LOGI("ID3D11DeviceContext::UpdateSubresource: Dst=%p, Subres=%u, Src=%p, RowPitch=%u, DepthPitch=%u",
              pDstResource, dstSubresource, pSrcData, srcRowPitch, srcDepthPitch);
+    }
+    if (pDstResource && pSrcData) {
+        const auto* box = reinterpret_cast<const sgre::UpdateBox*>(pDstBox);
+        if (!sRegistry.updateBuffer(pDstResource, box, pSrcData)) {
+            sRegistry.updateTexture(pDstResource, box, pSrcData, srcRowPitch);
+        }
     }
 }
 

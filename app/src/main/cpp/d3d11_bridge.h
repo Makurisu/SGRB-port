@@ -15,6 +15,8 @@ struct RenderFrameState {
     uint32_t texturesCreated;
     uint32_t shadersCreated;
     uint32_t buffersCreated;
+    uint64_t cpuBytes;
+    uint32_t droppedResources;
 };
 
 class D3D11Bridge {

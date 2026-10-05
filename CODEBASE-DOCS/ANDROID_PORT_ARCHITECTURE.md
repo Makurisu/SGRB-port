@@ -173,6 +173,14 @@ sequenceDiagram
     - Khởi tạo đầy đủ cấu trúc `DXGI_SWAP_CHAIN_DESC` với trường `BufferCount` tại offset `0x28` (ứng với câu lệnh `mov ebp, dword ptr [rsp + 0x58]` tại RVA `0x4C47C5`).
     - Đảm bảo `BufferCount >= 1` (mặc định 2 hoặc 3 theo cấu hình swapchain), ngăn chặn triệt để lỗi chia cho 0 `SIGFPE (FPE_INTDIV)` tại RVA `0x54AF2A` (`div r8`) khi engine khởi tạo số lượng bucket của container quản lý backbuffer.
     - Cung cấp `mock_Texture2D_GetType` và `mock_Texture2D_GetDesc` đồng bộ kích thước và định dạng texture.
+- **`resource_registry.cpp` & `bc7_decoder.cpp` (Milestone M1 - Resource Registry & BC7 Decoder)**:
+  - **Resource Registry**: Quản lý tập trung vòng đời các tài nguyên D3D11 (Buffer và Texture2D) phía CPU được cấp phát bởi `CreateBuffer` và `CreateTexture2D`.
+    - Giới hạn ngân sách bộ nhớ RAM CPU cố định (768 MB) nhằm ngăn chặn Android Low Memory Killer (LMK). Khi vượt ngân sách, hệ thống chỉ giữ lại metadata để đảm bảo engine không crash và ghi nhận telemetry `droppedResources`.
+    - Hỗ trợ đầy đủ các thao tác ghi dữ liệu `UpdateSubresource` và ánh xạ bộ nhớ `Map` / `Unmap`.
+    - Quản lý bộ đếm tham chiếu COM (`AddRef` / `Release`) đồng bộ với vòng đời của game engine.
+  - **BC7 Decoder**: Giải nén định dạng nén khối BC7 (DXGI_FORMAT_BC7_UNORM / BC7_UNORM_SRGB) sang định dạng chuẩn RGBA8 trên CPU sử dụng thư viện `bcdec`.
+    - Xử lý mượt mà mọi kích thước texture (kể cả kích thước không chia hết cho 4), bảo vệ an toàn biên bộ nhớ.
+    - Cho phép nạp trực tiếp texture nền, sprite nhân vật và UI của game vào bộ nhớ render mà không phụ thuộc vào phần cứng GPU hỗ trợ BC7.
 - **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
   - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
   - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.
