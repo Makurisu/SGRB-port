@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <utility>
 
 #define LOG_TAG "SGRE_D3D11Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -542,16 +543,41 @@ static void* WINAPI mock_Reflection_GetType(void*) {
     return &gMockShaderType;
 }
 
+static bool sDeviceSlotLogged[128] = {false};
+static bool sContextSlotLogged[128] = {false};
+
+template<size_t Slot>
+struct SlotDispatcher {
+    static int64_t WINAPI deviceSlot(void* thisPtr) {
+        if (!sDeviceSlotLogged[Slot]) {
+            sDeviceSlotLogged[Slot] = true;
+            LOGI(">>> D3D11 Device::Slot[%zu] invoked on %p", Slot, thisPtr);
+        }
+        return 0; // S_OK
+    }
+
+    static int64_t WINAPI contextSlot(void* thisPtr) {
+        if (!sContextSlotLogged[Slot]) {
+            sContextSlotLogged[Slot] = true;
+            LOGI(">>> D3D11 Context::Slot[%zu] invoked on %p", Slot, thisPtr);
+        }
+        return 0; // S_OK
+    }
+};
+
+template<size_t... Is>
+static void populateFallbackSlots(uint64_t* devTable, uint64_t* ctxTable, std::index_sequence<Is...>) {
+    ((devTable[Is] = reinterpret_cast<uint64_t>(&SlotDispatcher<Is>::deviceSlot)), ...);
+    ((ctxTable[Is] = reinterpret_cast<uint64_t>(&SlotDispatcher<Is>::contextSlot)), ...);
+}
+
 static void initVtablesOnce() {
     static bool initialized = false;
     if (initialized) return;
     initialized = true;
 
-    // 1. Khởi tạo tất cả vtable với mock_COM_Generic an toàn
-    for (int i = 0; i < 128; ++i) {
-        gDeviceVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
-        gContextVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
-    }
+    // 1. Khởi tạo tất cả vtable với telemetry thunks và mock_COM_Generic an toàn
+    populateFallbackSlots(gDeviceVtable, gContextVtable, std::make_index_sequence<128>{});
     for (int i = 0; i < 32; ++i) {
         gDXGIDeviceVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
         gDXGIAdapterVtable[i] = reinterpret_cast<uint64_t>(&mock_COM_Generic);
