@@ -6,6 +6,7 @@
 #include <utility>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 
 #define LOG_TAG "SGRE_D3D11Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -254,7 +255,12 @@ static uint32_t gCurrentBufferCount = 2; // Tối thiểu 2 buffers để tránh
 // Đồng bộ hoá khung hình giữa Game Thread (D3D11) và Android Render Thread (EGL)
 static std::mutex sFrameMutex;
 static std::condition_variable sFrameCond;
-static RenderFrameState sCurrentFrameState = { {0.0f, 0.0f, 0.0f, 1.0f}, 0, 1920, 1080 };
+static std::atomic<uint32_t> sTotalBuffersCreated{0};
+static std::atomic<uint32_t> sTotalTexturesCreated{0};
+static std::atomic<uint32_t> sTotalShadersCreated{0};
+static std::atomic<uint32_t> sTotalDrawIndexedCalls{0};
+static std::atomic<uint32_t> sTotalDrawCalls{0};
+static RenderFrameState sCurrentFrameState = { {0.0f, 0.0f, 0.0f, 1.0f}, 0, 1920, 1080, 0, 0, 0, 0, 0 };
 static bool sNewFrameAvailable = false;
 
 // IDXGIFactory methods
@@ -316,6 +322,11 @@ static int64_t WINAPI mock_SwapChain_Present(void*, uint32_t syncInterval, uint3
         sCurrentFrameState.frameIndex = frameCount;
         sCurrentFrameState.width = gCurrentWidth;
         sCurrentFrameState.height = gCurrentHeight;
+        sCurrentFrameState.drawCalls = sTotalDrawCalls.load();
+        sCurrentFrameState.indexDraws = sTotalDrawIndexedCalls.load();
+        sCurrentFrameState.texturesCreated = sTotalTexturesCreated.load();
+        sCurrentFrameState.shadersCreated = sTotalShadersCreated.load();
+        sCurrentFrameState.buffersCreated = sTotalBuffersCreated.load();
         sNewFrameAvailable = true;
     }
     sFrameCond.notify_one();
@@ -441,6 +452,11 @@ static int64_t WINAPI mock_SwapChain_Present1(void*, uint32_t syncInterval, uint
         sCurrentFrameState.frameIndex = frameCount1;
         sCurrentFrameState.width = gCurrentWidth;
         sCurrentFrameState.height = gCurrentHeight;
+        sCurrentFrameState.drawCalls = sTotalDrawCalls.load();
+        sCurrentFrameState.indexDraws = sTotalDrawIndexedCalls.load();
+        sCurrentFrameState.texturesCreated = sTotalTexturesCreated.load();
+        sCurrentFrameState.shadersCreated = sTotalShadersCreated.load();
+        sCurrentFrameState.buffersCreated = sTotalBuffersCreated.load();
         sNewFrameAvailable = true;
     }
     sFrameCond.notify_one();
@@ -508,6 +524,7 @@ struct MockRect {
 
 // ID3D11Device methods
 static int64_t WINAPI mock_Device_CreateBuffer(void*, const void* pDesc, const void* pInitialData, void** ppBuffer) {
+    sTotalBuffersCreated++;
     if (pDesc) {
         const auto* desc = reinterpret_cast<const MockBufferDesc*>(pDesc);
         LOGI("ID3D11Device::CreateBuffer: ByteWidth=%u, Usage=%u, BindFlags=0x%x, InitialData=%p",
@@ -518,6 +535,7 @@ static int64_t WINAPI mock_Device_CreateBuffer(void*, const void* pDesc, const v
 }
 
 static int64_t WINAPI mock_Device_CreateTexture2D(void*, const void* pDesc, const void* pInitialData, void** ppTexture2D) {
+    sTotalTexturesCreated++;
     if (pDesc) {
         const auto* desc = reinterpret_cast<const MockTexture2DDesc*>(pDesc);
         LOGI("ID3D11Device::CreateTexture2D: %ux%u, Mips=%u, Array=%u, Format=%u, BindFlags=0x%x, InitialData=%p",
@@ -533,6 +551,7 @@ static int64_t WINAPI mock_Device_CreateView(void*, void*, const void*, void** p
 }
 
 static int64_t WINAPI mock_Device_CreateShader(void*, const void* pBytecode, size_t bytecodeLength, void*, void** ppShader) {
+    sTotalShadersCreated++;
     LOGI("ID3D11Device::CreateShader: BytecodeLength=%zu, Bytecode=%p", bytecodeLength, pBytecode);
     if (ppShader) *ppShader = &gMockGenericResource;
     return 0;
@@ -562,6 +581,7 @@ static void WINAPI mock_Device_GetImmediateContext(void*, void** ppImmediateCont
 
 // ID3D11DeviceContext methods
 static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t startIndexLocation, int32_t baseVertexLocation) {
+    sTotalDrawIndexedCalls++;
     static uint32_t sDrawIndexedCount = 0;
     if (++sDrawIndexedCount % 60 == 1) {
         LOGI("ID3D11DeviceContext::DrawIndexed: IndexCount=%u, StartIndex=%u, BaseVertex=%d (total calls: %u)",
@@ -570,6 +590,7 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
 }
 
 static void WINAPI mock_Context_Draw(void*, uint32_t vertexCount, uint32_t startVertexLocation) {
+    sTotalDrawCalls++;
     static uint32_t sDrawCount = 0;
     if (++sDrawCount % 60 == 1) {
         LOGI("ID3D11DeviceContext::Draw: VertexCount=%u, StartVertex=%u (total calls: %u)",

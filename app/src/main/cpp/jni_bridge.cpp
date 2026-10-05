@@ -108,6 +108,14 @@ static void renderLoop() {
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         eglSwapBuffers(display, surface);
+
+        static uint32_t sPresentCounter = 0;
+        if (hasFrame && ++sPresentCounter % 60 == 1) {
+            LOGI("EGL Present: Frame %u (%ux%u) | Color: (%.2f, %.2f, %.2f) | DrawIndexed: %u | Textures: %u | Shaders: %u",
+                 frameState.frameIndex, frameState.width, frameState.height,
+                 frameState.clearColor[0], frameState.clearColor[1], frameState.clearColor[2],
+                 frameState.indexDraws, frameState.texturesCreated, frameState.shadersCreated);
+        }
     }
 
     LOGI("Dừng vòng lặp render, giải phóng EGL...");

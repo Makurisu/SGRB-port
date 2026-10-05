@@ -10,6 +10,11 @@ struct RenderFrameState {
     uint32_t frameIndex;
     uint32_t width;
     uint32_t height;
+    uint32_t drawCalls;
+    uint32_t indexDraws;
+    uint32_t texturesCreated;
+    uint32_t shadersCreated;
+    uint32_t buffersCreated;
 };
 
 class D3D11Bridge {
