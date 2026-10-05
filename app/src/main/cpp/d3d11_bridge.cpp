@@ -77,6 +77,9 @@ static SGRE_COM_Mock gMockShaderType = { gShaderReflectionTypeVtable };
 // Vùng nhớ đệm an toàn cho ID3D11DeviceContext::Map
 static uint8_t sMappedScratchMemory[16 * 1024 * 1024]; // 16 MB
 
+// Quản lý tài nguyên CPU
+static sgre::ResourceRegistry sRegistry(sgre::kDefaultCpuBudgetBytes);
+
 // COM IUnknown methods
 static int64_t WINAPI mock_COM_QueryInterface(void* thisPtr, const void* riid, void** ppvObject) {
     if (!ppvObject) return 0x80004003; // E_POINTER
@@ -287,7 +290,6 @@ static std::atomic<uint32_t> sTotalTexturesCreated{0};
 static std::atomic<uint32_t> sTotalShadersCreated{0};
 static std::atomic<uint32_t> sTotalDrawIndexedCalls{0};
 static std::atomic<uint32_t> sTotalDrawCalls{0};
-static sgre::ResourceRegistry sRegistry(sgre::kDefaultCpuBudgetBytes);
 static RenderFrameState sCurrentFrameState = { {0.0f, 0.0f, 0.0f, 1.0f}, 0, 1920, 1080, 0, 0, 0, 0, 0, 0, 0 };
 static bool sNewFrameAvailable = false;
 
