@@ -161,13 +161,80 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertEqual(frame_state["height"], 1080)
 
     def test_clear_render_target_view_slot_mapping(self):
-        # Slot 49/50 trong ID3D11DeviceContext là ClearRenderTargetView
+        # Slot 50 trong ID3D11DeviceContext là ClearRenderTargetView
         context_slots = {
-            49: "ClearRenderTargetView",
             50: "ClearRenderTargetView"
         }
-        self.assertEqual(context_slots[49], "ClearRenderTargetView")
         self.assertEqual(context_slots[50], "ClearRenderTargetView")
+
+    def test_device_context_vtable_specification(self):
+        # Kiểm tra bảng phân giải slot ID3D11DeviceContext chuẩn DirectX 11
+        context_slots = {
+            12: "DrawIndexed",
+            13: "Draw",
+            14: "Map",
+            15: "Unmap",
+            44: "RSSetViewports",
+            45: "RSSetScissorRects",
+            48: "UpdateSubresource",
+            50: "ClearRenderTargetView"
+        }
+        self.assertEqual(context_slots[12], "DrawIndexed")
+        self.assertEqual(context_slots[13], "Draw")
+        self.assertEqual(context_slots[14], "Map")
+        self.assertEqual(context_slots[15], "Unmap")
+        self.assertEqual(context_slots[44], "RSSetViewports")
+        self.assertEqual(context_slots[45], "RSSetScissorRects")
+        self.assertEqual(context_slots[48], "UpdateSubresource")
+        self.assertEqual(context_slots[50], "ClearRenderTargetView")
+
+    def test_device_vtable_specification(self):
+        # Kiểm tra bảng phân giải slot ID3D11Device chuẩn DirectX 11
+        device_slots = {
+            3: "CreateBuffer",
+            5: "CreateTexture2D",
+            7: "CreateShaderResourceView",
+            9: "CreateRenderTargetView",
+            10: "CreateDepthStencilView",
+            11: "CreateInputLayout",
+            12: "CreateVertexShader",
+            15: "CreatePixelShader",
+            20: "CreateBlendState",
+            21: "CreateDepthStencilState",
+            22: "CreateRasterizerState",
+            23: "CreateSamplerState",
+            37: "GetFeatureLevel",
+            40: "GetImmediateContext"
+        }
+        self.assertEqual(device_slots[3], "CreateBuffer")
+        self.assertEqual(device_slots[5], "CreateTexture2D")
+        self.assertEqual(device_slots[12], "CreateVertexShader")
+        self.assertEqual(device_slots[15], "CreatePixelShader")
+
+    def test_buffer_desc_structure(self):
+        import ctypes
+        class D3D11_BUFFER_DESC(ctypes.Structure):
+            _fields_ = [
+                ('ByteWidth', ctypes.c_uint),
+                ('Usage', ctypes.c_uint),
+                ('BindFlags', ctypes.c_uint),
+                ('CPUAccessFlags', ctypes.c_uint),
+                ('MiscFlags', ctypes.c_uint),
+                ('StructureByteStride', ctypes.c_uint),
+            ]
+        self.assertEqual(ctypes.sizeof(D3D11_BUFFER_DESC), 24)
+        self.assertEqual(D3D11_BUFFER_DESC.ByteWidth.offset, 0)
+        self.assertEqual(D3D11_BUFFER_DESC.BindFlags.offset, 8)
+
+    def test_subresource_data_structure(self):
+        import ctypes
+        class D3D11_SUBRESOURCE_DATA(ctypes.Structure):
+            _fields_ = [
+                ('pSysMem', ctypes.c_void_p),
+                ('SysMemPitch', ctypes.c_uint),
+                ('SysMemSlicePitch', ctypes.c_uint),
+            ]
+        self.assertEqual(D3D11_SUBRESOURCE_DATA.pSysMem.offset, 0)
 
     def test_frame_sync_producer_consumer(self):
         # Mô phỏng Producer-Consumer giữa D3D11 Present và Android Render Loop
@@ -180,5 +247,6 @@ class TestD3D11BridgeLogic(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

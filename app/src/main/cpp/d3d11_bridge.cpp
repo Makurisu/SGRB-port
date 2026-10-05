@@ -475,13 +475,54 @@ static void WINAPI mock_Texture2D_GetDesc(void*, void* pDesc) {
     }
 }
 
+struct MockBufferDesc {
+    uint32_t byteWidth;
+    uint32_t usage;
+    uint32_t bindFlags;
+    uint32_t cpuAccessFlags;
+    uint32_t miscFlags;
+    uint32_t structureByteStride;
+};
+
+struct MockSubresourceData {
+    const void* pSysMem;
+    uint32_t sysMemPitch;
+    uint32_t sysMemSlicePitch;
+};
+
+struct MockViewport {
+    float topLeftX;
+    float topLeftY;
+    float width;
+    float height;
+    float minDepth;
+    float maxDepth;
+};
+
+struct MockRect {
+    int32_t left;
+    int32_t top;
+    int32_t right;
+    int32_t bottom;
+};
+
 // ID3D11Device methods
-static int64_t WINAPI mock_Device_CreateBuffer(void*, const void*, const void*, void** ppBuffer) {
+static int64_t WINAPI mock_Device_CreateBuffer(void*, const void* pDesc, const void* pInitialData, void** ppBuffer) {
+    if (pDesc) {
+        const auto* desc = reinterpret_cast<const MockBufferDesc*>(pDesc);
+        LOGI("ID3D11Device::CreateBuffer: ByteWidth=%u, Usage=%u, BindFlags=0x%x, InitialData=%p",
+             desc->byteWidth, desc->usage, desc->bindFlags, pInitialData);
+    }
     if (ppBuffer) *ppBuffer = &gMockGenericResource;
     return 0;
 }
 
-static int64_t WINAPI mock_Device_CreateTexture2D(void*, const void*, const void*, void** ppTexture2D) {
+static int64_t WINAPI mock_Device_CreateTexture2D(void*, const void* pDesc, const void* pInitialData, void** ppTexture2D) {
+    if (pDesc) {
+        const auto* desc = reinterpret_cast<const MockTexture2DDesc*>(pDesc);
+        LOGI("ID3D11Device::CreateTexture2D: %ux%u, Mips=%u, Array=%u, Format=%u, BindFlags=0x%x, InitialData=%p",
+             desc->width, desc->height, desc->mipLevels, desc->arraySize, desc->format, desc->bindFlags, pInitialData);
+    }
     if (ppTexture2D) *ppTexture2D = &gMockTexture2D;
     return 0;
 }
@@ -491,7 +532,8 @@ static int64_t WINAPI mock_Device_CreateView(void*, void*, const void*, void** p
     return 0;
 }
 
-static int64_t WINAPI mock_Device_CreateShader(void*, const void*, size_t, void*, void** ppShader) {
+static int64_t WINAPI mock_Device_CreateShader(void*, const void* pBytecode, size_t bytecodeLength, void*, void** ppShader) {
+    LOGI("ID3D11Device::CreateShader: BytecodeLength=%zu, Bytecode=%p", bytecodeLength, pBytecode);
     if (ppShader) *ppShader = &gMockGenericResource;
     return 0;
 }
@@ -519,7 +561,28 @@ static void WINAPI mock_Device_GetImmediateContext(void*, void** ppImmediateCont
 }
 
 // ID3D11DeviceContext methods
-static int64_t WINAPI mock_Context_Map(void*, void*, uint32_t, uint32_t, uint32_t, void* pMappedResource) {
+static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t startIndexLocation, int32_t baseVertexLocation) {
+    static uint32_t sDrawIndexedCount = 0;
+    if (++sDrawIndexedCount % 60 == 1) {
+        LOGI("ID3D11DeviceContext::DrawIndexed: IndexCount=%u, StartIndex=%u, BaseVertex=%d (total calls: %u)",
+             indexCount, startIndexLocation, baseVertexLocation, sDrawIndexedCount);
+    }
+}
+
+static void WINAPI mock_Context_Draw(void*, uint32_t vertexCount, uint32_t startVertexLocation) {
+    static uint32_t sDrawCount = 0;
+    if (++sDrawCount % 60 == 1) {
+        LOGI("ID3D11DeviceContext::Draw: VertexCount=%u, StartVertex=%u (total calls: %u)",
+             vertexCount, startVertexLocation, sDrawCount);
+    }
+}
+
+static int64_t WINAPI mock_Context_Map(void*, void* pResource, uint32_t subresource, uint32_t mapType, uint32_t mapFlags, void* pMappedResource) {
+    static uint32_t sMapCount = 0;
+    if (++sMapCount % 60 == 1) {
+        LOGI("ID3D11DeviceContext::Map: Resource=%p, Subresource=%u, Type=%u, Flags=0x%x",
+             pResource, subresource, mapType, mapFlags);
+    }
     if (pMappedResource) {
         struct MockMappedSubresource {
             void* pData;
@@ -534,7 +597,45 @@ static int64_t WINAPI mock_Context_Map(void*, void*, uint32_t, uint32_t, uint32_
     return 0; // S_OK
 }
 
-static void WINAPI mock_Context_Unmap(void*, void*, uint32_t) {}
+static void WINAPI mock_Context_Unmap(void*, void* pResource, uint32_t subresource) {
+    static uint32_t sUnmapCount = 0;
+    if (++sUnmapCount % 60 == 1) {
+        LOGI("ID3D11DeviceContext::Unmap: Resource=%p, Subresource=%u", pResource, subresource);
+    }
+}
+
+static void WINAPI mock_Context_RSSetViewports(void*, uint32_t numViewports, const MockViewport* pViewports) {
+    if (numViewports > 0 && pViewports) {
+        static uint32_t sVpCount = 0;
+        if (++sVpCount % 60 == 1) {
+            LOGI("ID3D11DeviceContext::RSSetViewports: [%.0f, %.0f, %.0fx%.0f, depth: %.1f-%.1f]",
+                 pViewports[0].topLeftX, pViewports[0].topLeftY,
+                 pViewports[0].width, pViewports[0].height,
+                 pViewports[0].minDepth, pViewports[0].maxDepth);
+        }
+    }
+}
+
+static void WINAPI mock_Context_RSSetScissorRects(void*, uint32_t numRects, const MockRect* pRects) {
+    if (numRects > 0 && pRects) {
+        static uint32_t sScissorCount = 0;
+        if (++sScissorCount % 60 == 1) {
+            LOGI("ID3D11DeviceContext::RSSetScissorRects: [%d, %d, %d, %d]",
+                 pRects[0].left, pRects[0].top, pRects[0].right, pRects[0].bottom);
+        }
+    }
+}
+
+static void WINAPI mock_Context_UpdateSubresource(
+    void*, void* pDstResource, uint32_t dstSubresource, const void*,
+    const void* pSrcData, uint32_t srcRowPitch, uint32_t srcDepthPitch
+) {
+    static uint32_t sUpdateCount = 0;
+    if (++sUpdateCount % 60 == 1) {
+        LOGI("ID3D11DeviceContext::UpdateSubresource: Dst=%p, Subres=%u, Src=%p, RowPitch=%u, DepthPitch=%u",
+             pDstResource, dstSubresource, pSrcData, srcRowPitch, srcDepthPitch);
+    }
+}
 
 static void WINAPI mock_Context_ClearRenderTargetView(void*, void*, const float colorRGBA[4]) {
     if (colorRGBA) {
@@ -735,9 +836,13 @@ static void initVtablesOnce() {
 
     // 11. ID3D11DeviceContext slots
     gContextVtable[3] = reinterpret_cast<uint64_t>(&mock_Resource_GetDevice);
-    gContextVtable[13] = reinterpret_cast<uint64_t>(&mock_Context_Map);
-    gContextVtable[14] = reinterpret_cast<uint64_t>(&mock_Context_Unmap);
-    gContextVtable[49] = reinterpret_cast<uint64_t>(&mock_Context_ClearRenderTargetView);
+    gContextVtable[12] = reinterpret_cast<uint64_t>(&mock_Context_DrawIndexed);
+    gContextVtable[13] = reinterpret_cast<uint64_t>(&mock_Context_Draw);
+    gContextVtable[14] = reinterpret_cast<uint64_t>(&mock_Context_Map);
+    gContextVtable[15] = reinterpret_cast<uint64_t>(&mock_Context_Unmap);
+    gContextVtable[44] = reinterpret_cast<uint64_t>(&mock_Context_RSSetViewports);
+    gContextVtable[45] = reinterpret_cast<uint64_t>(&mock_Context_RSSetScissorRects);
+    gContextVtable[48] = reinterpret_cast<uint64_t>(&mock_Context_UpdateSubresource);
     gContextVtable[50] = reinterpret_cast<uint64_t>(&mock_Context_ClearRenderTargetView);
 
     // 12. ID3D11ShaderReflection slots
