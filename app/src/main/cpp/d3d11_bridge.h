@@ -5,6 +5,13 @@ struct SGRE_COM_Mock {
     void* vtable;
 };
 
+struct RenderFrameState {
+    float clearColor[4];
+    uint32_t frameIndex;
+    uint32_t width;
+    uint32_t height;
+};
+
 class D3D11Bridge {
 public:
     static int32_t createDevice(
@@ -20,6 +27,9 @@ public:
         void** ppImmediateContext
     );
 };
+
+bool D3D11Bridge_WaitForNextFrame(RenderFrameState* outState, uint32_t timeoutMs);
+void D3D11Bridge_GetLatestFrameState(RenderFrameState* outState);
 
 #if defined(__x86_64__)
 #define WINAPI __attribute__((ms_abi))

@@ -11,6 +11,7 @@
 #include "input_injector.h"
 #include "payload_loader.h"
 #include "win32_bridge.h"
+#include "d3d11_bridge.h"
 
 #define LOG_TAG "SGRE_JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -82,23 +83,31 @@ static void renderLoop() {
         return;
     }
 
-    LOGI("EGL Context đã sẵn sàng, bắt đầu vòng lặp Render đồ hoạ...");
+    LOGI("EGL Context đã sẵn sàng, bắt đầu vòng lặp Render đồ hoạ đồng bộ theo D3D11 SwapChain...");
 
+    RenderFrameState frameState = {};
     float hue = 0.0f;
     while (gIsRunning.load()) {
-        // Màu khởi động ấm Steins;Gate nâu/cam cổ điển (Retro SciADV theme)
-        hue += 0.01f;
-        if (hue > 1.0f) hue = 0.0f;
+        bool hasFrame = D3D11Bridge_WaitForNextFrame(&frameState, 33);
+        if (hasFrame) {
+            glClearColor(
+                frameState.clearColor[0],
+                frameState.clearColor[1],
+                frameState.clearColor[2],
+                frameState.clearColor[3]
+            );
+        } else {
+            // Khi chưa nhận frame mới từ D3D11, duy trì chu kỳ hiển thị nhẹ nhàng
+            hue += 0.01f;
+            if (hue > 1.0f) hue = 0.0f;
+            float r = 0.15f + 0.1f * hue;
+            float g = 0.08f;
+            float b = 0.04f;
+            glClearColor(r, g, b, 1.0f);
+        }
 
-        float r = 0.15f + 0.1f * hue;
-        float g = 0.08f;
-        float b = 0.04f;
-
-        glClearColor(r, g, b, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         eglSwapBuffers(display, surface);
-        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
     }
 
     LOGI("Dừng vòng lặp render, giải phóng EGL...");

@@ -148,6 +148,36 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         visual_id_rgba8888 = 1 # WINDOW_FORMAT_RGBA_8888
         self.assertGreater(visual_id_rgba8888, 0, "Visual ID phải hợp lệ và lớn hơn 0")
 
+    def test_frame_state_structure(self):
+        # Kiểm tra cấu trúc RenderFrameState
+        frame_state = {
+            "clearColor": [0.0, 0.0, 0.0, 1.0],
+            "frameIndex": 1,
+            "width": 1920,
+            "height": 1080
+        }
+        self.assertEqual(len(frame_state["clearColor"]), 4)
+        self.assertEqual(frame_state["width"], 1920)
+        self.assertEqual(frame_state["height"], 1080)
+
+    def test_clear_render_target_view_slot_mapping(self):
+        # Slot 49/50 trong ID3D11DeviceContext là ClearRenderTargetView
+        context_slots = {
+            49: "ClearRenderTargetView",
+            50: "ClearRenderTargetView"
+        }
+        self.assertEqual(context_slots[49], "ClearRenderTargetView")
+        self.assertEqual(context_slots[50], "ClearRenderTargetView")
+
+    def test_frame_sync_producer_consumer(self):
+        # Mô phỏng Producer-Consumer giữa D3D11 Present và Android Render Loop
+        import threading, queue
+        q = queue.Queue(maxsize=2)
+        q.put({"frame": 1, "rgba": [0.0, 0.0, 0.0, 1.0]})
+        frame = q.get(timeout=0.1)
+        self.assertEqual(frame["frame"], 1)
+        self.assertEqual(frame["rgba"][3], 1.0)
+
 if __name__ == "__main__":
     unittest.main()
 

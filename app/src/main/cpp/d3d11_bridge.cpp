@@ -4,6 +4,8 @@
 #include <cstring>
 #include <cstdint>
 #include <utility>
+#include <mutex>
+#include <condition_variable>
 
 #define LOG_TAG "SGRE_D3D11Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -249,6 +251,12 @@ static uint32_t gCurrentHeight = 1080;
 static uint32_t gCurrentFormat = 28; // DXGI_FORMAT_R8G8B8A8_UNORM
 static uint32_t gCurrentBufferCount = 2; // Tối thiểu 2 buffers để tránh FPE_INTDIV
 
+// Đồng bộ hoá khung hình giữa Game Thread (D3D11) và Android Render Thread (EGL)
+static std::mutex sFrameMutex;
+static std::condition_variable sFrameCond;
+static RenderFrameState sCurrentFrameState = { {0.0f, 0.0f, 0.0f, 1.0f}, 0, 1920, 1080 };
+static bool sNewFrameAvailable = false;
+
 // IDXGIFactory methods
 static int64_t WINAPI mock_Factory_MakeWindowAssociation(void*, void*, uint32_t) {
     LOGI("IDXGIFactory::MakeWindowAssociation called");
@@ -299,9 +307,18 @@ static int64_t WINAPI mock_SwapChain_GetDevice(void*, const void*, void** ppDevi
 
 static int64_t WINAPI mock_SwapChain_Present(void*, uint32_t syncInterval, uint32_t flags) {
     static uint32_t frameCount = 0;
-    if (++frameCount % 60 == 1) {
+    frameCount++;
+    if (frameCount % 60 == 1) {
         LOGI("IDXGISwapChain::Present: frame %u, syncInterval=%u, flags=0x%x", frameCount, syncInterval, flags);
     }
+    {
+        std::lock_guard<std::mutex> lock(sFrameMutex);
+        sCurrentFrameState.frameIndex = frameCount;
+        sCurrentFrameState.width = gCurrentWidth;
+        sCurrentFrameState.height = gCurrentHeight;
+        sNewFrameAvailable = true;
+    }
+    sFrameCond.notify_one();
     return 0;
 }
 
@@ -415,9 +432,18 @@ static int64_t WINAPI mock_SwapChain_GetHwnd(void*, void** pHwnd) {
 
 static int64_t WINAPI mock_SwapChain_Present1(void*, uint32_t syncInterval, uint32_t flags, const void*) {
     static uint32_t frameCount1 = 0;
-    if (++frameCount1 % 60 == 1) {
+    frameCount1++;
+    if (frameCount1 % 60 == 1) {
         LOGI("IDXGISwapChain1::Present1: frame %u, syncInterval=%u, flags=0x%x", frameCount1, syncInterval, flags);
     }
+    {
+        std::lock_guard<std::mutex> lock(sFrameMutex);
+        sCurrentFrameState.frameIndex = frameCount1;
+        sCurrentFrameState.width = gCurrentWidth;
+        sCurrentFrameState.height = gCurrentHeight;
+        sNewFrameAvailable = true;
+    }
+    sFrameCond.notify_one();
     return 0;
 }
 
@@ -509,6 +535,44 @@ static int64_t WINAPI mock_Context_Map(void*, void*, uint32_t, uint32_t, uint32_
 }
 
 static void WINAPI mock_Context_Unmap(void*, void*, uint32_t) {}
+
+static void WINAPI mock_Context_ClearRenderTargetView(void*, void*, const float colorRGBA[4]) {
+    if (colorRGBA) {
+        std::lock_guard<std::mutex> lock(sFrameMutex);
+        sCurrentFrameState.clearColor[0] = colorRGBA[0];
+        sCurrentFrameState.clearColor[1] = colorRGBA[1];
+        sCurrentFrameState.clearColor[2] = colorRGBA[2];
+        sCurrentFrameState.clearColor[3] = colorRGBA[3];
+        static uint32_t clearCount = 0;
+        if (++clearCount % 60 == 1) {
+            LOGI("ClearRenderTargetView: RGBA=(%.3f, %.3f, %.3f, %.3f)",
+                 colorRGBA[0], colorRGBA[1], colorRGBA[2], colorRGBA[3]);
+        }
+    }
+}
+
+bool D3D11Bridge_WaitForNextFrame(RenderFrameState* outState, uint32_t timeoutMs) {
+    std::unique_lock<std::mutex> lock(sFrameMutex);
+    if (!sNewFrameAvailable) {
+        if (timeoutMs == 0) return false;
+        bool signaled = sFrameCond.wait_for(lock, std::chrono::milliseconds(timeoutMs), []{
+            return sNewFrameAvailable;
+        });
+        if (!signaled) return false;
+    }
+    sNewFrameAvailable = false;
+    if (outState) {
+        *outState = sCurrentFrameState;
+    }
+    return true;
+}
+
+void D3D11Bridge_GetLatestFrameState(RenderFrameState* outState) {
+    std::lock_guard<std::mutex> lock(sFrameMutex);
+    if (outState) {
+        *outState = sCurrentFrameState;
+    }
+}
 
 // ID3D11ShaderReflection methods
 static int64_t WINAPI mock_Reflection_GetDesc(void*, void* pDesc) {
@@ -673,6 +737,8 @@ static void initVtablesOnce() {
     gContextVtable[3] = reinterpret_cast<uint64_t>(&mock_Resource_GetDevice);
     gContextVtable[13] = reinterpret_cast<uint64_t>(&mock_Context_Map);
     gContextVtable[14] = reinterpret_cast<uint64_t>(&mock_Context_Unmap);
+    gContextVtable[49] = reinterpret_cast<uint64_t>(&mock_Context_ClearRenderTargetView);
+    gContextVtable[50] = reinterpret_cast<uint64_t>(&mock_Context_ClearRenderTargetView);
 
     // 12. ID3D11ShaderReflection slots
     gShaderReflectionVtable[3] = reinterpret_cast<uint64_t>(&mock_Reflection_GetDesc);
