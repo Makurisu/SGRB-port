@@ -152,6 +152,12 @@ sequenceDiagram
   - Đóng vai trò cầu nối âm thanh DirectX XAudio2 (hỗ trợ XAudio 2.7, 2.8, 2.9):
     - Bắt chặn hàm `XAudio2Create` được nạp động qua `GetProcAddress`.
     - Cung cấp mock `IXAudio2` và `IXAudio2MasteringVoice` với vtable chuẩn COM (32 slots), khởi tạo thành công mastering voice mà không gây lỗi phân rã module âm thanh.
+- **`media_foundation_bridge.cpp`**:
+  - Đóng vai trò cầu nối phát video Windows Media Foundation (`MFPlat.DLL` và `MFReadWrite.dll`):
+    - Triển khai 15 hàm API chuẩn Media Foundation: `MFStartup`, `MFShutdown`, `MFCreateAttributes`, `MFCreateMediaType`, `MFCreateDXGIDeviceManager`, `MFCreateMemoryBuffer`, `MFCreateSample`, `MFCalculateImageSize`, `MFGetStrideForBitmapInfoHeader`, `MFllMulDiv`, `MFCreateSourceResolver`, `MFCreateAsyncResult`, `MFInvokeCallback`, `MFCreateSourceReaderFromMediaSource`, `MFCreateSourceReaderFromURL`.
+    - Cung cấp các mock COM interface chuẩn Microsoft Media Foundation: `IMFAttributes` (36 slots), `IMFMediaType` (40 slots), `IMFSourceResolver` (16 slots), `IMFSourceReader` (16 slots), `IMFDXGIDeviceManager` (16 slots), `IMFMediaBuffer` (16 slots), `IMFSample` (48 slots), `IMFMediaSource` (16 slots).
+    - **Telemetry & Video Tracing**: Bắt chặn và chuyển đổi URL video (`CreateObjectFromURL`, `CreateSourceReaderFromURL`) sang UTF-8 để theo dõi chính xác file movie (`sg_titlebg.webm`, `sg_op.webm`) được yêu cầu bởi M2 Engine.
+    - **Safe Stream Termination**: Cung cấp cờ `MF_SOURCE_READERF_ENDOFSTREAM (0x00000001)` trong `IMFSourceReader::ReadSample`, báo hiệu cho video decoder chuyển trạng thái an toàn, ngăn chặn hiện tượng treo vô hạn vòng lặp chờ frame video để vào thẳng giao diện Title Menu.
 - **`d3d11_bridge.cpp`**:
   - Đóng vai trò cầu nối đồ hoạ Direct3D 11 & DXGI Subsystem:
     - Bắt chặn các hàm `D3D11CreateDevice`, `D3DReflect`, `CreateSwapChain`, `CreateSwapChainForHwnd`.

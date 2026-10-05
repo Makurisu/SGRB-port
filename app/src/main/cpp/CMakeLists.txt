@@ -11,6 +11,7 @@ add_library(sgre_wrapper SHARED
     dinput_bridge.cpp
     xaudio2_bridge.cpp
     win32_bridge.cpp
+    media_foundation_bridge.cpp
 )
 
 find_library(log-lib log)
