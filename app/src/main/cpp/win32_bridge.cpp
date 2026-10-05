@@ -1056,7 +1056,7 @@ static std::string resolveCaseInsensitivePath(const std::string& rootDir, const 
             for (size_t j = i; j < parts.size(); ++j) {
                 currentPath += "/" + parts[j];
             }
-            return currentPath;
+            break;
         }
     }
 
@@ -1067,7 +1067,7 @@ static std::string resolveCaseInsensitivePath(const std::string& rootDir, const 
 
     // Nếu không tìm thấy, thử các fallback đường dẫn đặc trưng của Mages Engine:
     // 1. Nếu relPath bắt đầu bằng tiền tố như 'windata/', 'winweb/', 'wind3d11data/', 'win/':
-    //    Thử bỏ tiền tố đó để tìm trực tiếp trong rootDir
+    //    Thử bỏ tiền tố đó để tìm trực tiếp trong rootDir hoặc wind3d11data/
     if (parts.size() > 1 && (parts[0].rfind("win", 0) == 0)) {
         std::string stripped;
         for (size_t k = 1; k < parts.size(); ++k) {
@@ -1075,18 +1075,18 @@ static std::string resolveCaseInsensitivePath(const std::string& rootDir, const 
             stripped += parts[k];
         }
 
-        // Thử tìm trực tiếp ở rootDir
-        std::string fallbackRoot = rootDir + "/" + stripped;
-        if (stat(fallbackRoot.c_str(), &st) == 0) {
-            LOGI("VFS Fallback: '%s' -> tìm thấy tại root: '%s'", relPath.c_str(), fallbackRoot.c_str());
-            return fallbackRoot;
-        }
-
         // Thử tìm trong wind3d11data/
         std::string fallbackD3d = rootDir + "/wind3d11data/" + stripped;
         if (stat(fallbackD3d.c_str(), &st) == 0) {
             LOGI("VFS Fallback: '%s' -> tìm thấy tại wind3d11data: '%s'", relPath.c_str(), fallbackD3d.c_str());
             return fallbackD3d;
+        }
+
+        // Thử tìm trực tiếp ở rootDir
+        std::string fallbackRoot = rootDir + "/" + stripped;
+        if (stat(fallbackRoot.c_str(), &st) == 0) {
+            LOGI("VFS Fallback: '%s' -> tìm thấy tại root: '%s'", relPath.c_str(), fallbackRoot.c_str());
+            return fallbackRoot;
         }
     }
 
