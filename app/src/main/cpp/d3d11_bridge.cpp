@@ -6,6 +6,7 @@
 #include <utility>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 
 #define LOG_TAG "SGRE_D3D11Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -254,6 +255,11 @@ static uint32_t gCurrentBufferCount = 2; // Tối thiểu 2 buffers để tránh
 // Đồng bộ hoá khung hình giữa Game Thread (D3D11) và Android Render Thread (EGL)
 static std::mutex sFrameMutex;
 static std::condition_variable sFrameCond;
+static std::atomic<uint32_t> sTotalBuffersCreated{0};
+static std::atomic<uint32_t> sTotalTexturesCreated{0};
+static std::atomic<uint32_t> sTotalShadersCreated{0};
+static std::atomic<uint32_t> sTotalDrawIndexedCalls{0};
+static std::atomic<uint32_t> sTotalDrawCalls{0};
 static RenderFrameState sCurrentFrameState = { {0.0f, 0.0f, 0.0f, 1.0f}, 0, 1920, 1080, 0, 0, 0, 0, 0 };
 static bool sNewFrameAvailable = false;
 
@@ -517,12 +523,6 @@ struct MockRect {
 };
 
 // ID3D11Device methods
-static std::atomic<uint32_t> sTotalBuffersCreated{0};
-static std::atomic<uint32_t> sTotalTexturesCreated{0};
-static std::atomic<uint32_t> sTotalShadersCreated{0};
-static std::atomic<uint32_t> sTotalDrawIndexedCalls{0};
-static std::atomic<uint32_t> sTotalDrawCalls{0};
-
 static int64_t WINAPI mock_Device_CreateBuffer(void*, const void* pDesc, const void* pInitialData, void** ppBuffer) {
     sTotalBuffersCreated++;
     if (pDesc) {
