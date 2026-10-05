@@ -154,11 +154,45 @@ class TestD3D11BridgeLogic(unittest.TestCase):
             "clearColor": [0.0, 0.0, 0.0, 1.0],
             "frameIndex": 1,
             "width": 1920,
-            "height": 1080
+            "height": 1080,
+            "drawCalls": 10,
+            "indexDraws": 50,
+            "texturesCreated": 18,
+            "shadersCreated": 1798,
+            "buffersCreated": 150000
         }
         self.assertEqual(len(frame_state["clearColor"]), 4)
         self.assertEqual(frame_state["width"], 1920)
         self.assertEqual(frame_state["height"], 1080)
+        self.assertEqual(frame_state["texturesCreated"], 18)
+        self.assertEqual(frame_state["shadersCreated"], 1798)
+        self.assertGreater(frame_state["buffersCreated"], 0)
+
+    def test_render_frame_state_abi_layout(self):
+        # Xác thực kích thước và offset của RenderFrameState trong C++ ABI
+        import ctypes
+        class RenderFrameState(ctypes.Structure):
+            _fields_ = [
+                ('clearColor', ctypes.c_float * 4),
+                ('frameIndex', ctypes.c_uint),
+                ('width', ctypes.c_uint),
+                ('height', ctypes.c_uint),
+                ('drawCalls', ctypes.c_uint),
+                ('indexDraws', ctypes.c_uint),
+                ('texturesCreated', ctypes.c_uint),
+                ('shadersCreated', ctypes.c_uint),
+                ('buffersCreated', ctypes.c_uint),
+            ]
+        self.assertEqual(ctypes.sizeof(RenderFrameState), 48, "RenderFrameState phải có kích thước đúng 48 bytes (12 * 4 bytes)")
+        self.assertEqual(RenderFrameState.clearColor.offset, 0)
+        self.assertEqual(RenderFrameState.frameIndex.offset, 16)
+        self.assertEqual(RenderFrameState.width.offset, 20)
+        self.assertEqual(RenderFrameState.height.offset, 24)
+        self.assertEqual(RenderFrameState.drawCalls.offset, 28)
+        self.assertEqual(RenderFrameState.indexDraws.offset, 32)
+        self.assertEqual(RenderFrameState.texturesCreated.offset, 36)
+        self.assertEqual(RenderFrameState.shadersCreated.offset, 40)
+        self.assertEqual(RenderFrameState.buffersCreated.offset, 44)
 
     def test_clear_render_target_view_slot_mapping(self):
         # Slot 50 trong ID3D11DeviceContext là ClearRenderTargetView
