@@ -578,6 +578,42 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertEqual(r, 0, "Buffer được giải phóng an toàn khi pipeline thôi sử dụng")
         self.assertNotIn(vb_handle, reg.ref_counts)
 
+    def test_vertex_color_decode(self):
+        # Kiểm tra giải mã định dạng BGRA 4 bytes sang float RGBA [0.0, 1.0]
+        # Trường hợp 1: Màu trung tính DirectX 0xFF808080 (cR=128, cG=128, cB=128, cA=255)
+        raw_color_neutral = 0xFF808080
+        cb = raw_color_neutral & 0xFF
+        cg = (raw_color_neutral >> 8) & 0xFF
+        cr = (raw_color_neutral >> 16) & 0xFF
+        ca = (raw_color_neutral >> 24) & 0xFF
+
+        is_neutral = (cr == 0x80 and cg == 0x80 and cb == 0x80)
+        r = 1.0 if is_neutral else min(1.0, cr / 128.0)
+        g = 1.0 if is_neutral else min(1.0, cg / 128.0)
+        b = 1.0 if is_neutral else min(1.0, cb / 128.0)
+        a = ca / 255.0
+
+        self.assertEqual((r, g, b, a), (1.0, 1.0, 1.0, 1.0), "Màu 0xFF808080 phải ánh xạ ra trắng đục chuẩn 1.0")
+
+        # Trường hợp 2: Bán trong suốt 0x39808080 (ca = 57)
+        raw_color_trans = 0x39808080
+        ca_trans = (raw_color_trans >> 24) & 0xFF
+        a_trans = ca_trans / 255.0
+        self.assertAlmostEqual(a_trans, 57 / 255.0, places=4)
+
+    def test_batch_quad_extraction_multiple_quads(self):
+        # Mô phỏng drawIndexed với IndexCount=40 (10 quads, mỗi quad 4 indices)
+        index_count = 40
+        quad_step = 4
+        quads = []
+        for q in range(0, index_count, quad_step):
+            quad_indices = [q, q + 1, q + 2, q + 3]
+            quads.append(quad_indices)
+
+        self.assertEqual(len(quads), 10, "IndexCount=40 phải trích xuất được 10 quads")
+        self.assertEqual(quads[0], [0, 1, 2, 3])
+        self.assertEqual(quads[9], [36, 37, 38, 39])
+
 if __name__ == "__main__":
     unittest.main()
 

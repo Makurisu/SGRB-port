@@ -89,18 +89,22 @@ static void renderLoop() {
     const char* vertexShaderSource =
         "attribute vec2 aPosition;\n"
         "attribute vec2 aTexCoord;\n"
+        "attribute vec4 aColor;\n"
         "varying vec2 vTexCoord;\n"
+        "varying vec4 vColor;\n"
         "void main() {\n"
         "    gl_Position = vec4(aPosition, 0.0, 1.0);\n"
         "    vTexCoord = aTexCoord;\n"
+        "    vColor = aColor;\n"
         "}\n";
 
     const char* fragmentShaderSource =
         "precision mediump float;\n"
         "varying vec2 vTexCoord;\n"
+        "varying vec4 vColor;\n"
         "uniform sampler2D uTexture;\n"
         "void main() {\n"
-        "    gl_FragColor = texture2D(uTexture, vTexCoord);\n"
+        "    gl_FragColor = texture2D(uTexture, vTexCoord) * vColor;\n"
         "}\n";
 
     auto compileShader = [](GLenum type, const char* source) -> GLuint {
@@ -138,6 +142,7 @@ static void renderLoop() {
 
     GLint aPositionLoc = glGetAttribLocation(program, "aPosition");
     GLint aTexCoordLoc = glGetAttribLocation(program, "aTexCoord");
+    GLint aColorLoc = glGetAttribLocation(program, "aColor");
     GLint uTextureLoc = glGetUniformLocation(program, "uTexture");
 
     // Quad Vertex Data: [X, Y, U, V] (Full-screen quad, lật trục V để hiển thị đúng chiều)
@@ -246,11 +251,11 @@ static void renderLoop() {
             glUniform1i(uTextureLoc, 0);
 
             // Truy vấn danh sách sprite quads được trích xuất từ D3D11 draw calls
-            SpriteDrawCommand spriteCommands[256];
-            size_t spriteCount = D3D11Bridge_GetSpriteBatchInfo(spriteCommands, 256);
+            SpriteDrawCommand spriteCommands[1024];
+            size_t spriteCount = D3D11Bridge_GetSpriteBatchInfo(spriteCommands, 1024);
 
             if (spriteCount > 0) {
-                // Render từng Sprite Quad với đúng toạ độ đỉnh, UV map và Texture bind tương ứng
+                // Render từng Sprite Quad với đúng toạ độ đỉnh, UV map, Vertex Color và Texture bind tương ứng
                 const void* lastBoundHandle = nullptr;
                 for (size_t s = 0; s < spriteCount; ++s) {
                     const auto& cmd = spriteCommands[s];
@@ -271,12 +276,12 @@ static void renderLoop() {
                         lastBoundHandle = nullptr;
                     }
 
-                    // Gom toạ độ 4 đỉnh dạng [X, Y, U, V]
+                    // Gom toạ độ 4 đỉnh dạng [X, Y, U, V, R, G, B, A]
                     const float spriteVerts[] = {
-                        cmd.pos[0][0], cmd.pos[0][1], cmd.uv[0][0], cmd.uv[0][1],
-                        cmd.pos[1][0], cmd.pos[1][1], cmd.uv[1][0], cmd.uv[1][1],
-                        cmd.pos[2][0], cmd.pos[2][1], cmd.uv[2][0], cmd.uv[2][1],
-                        cmd.pos[3][0], cmd.pos[3][1], cmd.uv[3][0], cmd.uv[3][1]
+                        cmd.pos[0][0], cmd.pos[0][1], cmd.uv[0][0], cmd.uv[0][1], cmd.color[0][0], cmd.color[0][1], cmd.color[0][2], cmd.color[0][3],
+                        cmd.pos[1][0], cmd.pos[1][1], cmd.uv[1][0], cmd.uv[1][1], cmd.color[1][0], cmd.color[1][1], cmd.color[1][2], cmd.color[1][3],
+                        cmd.pos[2][0], cmd.pos[2][1], cmd.uv[2][0], cmd.uv[2][1], cmd.color[2][0], cmd.color[2][1], cmd.color[2][2], cmd.color[2][3],
+                        cmd.pos[3][0], cmd.pos[3][1], cmd.uv[3][0], cmd.uv[3][1], cmd.color[3][0], cmd.color[3][1], cmd.color[3][2], cmd.color[3][3]
                     };
                     const uint16_t spriteIndices[] = {
                         static_cast<uint16_t>(cmd.indices[0]),
@@ -288,18 +293,24 @@ static void renderLoop() {
                     };
 
                     glEnableVertexAttribArray(aPositionLoc);
-                    glVertexAttribPointer(aPositionLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &spriteVerts[0]);
+                    glVertexAttribPointer(aPositionLoc, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), &spriteVerts[0]);
 
                     glEnableVertexAttribArray(aTexCoordLoc);
-                    glVertexAttribPointer(aTexCoordLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &spriteVerts[2]);
+                    glVertexAttribPointer(aTexCoordLoc, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), &spriteVerts[2]);
+
+                    glEnableVertexAttribArray(aColorLoc);
+                    glVertexAttribPointer(aColorLoc, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), &spriteVerts[4]);
 
                     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, spriteIndices);
 
                     glDisableVertexAttribArray(aPositionLoc);
                     glDisableVertexAttribArray(aTexCoordLoc);
+                    glDisableVertexAttribArray(aColorLoc);
                 }
             } else {
                 // Fallback render quad toàn màn hình nếu chưa có dữ liệu batch sprite
+                glVertexAttrib4f(aColorLoc, 1.0f, 1.0f, 1.0f, 1.0f);
+
                 glEnableVertexAttribArray(aPositionLoc);
                 glVertexAttribPointer(aPositionLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[0]);
 
@@ -424,6 +435,15 @@ Java_com_makurisu_sgrb_MainActivity_nativeSendTouchEvent(
     jfloat normalizedY) {
 
     InputInjector::injectTouchEvent(static_cast<GameTouchAction>(action), normalizedX, normalizedY);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_makurisu_sgrb_MainActivity_nativeSendKeyEvent(
+    JNIEnv* /* env */,
+    jclass /* clazz */,
+    jint keyCode,
+    jboolean isDown) {
+    InputInjector::injectKeyEvent(static_cast<int32_t>(keyCode), isDown == JNI_TRUE);
 }
 
 extern "C" JNIEXPORT void JNICALL

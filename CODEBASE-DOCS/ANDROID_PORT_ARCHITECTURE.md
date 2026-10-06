@@ -244,6 +244,18 @@ sequenceDiagram
     - Khi một đối tượng COM mock nhận `Release()` dẫn đến `refCount == 0`, hệ thống không lập tức gọi `delete` trên vùng nhớ heap.
     - Đưa con trỏ vào hàng đợi `sDeferredReleaseList` và chỉ dọn dẹp hàng loạt tại thời điểm `Present` (khi kết thúc khung hình).
     - Ngăn chặn hoàn toàn hiện tượng bộ cấp phát `malloc` tái sử dụng cùng địa chỉ cho các buffer khác nhau trong cùng một frame, loại bỏ lỗi ghi đè dữ liệu giữa Vertex Buffer và Index Buffer.
+- **Hệ Thống Đồng Bộ Đầu Vào & Batch Sprite (Milestone M8 - Input Subsystem & Batch Sprite Composition)**:
+  - **Đồng Bộ Input 3 Tầng (Input Subsystem Synchronization)**:
+    - **Tầng Android UI**: `MainActivity.java` lắng nghe trực tiếp `onTouchEvent`, `onKeyDown`, `onKeyUp`, và `onGenericMotionEvent`, chuyển đổi toàn bộ chạm màn hình và phím bấm thành các sự kiện native (`nativeSendTouchEvent`, `nativeSendKeyEvent`).
+    - **Tầng C++ Adapter**: `input_injector.cpp` chuẩn hoá toạ độ chạm sang không gian 1920x1080, đồng thời cập nhật tức thời trạng thái bàn phím ảo (`Win32Bridge_SetKeyState`) và toạ độ chuột (`Win32Bridge_SetCursorPos`). Khi người dùng chạm màn hình, hệ thống đồng thời kích hoạt `VK_LBUTTON`, `VK_RETURN` (Enter) và `VK_SPACE` để game nhận diện sự kiện "PRESS ANY BUTTON".
+    - **Tầng Win32 & DirectInput Bridge**: `win32_bridge.cpp` và `dinput_bridge.cpp` cung cấp trạng thái phím nhất quán cho cả Win32 message loop (`PeekMessageW`, `GetMessageW`), polling APIs (`GetKeyState`, `GetAsyncKeyState`, `GetKeyboardState`), và DirectInput 8 (`mock_DIDevice_GetDeviceState`), giúp game engine visual novel chuyển cảnh mượt mà từ màn hình Intro / Title sang Main Menu.
+  - **Trích Xuất Batch Quads Đa Phần Tử (Batch Quad Extraction)**:
+    - Trong `mock_Context_DrawIndexed`, thay vì chỉ lấy 1 quad đầu tiên, thuật toán duyệt qua toàn bộ batch `indexCount` (bước nhảy 4 indices đối với strip/quad và 6 indices đối với triangle list).
+    - Giúp trích xuất đầy đủ 100% các sprite con trong cùng một lệnh vẽ (như các nút bấm UI, text nhãn, icon phụ) thay vì bị cắt xén dữ liệu.
+  - **Giải Mã Màu Đỉnh & Alpha Blending (Vertex Color Modulation & Blending)**:
+    - Bóc tách trường Color 4 bytes tại offset 8 của Vertex: `[B, G, R, A]`.
+    - Hỗ trợ chuẩn Modulate2X: giá trị `0x808080` ánh xạ sang hệ số màu chuẩn `(1.0, 1.0, 1.0)`, còn byte thứ 4 ánh xạ sang giá trị alpha độ trong suốt $[0.0, 1.0]$.
+    - Shader GLES 2.0 trong `jni_bridge.cpp` nhân trực tiếp màu texture với màu đỉnh: $\text{FragColor} = \text{texture2D}(uTexture, vTexCoord) \times vColor$, kết hợp cùng chế độ hoà trộn `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` cho hình ảnh trong trẻo, không bị bóng mờ hay vệt đen.
 - **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
   - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
   - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.

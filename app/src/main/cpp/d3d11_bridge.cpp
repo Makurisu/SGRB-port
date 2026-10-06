@@ -349,6 +349,7 @@ static const void* sCurrentIndexBuffer = nullptr;
 static uint32_t sCurrentIndexFormat = 57; // DXGI_FORMAT_R16_UINT = 57
 static const void* sActiveShaderResourceView = nullptr;
 static const void* sActiveTextureResource = nullptr;
+static uint32_t sCurrentPrimitiveTopology = 4; // D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST = 4
 
 // IDXGISwapChain methods
 static int64_t WINAPI mock_SwapChain_GetDevice(void*, const void*, void** ppDevice) {
@@ -743,94 +744,93 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                 }
             }
 
-            SpriteDrawCommand cmd{};
-            bool validQuad = true;
+            uint32_t quadStep = (sCurrentPrimitiveTopology == 4 && indexCount % 6 == 0 && indexCount % 4 != 0) ? 6 : 4;
+            for (uint32_t q = 0; q + quadStep <= indexCount; q += quadStep) {
+                SpriteDrawCommand cmd{};
+                bool validQuad = true;
 
-            for (uint32_t i = 0; i < 4; ++i) {
-                int32_t vertexIdx = static_cast<int32_t>(i);
-                if (idx16 != nullptr) {
-                    vertexIdx = static_cast<int32_t>(idx16[startIndexLocation + i]);
-                } else if (idx32 != nullptr) {
-                    vertexIdx = static_cast<int32_t>(idx32[startIndexLocation + i]);
-                }
-                vertexIdx += baseVertexLocation;
-
-                size_t byteOffset = sCurrentVertexOffset + static_cast<size_t>(vertexIdx) * sCurrentVertexStride;
-                if (byteOffset + sCurrentVertexStride > vDesc.byteWidth) {
-                    validQuad = false;
-                    break;
-                }
-
-                const uint8_t* vertPtr = vView.data + byteOffset;
-                const float* fPtr = reinterpret_cast<const float*>(vertPtr);
-                static uint32_t sVLog = 0;
-                if (i == 0 && ++sVLog % 120 == 1) {
-                    LOGI("Vertex0 20 bytes: f[0]=%.3f, f[1]=%.3f, f[2]=%.3f, f[3]=%.3f, f[4]=%.3f (hex2=0x%08X)",
-                         fPtr[0], fPtr[1], fPtr[2], fPtr[3], fPtr[4], *reinterpret_cast<const uint32_t*>(vertPtr + 8));
-                }
-
-                float rawX = fPtr[0];
-                float rawY = fPtr[1];
-                float rawU = *reinterpret_cast<const float*>(vertPtr + 12);
-                float rawV = *reinterpret_cast<const float*>(vertPtr + 16);
-
-                if (std::abs(rawX) > 1.5f || std::abs(rawY) > 1.5f) {
-                    cmd.pos[i][0] = rawX / 960.0f;
-                    cmd.pos[i][1] = -rawY / 540.0f;
-                } else {
-                    cmd.pos[i][0] = rawX;
-                    cmd.pos[i][1] = rawY;
-                }
-
-                if (std::isnan(rawU) || std::isinf(rawU) || rawU < -10.0f || rawU > 10.0f) rawU = 0.0f;
-                if (std::isnan(rawV) || std::isinf(rawV) || rawV < -10.0f || rawV > 10.0f) rawV = 0.0f;
-                cmd.uv[i][0] = rawU;
-                cmd.uv[i][1] = rawV;
-            }
-
-            float minX = std::min({cmd.pos[0][0], cmd.pos[1][0], cmd.pos[2][0], cmd.pos[3][0]});
-            float maxX = std::max({cmd.pos[0][0], cmd.pos[1][0], cmd.pos[2][0], cmd.pos[3][0]});
-            float minY = std::min({cmd.pos[0][1], cmd.pos[1][1], cmd.pos[2][1], cmd.pos[3][1]});
-            float maxY = std::max({cmd.pos[0][1], cmd.pos[1][1], cmd.pos[2][1], cmd.pos[3][1]});
-            float quadWidth = maxX - minX;
-            float quadHeight = maxY - minY;
-            bool isDegenerate = (quadWidth < 0.001f) || (quadHeight < 0.001f);
-
-            static uint32_t sDiagCount = 0;
-            if (++sDiagCount % 120 == 1) {
-                float dbgX = (vDesc.byteWidth >= 8) ? *reinterpret_cast<const float*>(vView.data) : 0.0f;
-                float dbgY = (vDesc.byteWidth >= 8) ? *reinterpret_cast<const float*>(vView.data + 4) : 0.0f;
-                LOGI("DrawIndexed Diag: VbWidth=%u, Offset=%u, valid=%d, degen=%d, rawX0=%.1f, rawY0=%.1f",
-                     vDesc.byteWidth, sCurrentVertexOffset, validQuad, isDegenerate, dbgX, dbgY);
-            }
-
-            if (validQuad && !isDegenerate) {
-                cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
-                cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
-                cmd.textureHandle = sActiveTextureResource;
-                cmd.textureWidth = 0;
-                cmd.textureHeight = 0;
-                if (sActiveTextureResource != nullptr) {
-                    sgre::TextureDesc tDesc{};
-                    if (sRegistry.getTextureDesc(sActiveTextureResource, tDesc)) {
-                        cmd.textureWidth = tDesc.width;
-                        cmd.textureHeight = tDesc.height;
+                for (uint32_t i = 0; i < 4; ++i) {
+                    uint32_t idxOffset = q + (quadStep == 6 && i >= 2 ? (i == 2 ? 2 : (i == 3 ? 5 : i)) : i);
+                    int32_t vertexIdx = static_cast<int32_t>(idxOffset);
+                    if (idx16 != nullptr) {
+                        vertexIdx = static_cast<int32_t>(idx16[startIndexLocation + idxOffset]);
+                    } else if (idx32 != nullptr) {
+                        vertexIdx = static_cast<int32_t>(idx32[startIndexLocation + idxOffset]);
                     }
+                    vertexIdx += baseVertexLocation;
+
+                    size_t byteOffset = sCurrentVertexOffset + static_cast<size_t>(vertexIdx) * sCurrentVertexStride;
+                    if (byteOffset + sCurrentVertexStride > vDesc.byteWidth) {
+                        validQuad = false;
+                        break;
+                    }
+
+                    const uint8_t* vertPtr = vView.data + byteOffset;
+                    const float* fPtr = reinterpret_cast<const float*>(vertPtr);
+                    static uint32_t sVLog = 0;
+                    if (q == 0 && i == 0 && ++sVLog % 120 == 1) {
+                        LOGI("Vertex0 20 bytes: f[0]=%.3f, f[1]=%.3f, f[2]=%.3f, f[3]=%.3f, f[4]=%.3f (hex2=0x%08X)",
+                             fPtr[0], fPtr[1], fPtr[2], fPtr[3], fPtr[4], *reinterpret_cast<const uint32_t*>(vertPtr + 8));
+                    }
+
+                    float rawX = fPtr[0];
+                    float rawY = fPtr[1];
+                    float rawU = *reinterpret_cast<const float*>(vertPtr + 12);
+                    float rawV = *reinterpret_cast<const float*>(vertPtr + 16);
+
+                    if (std::abs(rawX) > 1.5f || std::abs(rawY) > 1.5f) {
+                        cmd.pos[i][0] = rawX / 960.0f;
+                        cmd.pos[i][1] = -rawY / 540.0f;
+                    } else {
+                        cmd.pos[i][0] = rawX;
+                        cmd.pos[i][1] = rawY;
+                    }
+
+                    if (std::isnan(rawU) || std::isinf(rawU) || rawU < -10.0f || rawU > 10.0f) rawU = 0.0f;
+                    if (std::isnan(rawV) || std::isinf(rawV) || rawV < -10.0f || rawV > 10.0f) rawV = 0.0f;
+                    cmd.uv[i][0] = rawU;
+                    cmd.uv[i][1] = rawV;
+
+                    uint8_t cB = vertPtr[8];
+                    uint8_t cG = vertPtr[9];
+                    uint8_t cR = vertPtr[10];
+                    uint8_t cA = vertPtr[11];
+                    float r = (cR == 0x80 && cG == 0x80 && cB == 0x80) ? 1.0f : std::min(1.0f, static_cast<float>(cR) / 128.0f);
+                    float g = (cR == 0x80 && cG == 0x80 && cB == 0x80) ? 1.0f : std::min(1.0f, static_cast<float>(cG) / 128.0f);
+                    float b = (cR == 0x80 && cG == 0x80 && cB == 0x80) ? 1.0f : std::min(1.0f, static_cast<float>(cB) / 128.0f);
+                    float a = static_cast<float>(cA) / 255.0f;
+                    cmd.color[i][0] = r;
+                    cmd.color[i][1] = g;
+                    cmd.color[i][2] = b;
+                    cmd.color[i][3] = a;
                 }
 
-                static uint32_t sSpriteLogCount = 0;
-                if (++sSpriteLogCount % 60 == 1) {
-                    LOGI("Extracted Valid Sprite #%u: Tex=%p (%ux%u) | NDC: V0=(%.2f, %.2f) V1=(%.2f, %.2f) V2=(%.2f, %.2f) V3=(%.2f, %.2f) | UV0=[%.2f, %.2f]",
-                         sSpriteLogCount,
-                         cmd.textureHandle, cmd.textureWidth, cmd.textureHeight,
-                         cmd.pos[0][0], cmd.pos[0][1], cmd.pos[1][0], cmd.pos[1][1],
-                         cmd.pos[2][0], cmd.pos[2][1], cmd.pos[3][0], cmd.pos[3][1],
-                         cmd.uv[0][0], cmd.uv[0][1]);
-                }
+                float minX = std::min({cmd.pos[0][0], cmd.pos[1][0], cmd.pos[2][0], cmd.pos[3][0]});
+                float maxX = std::max({cmd.pos[0][0], cmd.pos[1][0], cmd.pos[2][0], cmd.pos[3][0]});
+                float minY = std::min({cmd.pos[0][1], cmd.pos[1][1], cmd.pos[2][1], cmd.pos[3][1]});
+                float maxY = std::max({cmd.pos[0][1], cmd.pos[1][1], cmd.pos[2][1], cmd.pos[3][1]});
+                float quadWidth = maxX - minX;
+                float quadHeight = maxY - minY;
+                bool isDegenerate = (quadWidth < 0.001f) || (quadHeight < 0.001f);
 
-                std::lock_guard<std::mutex> lock(sSpriteMutex);
-                if (sActiveDrawingSprites.size() < 1024) {
-                    sActiveDrawingSprites.push_back(cmd);
+                if (validQuad && !isDegenerate) {
+                    cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
+                    cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
+                    cmd.textureHandle = sActiveTextureResource;
+                    cmd.textureWidth = 0;
+                    cmd.textureHeight = 0;
+                    if (sActiveTextureResource != nullptr) {
+                        sgre::TextureDesc tDesc{};
+                        if (sRegistry.getTextureDesc(sActiveTextureResource, tDesc)) {
+                            cmd.textureWidth = tDesc.width;
+                            cmd.textureHeight = tDesc.height;
+                        }
+                    }
+
+                    std::lock_guard<std::mutex> lock(sSpriteMutex);
+                    if (sActiveDrawingSprites.size() < 1024) {
+                        sActiveDrawingSprites.push_back(cmd);
+                    }
                 }
             }
         }
@@ -989,7 +989,9 @@ static void WINAPI mock_Context_IASetIndexBuffer(void*, void* pIndexBuffer, uint
 }
 
 static void WINAPI mock_Context_IASetInputLayout(void*, void*) {}
-static void WINAPI mock_Context_IASetPrimitiveTopology(void*, uint32_t) {}
+static void WINAPI mock_Context_IASetPrimitiveTopology(void*, uint32_t topology) {
+    sCurrentPrimitiveTopology = topology;
+}
 static void WINAPI mock_Context_VSSetShaderResources(void*, uint32_t, uint32_t, void* const*) {}
 static void WINAPI mock_Context_VSSetSamplers(void*, uint32_t, uint32_t, void* const*) {}
 static void WINAPI mock_Context_OMSetRenderTargets(void*, uint32_t, void* const*, void*) {}

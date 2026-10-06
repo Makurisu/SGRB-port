@@ -26,6 +26,15 @@ void* Win32Bridge_ResolveSymbol(const char* dllName, const char* funcName);
 // Đẩy thông điệp Win32 vào hàng đợi thông điệp của game
 void Win32Bridge_PostMessage(uint32_t message, uint64_t wParam, int64_t lParam);
 
+// Cập nhật trạng thái Virtual-Key (VK_*) của bàn phím / chuột
+void Win32Bridge_SetKeyState(uint8_t vkCode, bool isDown);
+
+// Truy vấn trạng thái Virtual-Key (VK_*)
+bool Win32Bridge_GetKeyState(uint8_t vkCode);
+
+// Cập nhật toạ độ con trỏ chuột
+void Win32Bridge_SetCursorPos(int32_t x, int32_t y);
+
 // Thiết lập thông tin TLS của binary PE để hỗ trợ đa luồng
 void Win32Bridge_SetTlsInfo(uint32_t tlsRva, uint64_t origImageBase);
 

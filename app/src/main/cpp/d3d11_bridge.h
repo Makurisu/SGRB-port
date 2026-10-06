@@ -38,6 +38,7 @@ public:
 struct SpriteDrawCommand {
     float pos[4][2];      // 4 vertices (x, y) normalized to NDC [-1, 1]
     float uv[4][2];       // 4 vertices (u, v) normalized to [0, 1]
+    float color[4][4];    // 4 vertices (r, g, b, a) normalized to [0, 1]
     uint32_t indices[6];  // 2 triangles: [0, 1, 2, 2, 1, 3]
     const void* textureHandle; // ID3D11Texture2D resource handle
     uint32_t textureWidth;

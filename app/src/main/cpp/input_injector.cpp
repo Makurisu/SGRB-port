@@ -22,6 +22,22 @@ namespace {
 
 void InputInjector::sendWin32Mouse(uint32_t msg, int32_t x, int32_t y) {
     LOGI("Dispatched Win32 Mouse Msg: 0x%X at (%d, %d)", msg, x, y);
+    Win32Bridge_SetCursorPos(x, y);
+
+    if (msg == WM_LBUTTONDOWN) {
+        Win32Bridge_SetKeyState(0x01, true); // VK_LBUTTON
+        Win32Bridge_SetKeyState(0x0D, true); // VK_RETURN
+        Win32Bridge_SetKeyState(0x20, true); // VK_SPACE
+    } else if (msg == WM_LBUTTONUP) {
+        Win32Bridge_SetKeyState(0x01, false);
+        Win32Bridge_SetKeyState(0x0D, false);
+        Win32Bridge_SetKeyState(0x20, false);
+    } else if (msg == WM_RBUTTONDOWN) {
+        Win32Bridge_SetKeyState(0x02, true); // VK_RBUTTON
+    } else if (msg == WM_RBUTTONUP) {
+        Win32Bridge_SetKeyState(0x02, false);
+    }
+
     int64_t lParam = (static_cast<int64_t>(y) << 16) | (x & 0xFFFF);
     uint64_t wParam = (msg == WM_LBUTTONDOWN) ? 1 : 0;
     Win32Bridge_PostMessage(msg, wParam, lParam);
@@ -29,8 +45,64 @@ void InputInjector::sendWin32Mouse(uint32_t msg, int32_t x, int32_t y) {
 
 void InputInjector::sendWin32Key(uint32_t virtualKey, bool isDown) {
     LOGI("Dispatched Win32 Key: 0x%X, isDown: %d", virtualKey, isDown ? 1 : 0);
+    Win32Bridge_SetKeyState(static_cast<uint8_t>(virtualKey), isDown);
     uint32_t msg = isDown ? 0x0100 : 0x0101; // WM_KEYDOWN / WM_KEYUP
     Win32Bridge_PostMessage(msg, virtualKey, 0);
+}
+
+void InputInjector::injectKeyEvent(int32_t keyCode, bool isDown) {
+    uint32_t vk = 0;
+    switch (keyCode) {
+        case 66:  // KEYCODE_ENTER
+        case 160: // KEYCODE_NUMPAD_ENTER
+        case 96:  // KEYCODE_BUTTON_A
+            vk = 0x0D; // VK_RETURN
+            break;
+        case 62:  // KEYCODE_SPACE
+            vk = 0x20; // VK_SPACE
+            break;
+        case 111: // KEYCODE_ESCAPE
+        case 4:   // KEYCODE_BACK
+        case 97:  // KEYCODE_BUTTON_B
+            vk = 0x1B; // VK_ESCAPE
+            break;
+        case 19:  // KEYCODE_DPAD_UP
+            vk = 0x26; // VK_UP
+            break;
+        case 20:  // KEYCODE_DPAD_DOWN
+            vk = 0x28; // VK_DOWN
+            break;
+        case 21:  // KEYCODE_DPAD_LEFT
+            vk = 0x25; // VK_LEFT
+            break;
+        case 22:  // KEYCODE_DPAD_RIGHT
+            vk = 0x27; // VK_RIGHT
+            break;
+        case 54:  // KEYCODE_Z
+        case 99:  // KEYCODE_BUTTON_X
+            vk = 0x5A; // 'Z'
+            break;
+        case 52:  // KEYCODE_X
+        case 100: // KEYCODE_BUTTON_Y
+            vk = 0x58; // 'X'
+            break;
+        case 31:  // KEYCODE_C
+            vk = 0x43; // 'C'
+            break;
+        case 113: // KEYCODE_CTRL_LEFT
+        case 114: // KEYCODE_CTRL_RIGHT
+            vk = 0x11; // VK_CONTROL
+            break;
+        default:
+            if (keyCode >= 29 && keyCode <= 54) { // A-Z
+                vk = static_cast<uint32_t>(0x41 + (keyCode - 29));
+            }
+            break;
+    }
+
+    if (vk != 0) {
+        sendWin32Key(vk, isDown);
+    }
 }
 
 void InputInjector::injectTouchEvent(GameTouchAction action, float normalizedX, float normalizedY) {
