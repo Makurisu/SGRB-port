@@ -110,7 +110,7 @@ static int32_t WINAPI xaudio_QueryInterface(void*, const void*, void** ppvObject
 static uint32_t WINAPI xaudio_AddRef(void*) { return 1; }
 static uint32_t WINAPI xaudio_Release(void*) { return 1; }
 
-// Slot 6: CreateSourceVoice
+// Slot 5 (Offset 0x28): CreateSourceVoice
 static int32_t WINAPI xaudio_CreateSourceVoice(
     void*,
     void** ppSourceVoice,
@@ -128,25 +128,7 @@ static int32_t WINAPI xaudio_CreateSourceVoice(
     return 0; // S_OK
 }
 
-// Slot 7: CreateMasteringVoice
-static int32_t WINAPI xaudio_CreateMasteringVoice(
-    void*,
-    void** ppMasteringVoice,
-    uint32_t,
-    uint32_t,
-    uint32_t,
-    const void*,
-    const void*,
-    uint32_t) {
-    initMasteringVoiceVtable();
-    if (ppMasteringVoice) {
-        *ppMasteringVoice = &gMockMasteringVoice;
-        LOGI("IXAudio2::CreateMasteringVoice -> Đã cấp phát Mock Mastering Voice: %p", &gMockMasteringVoice);
-    }
-    return 0; // S_OK
-}
-
-// Slot 8: CreateSubmixVoice
+// Slot 6 (Offset 0x30): CreateSubmixVoice
 static int32_t WINAPI xaudio_CreateSubmixVoice(
     void*,
     void** ppSubmixVoice,
@@ -164,17 +146,44 @@ static int32_t WINAPI xaudio_CreateSubmixVoice(
     return 0; // S_OK
 }
 
+// Slot 7 (Offset 0x38): CreateMasteringVoice
+static int32_t WINAPI xaudio_CreateMasteringVoice(
+    void*,
+    void** ppMasteringVoice,
+    uint32_t,
+    uint32_t,
+    uint32_t,
+    const void*,
+    const void*,
+    uint32_t) {
+    initMasteringVoiceVtable();
+    if (ppMasteringVoice) {
+        *ppMasteringVoice = &gMockMasteringVoice;
+        LOGI("IXAudio2::CreateMasteringVoice -> Đã cấp phát Mock Mastering Voice: %p", &gMockMasteringVoice);
+    }
+    return 0; // S_OK
+}
+
 static void initXAudio2Vtable() {
     static bool initialized = false;
     if (initialized) return;
     for (size_t i = 0; i < 32; ++i) {
         gXAudio2Vtable[i] = reinterpret_cast<void*>(&stub_XAudioSuccess);
     }
+    // IUnknown
     gXAudio2Vtable[0] = reinterpret_cast<void*>(&xaudio_QueryInterface);
     gXAudio2Vtable[1] = reinterpret_cast<void*>(&xaudio_AddRef);
     gXAudio2Vtable[2] = reinterpret_cast<void*>(&xaudio_Release);
-    gXAudio2Vtable[6] = reinterpret_cast<void*>(&xaudio_CreateSourceVoice);
+
+    // IXAudio2 (chuẩn vtable x64):
+    // Slot 5 (offset 0x28): CreateSourceVoice
+    // Slot 6 (offset 0x30): CreateSubmixVoice
+    // Slot 7 (offset 0x38): CreateMasteringVoice
+    gXAudio2Vtable[5] = reinterpret_cast<void*>(&xaudio_CreateSourceVoice);
+    gXAudio2Vtable[6] = reinterpret_cast<void*>(&xaudio_CreateSubmixVoice);
     gXAudio2Vtable[7] = reinterpret_cast<void*>(&xaudio_CreateMasteringVoice);
+
+    // Dự phòng an toàn cho biến thể IXAudio2 2.7 / legacy interface:
     gXAudio2Vtable[8] = reinterpret_cast<void*>(&xaudio_CreateSubmixVoice);
 
     gMockXAudio2 = &gXAudio2Vtable[0];

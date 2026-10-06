@@ -262,13 +262,26 @@ sequenceDiagram
   - Gán trực tiếp con trỏ mảng vào trường `gs:[0x58]` của cấu trúc Windows 64-bit TEB.
   - Tự động sao chép template data ban đầu từ `StartAddressOfRawData` và xác lập `_tls_index = 0`.
   - Loại bỏ hoàn toàn lỗi crash null-pointer dereference (`SEGV_MAPERR fault addr 0x0`) khi các container C++ (như `std::vector`), luồng hoặc từ khoá `thread_local` của game engine giải tham chiếu `[rax + rcx*8]` qua thanh ghi phân đoạn `GS`.
-- **Hệ Thống XAudio2 Audio Voice Mock (`xaudio2_bridge.cpp` - Milestone M9)**:
+- **Hệ Thống XAudio2 Audio Voice Mock (`xaudio2_bridge.cpp` - Milestone M9 & M11)**:
   - Cung cấp mô phỏng đầy đủ các đối tượng âm thanh COM của DirectX XAudio2:
-    - `IXAudio2`: Cài đặt `CreateSourceVoice` (slot 6), `CreateMasteringVoice` (slot 7), `CreateSubmixVoice` (slot 8).
-    - `IXAudio2Voice`: Cài đặt `DestroyVoice` (slot 18).
-    - `IXAudio2SourceVoice`: Cài đặt `Start` (slot 19), `Stop` (slot 20), `SubmitSourceBuffer` (slot 21, vtable offset `0xA8`), `FlushSourceBuffers` (slot 22), và `GetState` (slot 25, xóa trắng 24 bytes `XAUDIO2_VOICE_STATE`).
-    - `IXAudio2SubmixVoice`: Cài đặt vtable độc lập 32 slots cho submix routing.
-  - Khi game nhận sự kiện tương tác chạm/bấm phím từ người dùng, engine chuẩn bị phát âm thanh UI (Click Sound Effect) bằng lệnh:
+    - **`IXAudio2` (Chuẩn COM Vtable x64)**:
+      - Slot 0: `QueryInterface`
+      - Slot 1: `AddRef`
+      - Slot 2: `Release`
+      - **Slot 5 (Offset 0x28)**: `CreateSourceVoice` (Được sửa chuẩn xác từ Slot 6 ở Milestone M11).
+      - **Slot 6 (Offset 0x30)**: `CreateSubmixVoice` (Được sửa chuẩn xác từ Slot 8 ở Milestone M11).
+      - **Slot 7 (Offset 0x38)**: `CreateMasteringVoice` (Được sửa chuẩn xác từ Slot 7 ở Milestone M11).
+      - Slot 8: `CreateSubmixVoice` (giữ fallback dự phòng).
+    - **`IXAudio2Voice`**: Cài đặt `DestroyVoice` (Slot 18, Offset 0x90).
+    - **`IXAudio2SourceVoice`**: Cài đặt `Start` (Slot 19, Offset 0x98), `Stop` (Slot 20, Offset 0xA0), `SubmitSourceBuffer` (Slot 21, Offset `0xA8`), `FlushSourceBuffers` (Slot 22, Offset 0xB0), và `GetState` (Slot 25, Offset 0xC8, xóa trắng 24 bytes `XAUDIO2_VOICE_STATE`).
+    - **`IXAudio2SubmixVoice`**: Cài đặt vtable độc lập 32 slots cho submix routing.
+  - **Phân Tích & Khắc Phục Lỗi Crash Input RVA `0x39253E`**:
+    - Khi người dùng chạm màn hình hoặc bấm phím, game engine M2 gọi hàm phát âm thanh UI tại RVA `0x3921A0`.
+    - Tại RVA `0x392350`, engine thực hiện lệnh `call qword ptr [rax + 0x28]` (Slot 5 của IXAudio2) để tạo `IXAudio2SourceVoice` và gán vào trường `[rbx]` của voice wrapper context.
+    - Trước khi sửa: Do bảng vtable gán `CreateSourceVoice` vào Slot 6 (Offset 0x30) còn Slot 5 chứa stub trả về `0`, con trỏ `[rbx]` không được khởi tạo (bị giữ nguyên `NULL`).
+    - Hậu quả: Đến RVA `0x39253E`, engine thực thi `mov rax, [rcx]; call [rax + 0xA8]` (`SubmitSourceBuffer`) với `rcx = [rbx] = NULL` $\rightarrow$ gây lỗi crash `Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x0`.
+    - Sau khi sửa Slot 5 = `CreateSourceVoice`: Đối tượng `MockSourceVoice` được cấp phát chuẩn xác, lệnh `call [rax + 0xA8]` gọi thành công vào `sourceVoice_SubmitSourceBuffer`, loại bỏ hoàn toàn lỗi crash khi người dùng tương tác input, cho phép game xử lý logic và chuyển cảnh mượt mà.
+  - Độ phức tạp: $O(1)$ cho mỗi thao tác cấp phát và truy xuất phương thức COM Voice.
 - **Hệ Thống Bóc Tách Batch Quads Chuẩn Strip Restart & Bảo Vệ Fallback Render (`d3d11_bridge.cpp`, `jni_bridge.cpp` - Milestone M10)**:
   - **Cơ Chế Bóc Tách Triangle Strip với Degenerate Restart ($4 + k \times 6$) & Index Buffer Bounds**:
     - Nhận diện quy luật mảng index của Mages Engine: Các batch quads UI/Title Menu được tổ chức dưới dạng Triangle Strip kết nối bởi degenerate vertices ($N$ quads = $4 + (N-1) \times 6$ indices: $4, 10, 16, 22, 28, 34, 40...$).
