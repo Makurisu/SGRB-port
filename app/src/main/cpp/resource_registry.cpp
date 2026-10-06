@@ -150,6 +150,14 @@ bool ResourceRegistry::getTextureDesc(const void* handle, TextureDesc& out) cons
     return true;
 }
 
+bool ResourceRegistry::getBufferDesc(const void* handle, BufferDesc& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = entries_.find(handle);
+    if (it == entries_.end() || it->second.kind != ResourceKind::Buffer) return false;
+    out = it->second.buffer;
+    return true;
+}
+
 bool ResourceRegistry::updateBuffer(const void* handle, const UpdateBox* box, const void* data) {
     if (data == nullptr) return false;
     std::lock_guard<std::mutex> lock(mutex_);

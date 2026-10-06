@@ -336,11 +336,13 @@ static int64_t WINAPI mock_Factory_CreateSwapChainForHwnd(
 }
 
 static std::mutex sSpriteMutex;
-static std::vector<SpriteDrawCommand> sCurrentFrameSprites;
+static std::vector<SpriteDrawCommand> sActiveDrawingSprites;
+static std::vector<SpriteDrawCommand> sReadyFrameSprites;
 static const void* sCurrentVertexBuffer = nullptr;
-static uint32_t sCurrentVertexStride = 20; // 5 floats = 20 bytes: pos.x, pos.y, pos.z, uv.u, uv.v
+static uint32_t sCurrentVertexStride = 20; // 5 floats/fields = 20 bytes: pos.x, pos.y, color, uv.u, uv.v
+static uint32_t sCurrentVertexOffset = 0;
 static const void* sCurrentIndexBuffer = nullptr;
-static uint32_t sCurrentIndexFormat = 28; // DXGI_FORMAT_R16_UINT = 57 or R8/R16
+static uint32_t sCurrentIndexFormat = 57; // DXGI_FORMAT_R16_UINT = 57
 static const void* sActiveShaderResourceView = nullptr;
 static const void* sActiveTextureResource = nullptr;
 
@@ -373,11 +375,8 @@ static int64_t WINAPI mock_SwapChain_Present(void*, uint32_t syncInterval, uint3
     }
     {
         std::lock_guard<std::mutex> sLock(sSpriteMutex);
-        // Lưu trữ danh sách cho frame này, nếu cần dọn dẹp để chuẩn bị frame kế tiếp
-        // Khi render thread đọc xong qua GetSpriteBatchInfo, danh sách sẽ được làm mới
-        if (sCurrentFrameSprites.size() > 512) {
-            sCurrentFrameSprites.clear();
-        }
+        sReadyFrameSprites = std::move(sActiveDrawingSprites);
+        sActiveDrawingSprites.clear();
     }
     sFrameCond.notify_one();
     return 0;
@@ -514,9 +513,8 @@ static int64_t WINAPI mock_SwapChain_Present1(void*, uint32_t syncInterval, uint
     }
     {
         std::lock_guard<std::mutex> sLock(sSpriteMutex);
-        if (sCurrentFrameSprites.size() > 512) {
-            sCurrentFrameSprites.clear();
-        }
+        sReadyFrameSprites = std::move(sActiveDrawingSprites);
+        sActiveDrawingSprites.clear();
     }
     sFrameCond.notify_one();
     return 0;
@@ -587,8 +585,8 @@ static int64_t WINAPI mock_Device_CreateBuffer(void*, const void* pDesc, const v
     auto* mockBuf = new SGRE_COM_Mock{ gGenericResourceVtable };
     if (pDesc) {
         const auto* desc = reinterpret_cast<const MockBufferDesc*>(pDesc);
-        LOGI("ID3D11Device::CreateBuffer: ByteWidth=%u, Usage=%u, BindFlags=0x%x, InitialData=%p",
-             desc->byteWidth, desc->usage, desc->bindFlags, pInitialData);
+        LOGI("ID3D11Device::CreateBuffer: mockBuf=%p, ByteWidth=%u, Usage=%u, BindFlags=0x%x, InitialData=%p",
+             mockBuf, desc->byteWidth, desc->usage, desc->bindFlags, pInitialData);
 
         sgre::BufferDesc bufDesc{};
         bufDesc.byteWidth = desc->byteWidth;
@@ -712,74 +710,96 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
              indexCount, startIndexLocation, baseVertexLocation, sDrawIndexedCount);
     }
 
-    // Trích xuất toạ độ sprite nếu Vertex Buffer và Index Buffer hợp lệ
     if (sCurrentVertexBuffer != nullptr && indexCount >= 4) {
         sgre::MappedView vView{};
-        if (sRegistry.map(sCurrentVertexBuffer, vView) && vView.data != nullptr) {
-            const auto* vData = reinterpret_cast<const float*>(vView.data);
-            // 4 đỉnh của Quad (mỗi đỉnh 5 floats: x, y, z, u, v)
-            // Tọa độ đỉnh game engine M2 sử dụng pixel screen-space với tâm (0, 0): [-960, 960] x [-540, 540]
-            // Chuẩn hoá sang OpenGL ES NDC [-1.0, 1.0] x [-1.0, 1.0] và lật trục Y cho đúng chiều hiển thị
-            SpriteDrawCommand cmd{};
-            for (int i = 0; i < 4; ++i) {
-                size_t offset = i * (sCurrentVertexStride / sizeof(float));
-                float rawX = vData[offset + 0];
-                float rawY = vData[offset + 1];
-                float rawU = vData[offset + 3];
-                float rawV = vData[offset + 4];
+        sgre::BufferDesc vDesc{};
+        if (sRegistry.getBufferDesc(sCurrentVertexBuffer, vDesc) && sRegistry.map(sCurrentVertexBuffer, vView) && vView.data != nullptr) {
+            sgre::MappedView iView{};
+            const uint16_t* idx16 = nullptr;
+            const uint32_t* idx32 = nullptr;
+            if (sCurrentIndexBuffer != nullptr && sRegistry.map(sCurrentIndexBuffer, iView) && iView.data != nullptr) {
+                if (sCurrentIndexFormat == 57) { // DXGI_FORMAT_R16_UINT
+                    idx16 = reinterpret_cast<const uint16_t*>(iView.data);
+                } else if (sCurrentIndexFormat == 42) { // DXGI_FORMAT_R32_UINT
+                    idx32 = reinterpret_cast<const uint32_t*>(iView.data);
+                }
+            }
 
-                // Nếu toạ độ là pixel space (|rawX| > 1.5 hoặc |rawY| > 1.5), chuẩn hoá về NDC
+            SpriteDrawCommand cmd{};
+            bool validQuad = true;
+
+            for (uint32_t i = 0; i < 4; ++i) {
+                int32_t vertexIdx = static_cast<int32_t>(i);
+                if (idx16 != nullptr) {
+                    vertexIdx = static_cast<int32_t>(idx16[startIndexLocation + i]);
+                } else if (idx32 != nullptr) {
+                    vertexIdx = static_cast<int32_t>(idx32[startIndexLocation + i]);
+                }
+                vertexIdx += baseVertexLocation;
+
+                size_t byteOffset = sCurrentVertexOffset + static_cast<size_t>(vertexIdx) * sCurrentVertexStride;
+                if (byteOffset + sCurrentVertexStride > vDesc.byteWidth) {
+                    validQuad = false;
+                    break;
+                }
+
+                const uint8_t* vertPtr = vView.data + byteOffset;
+                float rawX = *reinterpret_cast<const float*>(vertPtr + 0);
+                float rawY = *reinterpret_cast<const float*>(vertPtr + 4);
+                float rawU = *reinterpret_cast<const float*>(vertPtr + 12);
+                float rawV = *reinterpret_cast<const float*>(vertPtr + 16);
+
                 if (std::abs(rawX) > 1.5f || std::abs(rawY) > 1.5f) {
                     cmd.pos[i][0] = rawX / 960.0f;
-                    cmd.pos[i][1] = -rawY / 540.0f; // Lật trục Y vì pixel space Y dương đi xuống
+                    cmd.pos[i][1] = -rawY / 540.0f;
                 } else {
                     cmd.pos[i][0] = rawX;
                     cmd.pos[i][1] = rawY;
                 }
 
-                // Bảo vệ UV trong phạm vi an toàn, tránh giá trị rác/không khởi tạo
                 if (std::isnan(rawU) || std::isinf(rawU) || rawU < -10.0f || rawU > 10.0f) rawU = 0.0f;
                 if (std::isnan(rawV) || std::isinf(rawV) || rawV < -10.0f || rawV > 10.0f) rawV = 0.0f;
                 cmd.uv[i][0] = rawU;
                 cmd.uv[i][1] = rawV;
             }
-            cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
-            cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
-            cmd.textureHandle = sActiveTextureResource;
-            cmd.textureWidth = 0;
-            cmd.textureHeight = 0;
-            if (sActiveTextureResource != nullptr) {
-                sgre::TextureDesc tDesc{};
-                if (sRegistry.getTextureDesc(sActiveTextureResource, tDesc)) {
-                    cmd.textureWidth = tDesc.width;
-                    cmd.textureHeight = tDesc.height;
+
+            if (validQuad) {
+                float width01 = std::abs(cmd.pos[1][0] - cmd.pos[0][0]);
+                float width23 = std::abs(cmd.pos[3][0] - cmd.pos[2][0]);
+                float height02 = std::abs(cmd.pos[2][1] - cmd.pos[0][1]);
+                float height13 = std::abs(cmd.pos[3][1] - cmd.pos[1][1]);
+                bool isDegenerate = (width01 < 0.001f && width23 < 0.001f) || (height02 < 0.001f && height13 < 0.001f);
+
+                if (!isDegenerate) {
+                    cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
+                    cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
+                    cmd.textureHandle = sActiveTextureResource;
+                    cmd.textureWidth = 0;
+                    cmd.textureHeight = 0;
+                    if (sActiveTextureResource != nullptr) {
+                        sgre::TextureDesc tDesc{};
+                        if (sRegistry.getTextureDesc(sActiveTextureResource, tDesc)) {
+                            cmd.textureWidth = tDesc.width;
+                            cmd.textureHeight = tDesc.height;
+                        }
+                    }
+
+                    static uint32_t sSpriteLogCount = 0;
+                    if (++sSpriteLogCount % 60 == 1) {
+                        LOGI("Extracted Valid Sprite #%u: Tex=%p (%ux%u) | NDC: V0=(%.2f, %.2f) V1=(%.2f, %.2f) V2=(%.2f, %.2f) V3=(%.2f, %.2f) | UV0=[%.2f, %.2f]",
+                             sSpriteLogCount,
+                             cmd.textureHandle, cmd.textureWidth, cmd.textureHeight,
+                             cmd.pos[0][0], cmd.pos[0][1], cmd.pos[1][0], cmd.pos[1][1],
+                             cmd.pos[2][0], cmd.pos[2][1], cmd.pos[3][0], cmd.pos[3][1],
+                             cmd.uv[0][0], cmd.uv[0][1]);
+                    }
+
+                    std::lock_guard<std::mutex> lock(sSpriteMutex);
+                    if (sActiveDrawingSprites.size() < 1024) {
+                        sActiveDrawingSprites.push_back(cmd);
+                    }
                 }
             }
-
-            static uint32_t sSpriteLogCount = 0;
-            if (++sSpriteLogCount % 60 == 1) {
-                LOGI("Extracted Sprite #%u: Tex=%p (%ux%u) | NDC: V0=(%.2f, %.2f) V1=(%.2f, %.2f) V2=(%.2f, %.2f) V3=(%.2f, %.2f) | Raw0=[%.1f, %.1f] UV0=[%.2f, %.2f]",
-                     sSpriteLogCount,
-                     cmd.textureHandle, cmd.textureWidth, cmd.textureHeight,
-                     cmd.pos[0][0], cmd.pos[0][1], cmd.pos[1][0], cmd.pos[1][1],
-                     cmd.pos[2][0], cmd.pos[2][1], cmd.pos[3][0], cmd.pos[3][1],
-                     vData[0], vData[1], cmd.uv[0][0], cmd.uv[0][1]);
-            }
-
-            std::lock_guard<std::mutex> lock(sSpriteMutex);
-            if (sCurrentFrameSprites.size() < 1024) {
-                sCurrentFrameSprites.push_back(cmd);
-            }
-        } else {
-            static uint32_t sMapFailCount = 0;
-            if (++sMapFailCount % 60 == 1) {
-                LOGW("DrawIndexed: sRegistry.map failed for VertexBuffer %p", sCurrentVertexBuffer);
-            }
-        }
-    } else {
-        static uint32_t sNullVbCount = 0;
-        if (++sNullVbCount % 60 == 1) {
-            LOGW("DrawIndexed: sCurrentVertexBuffer is null or IndexCount=%u < 4", indexCount);
         }
     }
 }
@@ -886,15 +906,22 @@ static void WINAPI mock_Context_PSSetShader(void*, void*, void* const*, uint32_t
 static void WINAPI mock_Context_PSSetSamplers(void*, uint32_t, uint32_t, void* const*) {}
 static void WINAPI mock_Context_VSSetShader(void*, void*, void* const*, uint32_t) {}
 
-static void WINAPI mock_Context_IASetVertexBuffers(void*, uint32_t startSlot, uint32_t numBuffers, void* const* ppVertexBuffers, const uint32_t* pStrides, const uint32_t*) {
+static void WINAPI mock_Context_IASetVertexBuffers(void*, uint32_t startSlot, uint32_t numBuffers, void* const* ppVertexBuffers, const uint32_t* pStrides, const uint32_t* pOffsets) {
     static uint32_t sVbLogCount = 0;
     if (numBuffers > 0 && ppVertexBuffers && ppVertexBuffers[0]) {
         sCurrentVertexBuffer = ppVertexBuffers[0];
         if (pStrides && pStrides[0] > 0) {
             sCurrentVertexStride = pStrides[0];
         }
+        sCurrentVertexOffset = (pOffsets && pOffsets[0] > 0) ? pOffsets[0] : 0;
         if (++sVbLogCount % 60 == 1) {
-            LOGI("IASetVertexBuffers: Vb=%p, Stride=%u, numBuffers=%u", sCurrentVertexBuffer, sCurrentVertexStride, numBuffers);
+            sgre::BufferDesc bDesc{};
+            uint32_t bWidth = 0;
+            if (sRegistry.getBufferDesc(sCurrentVertexBuffer, bDesc)) {
+                bWidth = bDesc.byteWidth;
+            }
+            LOGI("IASetVertexBuffers: Vb=%p (Width=%u), Stride=%u, Offset=%u, Slot=%u, numBuffers=%u",
+                 sCurrentVertexBuffer, bWidth, sCurrentVertexStride, sCurrentVertexOffset, startSlot, numBuffers);
         }
     }
 }
@@ -905,7 +932,12 @@ static void WINAPI mock_Context_IASetIndexBuffer(void*, void* pIndexBuffer, uint
         sCurrentIndexFormat = format;
         static uint32_t sIbLogCount = 0;
         if (++sIbLogCount % 60 == 1) {
-            LOGI("IASetIndexBuffer: Ib=%p, Format=%u", sCurrentIndexBuffer, format);
+            sgre::BufferDesc bDesc{};
+            uint32_t bWidth = 0;
+            if (sRegistry.getBufferDesc(sCurrentIndexBuffer, bDesc)) {
+                bWidth = bDesc.byteWidth;
+            }
+            LOGI("IASetIndexBuffer: Ib=%p (Width=%u), Format=%u", sCurrentIndexBuffer, bWidth, format);
         }
     }
 }
@@ -956,9 +988,9 @@ bool D3D11Bridge_GetTextureInfoByHandle(const void* handle, uint32_t* outWidth, 
 
 size_t D3D11Bridge_GetSpriteBatchInfo(SpriteDrawCommand* outCommands, size_t maxCommands) {
     std::lock_guard<std::mutex> lock(sSpriteMutex);
-    size_t count = std::min(sCurrentFrameSprites.size(), maxCommands);
+    size_t count = std::min(sReadyFrameSprites.size(), maxCommands);
     if (outCommands != nullptr && count > 0) {
-        std::memcpy(outCommands, sCurrentFrameSprites.data(), count * sizeof(SpriteDrawCommand));
+        std::memcpy(outCommands, sReadyFrameSprites.data(), count * sizeof(SpriteDrawCommand));
     }
     return count;
 }
