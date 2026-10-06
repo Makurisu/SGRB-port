@@ -601,18 +601,71 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         a_trans = ca_trans / 255.0
         self.assertAlmostEqual(a_trans, 57 / 255.0, places=4)
 
-    def test_batch_quad_extraction_multiple_quads(self):
-        # Mô phỏng drawIndexed với IndexCount=40 (10 quads, mỗi quad 4 indices)
-        index_count = 40
-        quad_step = 4
-        quads = []
-        for q in range(0, index_count, quad_step):
-            quad_indices = [q, q + 1, q + 2, q + 3]
-            quads.append(quad_indices)
+    def test_strip_restart_quad_extraction(self):
+        # Kiểm tra công thức trích xuất quad từ Triangle Strip với Degenerate Restarts (4 + k * 6)
+        # Các giá trị thực tế của Mages Engine: 4, 10, 16, 22, 28, 34, 40
+        def extract_quads_from_indices(index_count, topology=4):
+            num_quads = 0
+            quad_stride = 4
+            is_strip_restart = False
+            is_tri_list = False
 
-        self.assertEqual(len(quads), 10, "IndexCount=40 phải trích xuất được 10 quads")
+            if index_count >= 4 and (index_count - 4) % 6 == 0:
+                num_quads = (index_count - 4) // 6 + 1
+                quad_stride = 6
+                is_strip_restart = True
+            elif topology == 4 and index_count % 6 == 0:
+                num_quads = index_count // 6
+                quad_stride = 6
+                is_tri_list = True
+            else:
+                num_quads = index_count // 4
+                quad_stride = 4
+
+            quads = []
+            for q in range(num_quads):
+                base_idx = q * quad_stride
+                if is_tri_list:
+                    quads.append([base_idx, base_idx + 1, base_idx + 2, base_idx + 5])
+                else:
+                    quads.append([base_idx, base_idx + 1, base_idx + 2, base_idx + 3])
+            return quads
+
+        # 1 quad (index_count = 4)
+        q4 = extract_quads_from_indices(4)
+        self.assertEqual(len(q4), 1)
+        self.assertEqual(q4[0], [0, 1, 2, 3])
+
+        # 2 quads (index_count = 10)
+        q10 = extract_quads_from_indices(10)
+        self.assertEqual(len(q10), 2)
+        self.assertEqual(q10[0], [0, 1, 2, 3])
+        self.assertEqual(q10[1], [6, 7, 8, 9]) # Bước nhảy 6 indices
+
+        # 7 quads (index_count = 40)
+        q40 = extract_quads_from_indices(40)
+        self.assertEqual(len(q40), 7)
+        self.assertEqual(q40[0], [0, 1, 2, 3])
+        self.assertEqual(q40[6], [36, 37, 38, 39])
+
+        # Triangle List (index_count = 12, topo = 4)
+        q12_list = extract_quads_from_indices(12, topology=4)
+        self.assertEqual(len(q12_list), 2)
+        self.assertEqual(q12_list[0], [0, 1, 2, 5])
+        self.assertEqual(q12_list[1], [6, 7, 8, 11])
+
+    def test_batch_quad_extraction_multiple_quads(self):
+        # Mô phỏng drawIndexed với IndexCount=40 theo chuẩn strip restart
+        index_count = 40
+        num_quads = (index_count - 4) // 6 + 1
+        quads = []
+        for q in range(num_quads):
+            base = q * 6
+            quads.append([base, base + 1, base + 2, base + 3])
+
+        self.assertEqual(len(quads), 7, "IndexCount=40 với strip restart phải trích xuất được 7 quads")
         self.assertEqual(quads[0], [0, 1, 2, 3])
-        self.assertEqual(quads[9], [36, 37, 38, 39])
+        self.assertEqual(quads[6], [36, 37, 38, 39])
 
 if __name__ == "__main__":
     unittest.main()

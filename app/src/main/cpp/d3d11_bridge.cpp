@@ -527,6 +527,9 @@ static int64_t WINAPI mock_SwapChain_Present1(void*, uint32_t syncInterval, uint
         std::lock_guard<std::mutex> sLock(sSpriteMutex);
         sReadyFrameSprites = std::move(sActiveDrawingSprites);
         sActiveDrawingSprites.clear();
+        if (frameCount1 % 60 == 1) {
+            LOGI("Present1 frame %u: ready sprites count = %zu", frameCount1, sReadyFrameSprites.size());
+        }
     }
     {
         std::lock_guard<std::mutex> lock(sDeferredMutex);
@@ -698,7 +701,25 @@ static int64_t WINAPI mock_Device_CreateShader(void*, const void* pBytecode, siz
     return 0;
 }
 
-static int64_t WINAPI mock_Device_CreateInputLayout(void*, const void*, uint32_t, const void*, size_t, void** ppLayout) {
+struct MockInputElementDesc {
+    const char* semanticName;
+    uint32_t semanticIndex;
+    uint32_t format;
+    uint32_t inputSlot;
+    uint32_t alignedByteOffset;
+    uint32_t inputSlotClass;
+    uint32_t instanceDataStepRate;
+};
+
+static int64_t WINAPI mock_Device_CreateInputLayout(void*, const void* pInputElementDescs, uint32_t numElements, const void*, size_t, void** ppLayout) {
+    if (pInputElementDescs && numElements > 0) {
+        const auto* descs = reinterpret_cast<const MockInputElementDesc*>(pInputElementDescs);
+        for (uint32_t i = 0; i < numElements; ++i) {
+            LOGI("CreateInputLayout: elem[%u] Name=%s, Idx=%u, Fmt=%u, Slot=%u, Offset=%u",
+                 i, descs[i].semanticName ? descs[i].semanticName : "null",
+                 descs[i].semanticIndex, descs[i].format, descs[i].inputSlot, descs[i].alignedByteOffset);
+        }
+    }
     if (ppLayout) *ppLayout = &gMockGenericResource;
     return 0;
 }
@@ -724,10 +745,7 @@ static void WINAPI mock_Device_GetImmediateContext(void*, void** ppImmediateCont
 static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t startIndexLocation, int32_t baseVertexLocation) {
     sTotalDrawIndexedCalls++;
     static uint32_t sDrawIndexedCount = 0;
-    if (++sDrawIndexedCount % 60 == 1) {
-        LOGI("ID3D11DeviceContext::DrawIndexed: IndexCount=%u, StartIndex=%u, BaseVertex=%d (total calls: %u)",
-             indexCount, startIndexLocation, baseVertexLocation, sDrawIndexedCount);
-    }
+    bool shouldLog = (++sDrawIndexedCount % 60 == 1);
 
     if (sCurrentVertexBuffer != nullptr && indexCount >= 4) {
         sgre::MappedView vView{};
@@ -744,13 +762,63 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                 }
             }
 
-            uint32_t quadStep = (sCurrentPrimitiveTopology == 4 && indexCount % 6 == 0 && indexCount % 4 != 0) ? 6 : 4;
-            for (uint32_t q = 0; q + quadStep <= indexCount; q += quadStep) {
+            if (shouldLog) {
+                if (idx16 != nullptr) {
+                    uint32_t printCount = std::min(indexCount, 12u);
+                    char buf[128] = {0};
+                    int offset = 0;
+                    for (uint32_t k = 0; k < printCount; ++k) {
+                        offset += snprintf(buf + offset, sizeof(buf) - offset, "%u ", idx16[startIndexLocation + k]);
+                    }
+                    LOGI("DrawIndexed #%u: Count=%u, Topo=%u, Start=%u, Base=%d, Idx16=[%s]",
+                         sDrawIndexedCount, indexCount, sCurrentPrimitiveTopology, startIndexLocation, baseVertexLocation, buf);
+                } else {
+                    LOGI("DrawIndexed #%u: Count=%u, Topo=%u, Start=%u, Base=%d (no index buffer)",
+                         sDrawIndexedCount, indexCount, sCurrentPrimitiveTopology, startIndexLocation, baseVertexLocation);
+                }
+            }
+
+            // Xác định chế độ duyệt quads:
+            // 1. Strip có degenerate restart: indexCount = 4 + k * 6 (4, 10, 16, 22, 28, 34, 40...)
+            // 2. Triangle List chuẩn: indexCount % 6 == 0 && topology == 4
+            // 3. Quads liên tiếp: indexCount % 4 == 0
+            uint32_t numQuads = 0;
+            uint32_t quadStride = 4;
+            bool isStripRestart = false;
+            bool isTriList = false;
+
+            if (indexCount >= 4 && (indexCount - 4) % 6 == 0) {
+                numQuads = (indexCount - 4) / 6 + 1;
+                quadStride = 6;
+                isStripRestart = true;
+            } else if (sCurrentPrimitiveTopology == 4 && indexCount % 6 == 0) {
+                numQuads = indexCount / 6;
+                quadStride = 6;
+                isTriList = true;
+            } else {
+                numQuads = indexCount / 4;
+                quadStride = 4;
+            }
+
+            uint32_t extractedQuads = 0;
+            for (uint32_t q = 0; q < numQuads; ++q) {
+                uint32_t baseIdxOffset = q * quadStride;
                 SpriteDrawCommand cmd{};
                 bool validQuad = true;
 
                 for (uint32_t i = 0; i < 4; ++i) {
-                    uint32_t idxOffset = q + (quadStep == 6 && i >= 2 ? (i == 2 ? 2 : (i == 3 ? 5 : i)) : i);
+                    uint32_t idxOffset = baseIdxOffset;
+                    if (isTriList) {
+                        idxOffset += (i == 3 ? 5 : i);
+                    } else {
+                        idxOffset += i;
+                    }
+
+                    if (startIndexLocation + idxOffset >= indexCount) {
+                        validQuad = false;
+                        break;
+                    }
+
                     int32_t vertexIdx = static_cast<int32_t>(idxOffset);
                     if (idx16 != nullptr) {
                         vertexIdx = static_cast<int32_t>(idx16[startIndexLocation + idxOffset]);
@@ -990,6 +1058,9 @@ static void WINAPI mock_Context_IASetIndexBuffer(void*, void* pIndexBuffer, uint
 
 static void WINAPI mock_Context_IASetInputLayout(void*, void*) {}
 static void WINAPI mock_Context_IASetPrimitiveTopology(void*, uint32_t topology) {
+    if (sCurrentPrimitiveTopology != topology) {
+        LOGI("IASetPrimitiveTopology: changed from %u to %u", sCurrentPrimitiveTopology, topology);
+    }
     sCurrentPrimitiveTopology = topology;
 }
 static void WINAPI mock_Context_VSSetShaderResources(void*, uint32_t, uint32_t, void* const*) {}

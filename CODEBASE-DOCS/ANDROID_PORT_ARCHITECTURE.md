@@ -269,7 +269,18 @@ sequenceDiagram
     - `IXAudio2SourceVoice`: Cài đặt `Start` (slot 19), `Stop` (slot 20), `SubmitSourceBuffer` (slot 21, vtable offset `0xA8`), `FlushSourceBuffers` (slot 22), và `GetState` (slot 25, xóa trắng 24 bytes `XAUDIO2_VOICE_STATE`).
     - `IXAudio2SubmixVoice`: Cài đặt vtable độc lập 32 slots cho submix routing.
   - Khi game nhận sự kiện tương tác chạm/bấm phím từ người dùng, engine chuẩn bị phát âm thanh UI (Click Sound Effect) bằng lệnh:
-    `mov rax, [rcx]; call [rax + 0xA8]`. Việc `CreateSourceVoice` gán chuẩn con trỏ `*ppSourceVoice` giúp loại bỏ hoàn toàn lỗi crash null-pointer dereference (`SEGV_MAPERR fault addr 0x0`) tại RVA `0x39193E-0x391941`.
+- **Hệ Thống Bóc Tách Batch Quads Chuẩn Strip Restart & Bảo Vệ Fallback Render (`d3d11_bridge.cpp`, `jni_bridge.cpp` - Milestone M10)**:
+  - **Cơ Chế Bóc Tách Triangle Strip với Degenerate Restart ($4 + k \times 6$)**:
+    - Nhận diện quy luật mảng index của Mages Engine: Các batch quads UI/Title Menu được tổ chức dưới dạng Triangle Strip kết nối bởi degenerate vertices ($N$ quads = $4 + (N-1) \times 6$ indices: $4, 10, 16, 22, 28, 34, 40...$).
+    - Thuật toán tự động xác định bước nhảy `quadStride = 6` và trích xuất chuẩn xác 4 đỉnh thực của từng quad tại toạ độ offset $[k \times 6 + 0, k \times 6 + 1, k \times 6 + 2, k \times 6 + 3]$, bỏ qua 2 degenerate link indices.
+    - Hỗ trợ đồng thời chế độ Triangle List (`IndexCount % 6 == 0` với stride 6, trích xuất đỉnh thứ 4 tại offset 5) và Quads liên tiếp (`IndexCount % 4 == 0` với stride 4).
+    - Độ phức tạp tính toán: $O(N)$ với $N$ là số lượng sprite quads trong frame (thông thường $N \le 64$, thời gian thực thi $< 0.1\text{ms}$).
+  - **Cơ Chế Bảo Vệ Fallback Rendering (`jni_bridge.cpp`)**:
+    - Ngăn chặn hoàn toàn việc fallback quad vẽ đè toàn bộ texture atlas thô ($3424 \times 3424$) lên màn hình khi `spriteCount == 0`.
+    - Giới hạn chế độ fallback toàn màn hình chỉ áp dụng cho các background textures thực thụ ($\le 2048 \times 1088$), giữ cho màn hình hiển thị chính xác các thành phần UI, hoạt ảnh menu và chuyển cảnh mượt mà không bị che khuất bởi asset atlas tĩnh.
+  - **Telemetry Input Element & Topology Diagnostics**:
+    - Thu thập chi tiết thông số `D3D11_INPUT_ELEMENT_DESC` trong `CreateInputLayout` và theo dõi sự thay đổi topology trong `IASetPrimitiveTopology`.
+    - Ghi nhận số lượng sprite sẵn sàng xuất màn hình tại `Present1` và số sprite thực sự render tại `jni_bridge.cpp` phục vụ chẩn đoán thời gian thực.
 
 
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)

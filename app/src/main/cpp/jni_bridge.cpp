@@ -253,6 +253,10 @@ static void renderLoop() {
             // Truy vấn danh sách sprite quads được trích xuất từ D3D11 draw calls
             SpriteDrawCommand spriteCommands[1024];
             size_t spriteCount = D3D11Bridge_GetSpriteBatchInfo(spriteCommands, 1024);
+            static uint32_t sRenderCount = 0;
+            if (++sRenderCount % 60 == 1) {
+                LOGI("GLES Render #%u: spriteCount=%zu, activeTex=%ux%u", sRenderCount, spriteCount, activeW, activeH);
+            }
 
             if (spriteCount > 0) {
                 // Render từng Sprite Quad với đúng toạ độ đỉnh, UV map, Vertex Color và Texture bind tương ứng
@@ -308,19 +312,22 @@ static void renderLoop() {
                     glDisableVertexAttribArray(aColorLoc);
                 }
             } else {
-                // Fallback render quad toàn màn hình nếu chưa có dữ liệu batch sprite
-                glVertexAttrib4f(aColorLoc, 1.0f, 1.0f, 1.0f, 1.0f);
+                // Chỉ fallback render quad toàn màn hình cho background texture (<= 2048x1088),
+                // TUYỆT ĐỐI không render đè Texture Atlas thô (3424x3424) lên toàn màn hình
+                if (activeW <= 2048 && activeH <= 1088) {
+                    glVertexAttrib4f(aColorLoc, 1.0f, 1.0f, 1.0f, 1.0f);
 
-                glEnableVertexAttribArray(aPositionLoc);
-                glVertexAttribPointer(aPositionLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[0]);
+                    glEnableVertexAttribArray(aPositionLoc);
+                    glVertexAttribPointer(aPositionLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[0]);
 
-                glEnableVertexAttribArray(aTexCoordLoc);
-                glVertexAttribPointer(aTexCoordLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[2]);
+                    glEnableVertexAttribArray(aTexCoordLoc);
+                    glVertexAttribPointer(aTexCoordLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[2]);
 
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-                glDisableVertexAttribArray(aPositionLoc);
-                glDisableVertexAttribArray(aTexCoordLoc);
+                    glDisableVertexAttribArray(aPositionLoc);
+                    glDisableVertexAttribArray(aTexCoordLoc);
+                }
             }
 
             glDisable(GL_BLEND);
