@@ -602,6 +602,18 @@ static int64_t WINAPI mock_Device_CreateBuffer(void*, const void* pDesc, const v
         if (pInitialData) {
             const auto* subData = reinterpret_cast<const MockSubresourceData*>(pInitialData);
             initMem = subData->pSysMem;
+            if (desc->byteWidth == 80 && initMem != nullptr) {
+                const auto* f = reinterpret_cast<const float*>(initMem);
+                static uint32_t sBuf80Count = 0;
+                if (++sBuf80Count % 60 == 1) {
+                    LOGI("CreateBuffer[80] #%u: V0=[%.2f, %.2f, %.2f, %.2f, %.2f] V1=[%.2f, %.2f, %.2f, %.2f, %.2f] V2=[%.2f, %.2f, %.2f, %.2f, %.2f] V3=[%.2f, %.2f, %.2f, %.2f, %.2f]",
+                         sBuf80Count,
+                         f[0], f[1], f[2], f[3], f[4],
+                         f[5], f[6], f[7], f[8], f[9],
+                         f[10], f[11], f[12], f[13], f[14],
+                         f[15], f[16], f[17], f[18], f[19]);
+                }
+            }
         }
         sRegistry.registerBuffer(mockBuf, bufDesc, initMem);
     }
@@ -729,10 +741,13 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
 
             static uint32_t sSpriteLogCount = 0;
             if (++sSpriteLogCount % 60 == 1) {
-                LOGI("Extracted Sprite #%u: Tex=%p (%ux%u) | Pos0=(%.2f, %.2f) UV0=(%.2f, %.2f)",
+                LOGI("Extracted Sprite #%u: Tex=%p (%ux%u) | V0=[pos:(%.2f, %.2f, %.2f) uv:(%.2f, %.2f)] V1=[pos:(%.2f, %.2f, %.2f) uv:(%.2f, %.2f)] V2=[pos:(%.2f, %.2f, %.2f) uv:(%.2f, %.2f)] V3=[pos:(%.2f, %.2f, %.2f) uv:(%.2f, %.2f)]",
                      sSpriteLogCount,
                      cmd.textureHandle, cmd.textureWidth, cmd.textureHeight,
-                     cmd.pos[0][0], cmd.pos[0][1], cmd.uv[0][0], cmd.uv[0][1]);
+                     vData[0], vData[1], vData[2], vData[3], vData[4],
+                     vData[5], vData[6], vData[7], vData[8], vData[9],
+                     vData[10], vData[11], vData[12], vData[13], vData[14],
+                     vData[15], vData[16], vData[17], vData[18], vData[19]);
             }
 
             std::lock_guard<std::mutex> lock(sSpriteMutex);
