@@ -911,6 +911,30 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                         }
                     }
 
+                    // Chuẩn hoá toạ độ UV nếu giá trị vượt quá 1.0 (ví dụ trường hợp toạ độ atlas tính theo pixel hoặc scale)
+                    for (uint32_t vi = 0; vi < 4; ++vi) {
+                        if (cmd.uv[vi][0] > 1.0f) {
+                            if (cmd.textureWidth > 0 && cmd.uv[vi][0] > 16.0f && cmd.uv[vi][0] <= static_cast<float>(cmd.textureWidth)) {
+                                cmd.uv[vi][0] /= static_cast<float>(cmd.textureWidth);
+                            } else {
+                                cmd.uv[vi][0] = cmd.uv[vi][0] - std::floor(cmd.uv[vi][0]);
+                            }
+                        }
+                        if (cmd.uv[vi][1] > 1.0f) {
+                            if (cmd.textureHeight > 0 && cmd.uv[vi][1] > 16.0f && cmd.uv[vi][1] <= static_cast<float>(cmd.textureHeight)) {
+                                cmd.uv[vi][1] /= static_cast<float>(cmd.textureHeight);
+                            } else {
+                                cmd.uv[vi][1] = cmd.uv[vi][1] - std::floor(cmd.uv[vi][1]);
+                            }
+                        }
+                        if (cmd.uv[vi][0] < 0.0f) {
+                            cmd.uv[vi][0] = cmd.uv[vi][0] - std::floor(cmd.uv[vi][0]);
+                        }
+                        if (cmd.uv[vi][1] < 0.0f) {
+                            cmd.uv[vi][1] = cmd.uv[vi][1] - std::floor(cmd.uv[vi][1]);
+                        }
+                    }
+
                     std::lock_guard<std::mutex> lock(sSpriteMutex);
                     if (sActiveDrawingSprites.size() < 1024) {
                         sActiveDrawingSprites.push_back(cmd);

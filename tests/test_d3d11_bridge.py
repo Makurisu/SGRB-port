@@ -677,6 +677,50 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertEqual(extracted_vertices[0], [24, 25, 26, 27])
         self.assertEqual(extracted_vertices[1], [30, 31, 32, 33])
 
+    def test_uv_normalization_logic(self):
+        # Kiểm tra chuẩn hoá UV khi giá trị vượt quá 1.0 hoặc dạng toạ độ atlas pixel
+        def normalize_uv(u, v, tex_w, tex_h):
+            norm_u = u
+            norm_v = v
+            if norm_u > 1.0:
+                if tex_w > 0 and norm_u > 16.0 and norm_u <= tex_w:
+                    norm_u /= tex_w
+                else:
+                    norm_u = norm_u - int(norm_u)
+            if norm_v > 1.0:
+                if tex_h > 0 and norm_v > 16.0 and norm_v <= tex_h:
+                    norm_v /= tex_h
+                else:
+                    norm_v = norm_v - int(norm_v)
+            return norm_u, norm_v
+
+        # Trường hợp 1: UV chuẩn trong khoảng [0, 1]
+        u1, v1 = normalize_uv(0.25, 0.75, 2048, 1088)
+        self.assertAlmostEqual(u1, 0.25)
+        self.assertAlmostEqual(v1, 0.75)
+
+        # Trường hợp 2: UV lớn hơn 1.0 do scale modulo (ví dụ 1.409, 3.138)
+        u2, v2 = normalize_uv(1.409, 3.138, 3424, 3424)
+        self.assertAlmostEqual(u2, 0.409, places=3)
+        self.assertAlmostEqual(v2, 0.138, places=3)
+
+        # Trường hợp 3: UV theo pixel toạ độ tuyệt đối trong texture (ví dụ 1024, 544)
+        u3, v3 = normalize_uv(1024.0, 544.0, 2048, 1088)
+        self.assertAlmostEqual(u3, 0.5)
+        self.assertAlmostEqual(v3, 0.5)
+
+    def test_fallback_quad_filtering_logic(self):
+        # Kiểm tra điều kiện fallback quad: chỉ cho phép 1920x1080, loại bỏ hoàn toàn các texture atlas (2048x1088, 3424x3424)
+        def should_draw_fullscreen_fallback(tex_w, tex_h, sprite_count):
+            if sprite_count > 0:
+                return False
+            return (tex_w == 1920 and tex_h == 1080)
+
+        self.assertTrue(should_draw_fullscreen_fallback(1920, 1080, 0))
+        self.assertFalse(should_draw_fullscreen_fallback(1920, 1080, 5))
+        self.assertFalse(should_draw_fullscreen_fallback(2048, 1088, 0), "Atlas 2048x1088 tuyệt đối không được fallback đè toàn màn hình")
+        self.assertFalse(should_draw_fullscreen_fallback(3424, 3424, 0), "Atlas 3424x3424 tuyệt đối không được fallback đè toàn màn hình")
+
 if __name__ == "__main__":
     unittest.main()
 

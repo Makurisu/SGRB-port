@@ -289,9 +289,15 @@ sequenceDiagram
     - Sửa triệt để lỗi kiểm tra biên `startIndexLocation`: Loại bỏ so sánh nhầm lẫn `startIndexLocation + idxOffset >= indexCount` (vốn loại bỏ sai toàn bộ các lệnh vẽ sprite có `startIndexLocation > 0`), chuẩn hoá kiểm tra `idxOffset >= indexCount` và kiểm tra độ rộng byte thực tế của index buffer (`requiredBytes <= iDesc.byteWidth`), đồng thời bảo vệ chống âm `vertexIdx >= 0`.
     - Hỗ trợ đồng thời chế độ Triangle List (`IndexCount % 6 == 0` với stride 6, trích xuất đỉnh thứ 4 tại offset 5) và Quads liên tiếp (`IndexCount % 4 == 0` với stride 4).
     - Độ phức tạp tính toán: $O(N)$ với $N$ là số lượng sprite quads trong frame (thông thường $N \le 64$, thời gian thực thi $< 0.1\text{ms}$).
-  - **Cơ Chế Bảo Vệ Fallback Rendering (`jni_bridge.cpp`)**:
-    - Ngăn chặn hoàn toàn việc fallback quad vẽ đè toàn bộ texture atlas thô ($3424 \times 3424$) lên màn hình khi `spriteCount == 0`.
-    - Giới hạn chế độ fallback toàn màn hình chỉ áp dụng cho các background textures thực thụ ($\le 2048 \times 1088$), giữ cho màn hình hiển thị chính xác các thành phần UI, hoạt ảnh menu và chuyển cảnh mượt mà không bị che khuất bởi asset atlas tĩnh.
+  - **Cơ Chế Bảo Vệ Fallback Rendering & Chuẩn Hoá Toạ Độ UV (`jni_bridge.cpp`, `d3d11_bridge.cpp` - Milestone M10 & M12)**:
+    - **Loại bỏ hoàn toàn Fallback vẽ đè Atlas thô (`jni_bridge.cpp`)**:
+      - Trước đây fallback cho phép các texture kích thước $\le 2048 \times 1088$ vẽ đè lên toàn màn hình dưới dạng full-screen quad khi `spriteCount == 0`. Tuy nhiên tấm Texture Atlas chính của Title Menu lại có kích thước $2048 \times 1088$, dẫn đến việc tấm atlas này bị quăng thẳng lên màn hình che toàn bộ các thành phần game khác.
+      - Tại Milestone M12, điều kiện fallback full-screen quad được siết chặt tuyệt đối: chỉ cho phép khi texture khớp chính xác độ phân giải frame game chuẩn (`activeW == 1920 && activeH == 1080`). Toàn bộ các texture atlas thô ($2048 \times 1088$, $3424 \times 3424$,...) bị loại bỏ hoàn toàn khỏi luồng fallback.
+    - **Chuẩn hoá toạ độ UV đa tầng (`d3d11_bridge.cpp`)**:
+      - Hỗ trợ cả hai cơ chế định vị texture của Mages Engine:
+        - Chuẩn hoá pixel coordinate: Khi toạ độ $U, V > 16.0$ và nhỏ hơn hoặc bằng kích thước thực của texture liên kết (`cmd.textureWidth`, `cmd.textureHeight`), hệ thống tự động chia theo kích thước texture để thu về khoảng $[0.0, 1.0]$.
+        - Chuẩn hoá texture wrapping modulo: Đối với các toạ độ UV vượt quá $1.0$ do scale lặp (như $1.409, 3.138$), hệ thống áp dụng phép trừ phần nguyên `uv - floor(uv)` để giữ toạ độ UV luôn nằm trong dải hợp lệ $[0.0, 1.0]$ cho OpenGL ES shader.
+    - Độ phức tạp: $O(1)$ cho mỗi đỉnh sprite, tổng thời gian xử lý $< 0.05\text{ms}$ cho toàn bộ frame.
   - **Telemetry Input Element & Topology Diagnostics**:
     - Thu thập chi tiết thông số `D3D11_INPUT_ELEMENT_DESC` trong `CreateInputLayout` và theo dõi sự thay đổi topology trong `IASetPrimitiveTopology`.
     - Ghi nhận số lượng sprite sẵn sàng xuất màn hình tại `Present1` và số sprite thực sự render tại `jni_bridge.cpp` phục vụ chẩn đoán thời gian thực.

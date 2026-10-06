@@ -312,9 +312,9 @@ static void renderLoop() {
                     glDisableVertexAttribArray(aColorLoc);
                 }
             } else {
-                // Chỉ fallback render quad toàn màn hình cho background texture (<= 2048x1088),
-                // TUYỆT ĐỐI không render đè Texture Atlas thô (3424x3424) lên toàn màn hình
-                if (activeW <= 2048 && activeH <= 1088) {
+                // Fallback chỉ render full-screen quad khi texture khớp chính xác độ phân giải khung hình chuẩn (1920x1080)
+                // TUYỆT ĐỐI không render đè Texture Atlas thô (2048x1088, 3424x3424,...) lên toàn màn hình
+                if (activeW == 1920 && activeH == 1080) {
                     glVertexAttrib4f(aColorLoc, 1.0f, 1.0f, 1.0f, 1.0f);
 
                     glEnableVertexAttribArray(aPositionLoc);
