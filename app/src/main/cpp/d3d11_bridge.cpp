@@ -341,6 +341,8 @@ static const void* sCurrentVertexBuffer = nullptr;
 static uint32_t sCurrentVertexStride = 20; // 5 floats = 20 bytes: pos.x, pos.y, pos.z, uv.u, uv.v
 static const void* sCurrentIndexBuffer = nullptr;
 static uint32_t sCurrentIndexFormat = 28; // DXGI_FORMAT_R16_UINT = 57 or R8/R16
+static const void* sActiveShaderResourceView = nullptr;
+static const void* sActiveTextureResource = nullptr;
 
 // IDXGISwapChain methods
 static int64_t WINAPI mock_SwapChain_GetDevice(void*, const void*, void** ppDevice) {
@@ -832,9 +834,6 @@ static void WINAPI mock_Context_UpdateSubresource(
         }
     }
 }
-
-static const void* sActiveShaderResourceView = nullptr;
-static const void* sActiveTextureResource = nullptr;
 
 static void WINAPI mock_Context_VSSetConstantBuffers(void*, uint32_t, uint32_t, void* const*) {}
 static void WINAPI mock_Context_PSSetConstantBuffers(void*, uint32_t, uint32_t, void* const*) {}
