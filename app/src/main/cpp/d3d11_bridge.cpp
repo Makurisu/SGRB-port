@@ -781,11 +781,13 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                 cmd.uv[i][1] = rawV;
             }
 
-            float width01 = std::abs(cmd.pos[1][0] - cmd.pos[0][0]);
-            float width23 = std::abs(cmd.pos[3][0] - cmd.pos[2][0]);
-            float height02 = std::abs(cmd.pos[2][1] - cmd.pos[0][1]);
-            float height13 = std::abs(cmd.pos[3][1] - cmd.pos[1][1]);
-            bool isDegenerate = (width01 < 0.001f && width23 < 0.001f) || (height02 < 0.001f && height13 < 0.001f);
+            float minX = std::min({cmd.pos[0][0], cmd.pos[1][0], cmd.pos[2][0], cmd.pos[3][0]});
+            float maxX = std::max({cmd.pos[0][0], cmd.pos[1][0], cmd.pos[2][0], cmd.pos[3][0]});
+            float minY = std::min({cmd.pos[0][1], cmd.pos[1][1], cmd.pos[2][1], cmd.pos[3][1]});
+            float maxY = std::max({cmd.pos[0][1], cmd.pos[1][1], cmd.pos[2][1], cmd.pos[3][1]});
+            float quadWidth = maxX - minX;
+            float quadHeight = maxY - minY;
+            bool isDegenerate = (quadWidth < 0.001f) || (quadHeight < 0.001f);
 
             static uint32_t sDiagCount = 0;
             if (++sDiagCount % 120 == 1) {
