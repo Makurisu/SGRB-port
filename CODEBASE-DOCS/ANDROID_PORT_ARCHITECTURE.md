@@ -270,9 +270,10 @@ sequenceDiagram
     - `IXAudio2SubmixVoice`: Cài đặt vtable độc lập 32 slots cho submix routing.
   - Khi game nhận sự kiện tương tác chạm/bấm phím từ người dùng, engine chuẩn bị phát âm thanh UI (Click Sound Effect) bằng lệnh:
 - **Hệ Thống Bóc Tách Batch Quads Chuẩn Strip Restart & Bảo Vệ Fallback Render (`d3d11_bridge.cpp`, `jni_bridge.cpp` - Milestone M10)**:
-  - **Cơ Chế Bóc Tách Triangle Strip với Degenerate Restart ($4 + k \times 6$)**:
+  - **Cơ Chế Bóc Tách Triangle Strip với Degenerate Restart ($4 + k \times 6$) & Index Buffer Bounds**:
     - Nhận diện quy luật mảng index của Mages Engine: Các batch quads UI/Title Menu được tổ chức dưới dạng Triangle Strip kết nối bởi degenerate vertices ($N$ quads = $4 + (N-1) \times 6$ indices: $4, 10, 16, 22, 28, 34, 40...$).
     - Thuật toán tự động xác định bước nhảy `quadStride = 6` và trích xuất chuẩn xác 4 đỉnh thực của từng quad tại toạ độ offset $[k \times 6 + 0, k \times 6 + 1, k \times 6 + 2, k \times 6 + 3]$, bỏ qua 2 degenerate link indices.
+    - Sửa triệt để lỗi kiểm tra biên `startIndexLocation`: Loại bỏ so sánh nhầm lẫn `startIndexLocation + idxOffset >= indexCount` (vốn loại bỏ sai toàn bộ các lệnh vẽ sprite có `startIndexLocation > 0`), chuẩn hoá kiểm tra `idxOffset >= indexCount` và kiểm tra độ rộng byte thực tế của index buffer (`requiredBytes <= iDesc.byteWidth`), đồng thời bảo vệ chống âm `vertexIdx >= 0`.
     - Hỗ trợ đồng thời chế độ Triangle List (`IndexCount % 6 == 0` với stride 6, trích xuất đỉnh thứ 4 tại offset 5) và Quads liên tiếp (`IndexCount % 4 == 0` với stride 4).
     - Độ phức tạp tính toán: $O(N)$ với $N$ là số lượng sprite quads trong frame (thông thường $N \le 64$, thời gian thực thi $< 0.1\text{ms}$).
   - **Cơ Chế Bảo Vệ Fallback Rendering (`jni_bridge.cpp`)**:
