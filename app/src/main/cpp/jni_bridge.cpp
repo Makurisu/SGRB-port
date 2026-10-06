@@ -8,6 +8,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <unordered_map>
 #include "input_injector.h"
 #include "payload_loader.h"
 #include "win32_bridge.h"
@@ -188,6 +189,41 @@ static void renderLoop() {
         const uint8_t* activePixels = nullptr;
         bool hasActiveTexture = D3D11Bridge_GetActiveTextureInfo(&activeW, &activeH, &activePixels);
 
+        // Cache kết cấu OpenGL ES theo handle ID3D11Texture2D để hỗ trợ render đa kết cấu (Multi-Texture Composition)
+        struct CachedGlesTexture {
+            GLuint texId = 0;
+            uint32_t width = 0;
+            uint32_t height = 0;
+        };
+        static std::unordered_map<const void*, CachedGlesTexture> sGlesTextureCache;
+
+        auto getOrCreateGlesTexture = [&](const void* handle, uint32_t w, uint32_t h, const uint8_t* pixels) -> GLuint {
+            if (handle == nullptr || pixels == nullptr || w == 0 || h == 0) return 0;
+            auto it = sGlesTextureCache.find(handle);
+            if (it == sGlesTextureCache.end()) {
+                GLuint newTex = 0;
+                glGenTextures(1, &newTex);
+                glBindTexture(GL_TEXTURE_2D, newTex);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                sGlesTextureCache[handle] = {newTex, w, h};
+                return newTex;
+            }
+            if (it->second.width != w || it->second.height != h) {
+                it->second.width = w;
+                it->second.height = h;
+                glBindTexture(GL_TEXTURE_2D, it->second.texId);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            } else {
+                glBindTexture(GL_TEXTURE_2D, it->second.texId);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            }
+            return it->second.texId;
+        };
+
         if (hasActiveTexture && activePixels != nullptr && activeW > 0 && activeH > 0) {
             glUseProgram(program);
 
@@ -195,6 +231,7 @@ static void renderLoop() {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+            // Cập nhật default quadTexture (active texture hiện tại)
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, quadTexture);
 
@@ -213,9 +250,27 @@ static void renderLoop() {
             size_t spriteCount = D3D11Bridge_GetSpriteBatchInfo(spriteCommands, 256);
 
             if (spriteCount > 0) {
-                // Render từng Sprite Quad với đúng toạ độ đỉnh và UV map trích xuất từ vertex buffer
+                // Render từng Sprite Quad với đúng toạ độ đỉnh, UV map và Texture bind tương ứng
+                const void* lastBoundHandle = nullptr;
                 for (size_t s = 0; s < spriteCount; ++s) {
                     const auto& cmd = spriteCommands[s];
+
+                    // Bind texture riêng của sprite nếu khác với texture đang bind
+                    if (cmd.textureHandle != nullptr && cmd.textureHandle != lastBoundHandle) {
+                        uint32_t sTexW = 0, sTexH = 0;
+                        const uint8_t* sTexPixels = nullptr;
+                        if (D3D11Bridge_GetTextureInfoByHandle(cmd.textureHandle, &sTexW, &sTexH, &sTexPixels)) {
+                            GLuint spriteTexId = getOrCreateGlesTexture(cmd.textureHandle, sTexW, sTexH, sTexPixels);
+                            if (spriteTexId != 0) {
+                                glBindTexture(GL_TEXTURE_2D, spriteTexId);
+                                lastBoundHandle = cmd.textureHandle;
+                            }
+                        }
+                    } else if (cmd.textureHandle == nullptr && lastBoundHandle != nullptr) {
+                        glBindTexture(GL_TEXTURE_2D, quadTexture);
+                        lastBoundHandle = nullptr;
+                    }
+
                     // Gom toạ độ 4 đỉnh dạng [X, Y, U, V]
                     const float spriteVerts[] = {
                         cmd.pos[0][0], cmd.pos[0][1], cmd.uv[0][0], cmd.uv[0][1],

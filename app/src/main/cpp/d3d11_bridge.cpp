@@ -714,11 +714,39 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
             }
             cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
             cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
+            cmd.textureHandle = sActiveTextureResource;
+            cmd.textureWidth = 0;
+            cmd.textureHeight = 0;
+            if (sActiveTextureResource != nullptr) {
+                sgre::TextureDesc tDesc{};
+                if (sRegistry.getTextureDesc(sActiveTextureResource, tDesc)) {
+                    cmd.textureWidth = tDesc.width;
+                    cmd.textureHeight = tDesc.height;
+                }
+            }
+
+            static uint32_t sSpriteLogCount = 0;
+            if (++sSpriteLogCount % 60 == 1) {
+                LOGI("Extracted Sprite #%u: Tex=%p (%ux%u) | Pos0=(%.2f, %.2f) UV0=(%.2f, %.2f)",
+                     sSpriteLogCount,
+                     cmd.textureHandle, cmd.textureWidth, cmd.textureHeight,
+                     cmd.pos[0][0], cmd.pos[0][1], cmd.uv[0][0], cmd.uv[0][1]);
+            }
 
             std::lock_guard<std::mutex> lock(sSpriteMutex);
             if (sCurrentFrameSprites.size() < 1024) {
                 sCurrentFrameSprites.push_back(cmd);
             }
+        } else {
+            static uint32_t sMapFailCount = 0;
+            if (++sMapFailCount % 60 == 1) {
+                LOGW("DrawIndexed: sRegistry.map failed for VertexBuffer %p", sCurrentVertexBuffer);
+            }
+        }
+    } else {
+        static uint32_t sNullVbCount = 0;
+        if (++sNullVbCount % 60 == 1) {
+            LOGW("DrawIndexed: sCurrentVertexBuffer is null or IndexCount=%u < 4", indexCount);
         }
     }
 }
@@ -829,10 +857,14 @@ static void WINAPI mock_Context_PSSetSamplers(void*, uint32_t, uint32_t, void* c
 static void WINAPI mock_Context_VSSetShader(void*, void*, void* const*, uint32_t) {}
 
 static void WINAPI mock_Context_IASetVertexBuffers(void*, uint32_t startSlot, uint32_t numBuffers, void* const* ppVertexBuffers, const uint32_t* pStrides, const uint32_t*) {
+    static uint32_t sVbLogCount = 0;
     if (numBuffers > 0 && ppVertexBuffers && ppVertexBuffers[0]) {
         sCurrentVertexBuffer = ppVertexBuffers[0];
         if (pStrides && pStrides[0] > 0) {
             sCurrentVertexStride = pStrides[0];
+        }
+        if (++sVbLogCount % 60 == 1) {
+            LOGI("IASetVertexBuffers: Vb=%p, Stride=%u, numBuffers=%u", sCurrentVertexBuffer, sCurrentVertexStride, numBuffers);
         }
     }
 }
@@ -841,6 +873,10 @@ static void WINAPI mock_Context_IASetIndexBuffer(void*, void* pIndexBuffer, uint
     if (pIndexBuffer) {
         sCurrentIndexBuffer = pIndexBuffer;
         sCurrentIndexFormat = format;
+        static uint32_t sIbLogCount = 0;
+        if (++sIbLogCount % 60 == 1) {
+            LOGI("IASetIndexBuffer: Ib=%p, Format=%u", sCurrentIndexBuffer, format);
+        }
     }
 }
 
@@ -870,14 +906,17 @@ static void WINAPI mock_Context_ClearRenderTargetView(void*, void*, const float 
 }
 
 bool D3D11Bridge_GetActiveTextureInfo(uint32_t* outWidth, uint32_t* outHeight, const uint8_t** outRgbaData) {
-    const void* texHandle = sActiveTextureResource;
-    if (texHandle == nullptr) return false;
+    return D3D11Bridge_GetTextureInfoByHandle(sActiveTextureResource, outWidth, outHeight, outRgbaData);
+}
+
+bool D3D11Bridge_GetTextureInfoByHandle(const void* handle, uint32_t* outWidth, uint32_t* outHeight, const uint8_t** outRgbaData) {
+    if (handle == nullptr) return false;
 
     sgre::TextureDesc desc{};
-    if (!sRegistry.getTextureDesc(texHandle, desc)) return false;
+    if (!sRegistry.getTextureDesc(handle, desc)) return false;
 
     sgre::MappedView view{};
-    if (!sRegistry.map(texHandle, view)) return false;
+    if (!sRegistry.map(handle, view)) return false;
 
     if (outWidth) *outWidth = desc.width;
     if (outHeight) *outHeight = desc.height;

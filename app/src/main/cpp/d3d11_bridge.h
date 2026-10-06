@@ -36,14 +36,18 @@ public:
 };
 
 struct SpriteDrawCommand {
-    float pos[4][2];  // 4 vertices (x, y) normalized to NDC [-1, 1]
-    float uv[4][2];   // 4 vertices (u, v) normalized to [0, 1]
-    uint32_t indices[6]; // 2 triangles: [0, 1, 2, 2, 1, 3]
+    float pos[4][2];      // 4 vertices (x, y) normalized to NDC [-1, 1]
+    float uv[4][2];       // 4 vertices (u, v) normalized to [0, 1]
+    uint32_t indices[6];  // 2 triangles: [0, 1, 2, 2, 1, 3]
+    const void* textureHandle; // ID3D11Texture2D resource handle
+    uint32_t textureWidth;
+    uint32_t textureHeight;
 };
 
 bool D3D11Bridge_WaitForNextFrame(RenderFrameState* outState, uint32_t timeoutMs);
 void D3D11Bridge_GetLatestFrameState(RenderFrameState* outState);
 bool D3D11Bridge_GetActiveTextureInfo(uint32_t* outWidth, uint32_t* outHeight, const uint8_t** outRgbaData);
+bool D3D11Bridge_GetTextureInfoByHandle(const void* handle, uint32_t* outWidth, uint32_t* outHeight, const uint8_t** outRgbaData);
 size_t D3D11Bridge_GetSpriteBatchInfo(SpriteDrawCommand* outCommands, size_t maxCommands);
 
 #if defined(__x86_64__)

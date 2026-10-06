@@ -197,7 +197,7 @@ sequenceDiagram
   - **Sprite Quad Geometry Extraction (`DrawIndexed` slot 12)**:
     - Bắt chặn các lệnh vẽ quad (`IndexCount >= 4`) từ game engine M2.
     - Đọc dữ liệu toạ độ đỉnh từ vùng nhớ CPU của Vertex Buffer qua `ResourceRegistry::map`, bóc tách chính xác toạ độ chuẩn hoá NDC `(x, y)` và toạ độ texture mapping `(u, v)`.
-    - Đóng gói dữ liệu vào cấu trúc `SpriteDrawCommand` (88 bytes) chứa 4 toạ độ đỉnh và 6 indices tam giác (`[0, 1, 2, 2, 1, 3]`), lưu vào hàng đợi đa luồng `sCurrentFrameSprites`.
+    - Đóng gói dữ liệu vào cấu trúc `SpriteDrawCommand` (104 bytes) chứa 4 toạ độ đỉnh, 6 indices tam giác, handle texture `ID3D11Texture2D` và kích thước nguồn.
   - **Frame Lifecycle & Memory Safety**:
     - Tự động dọn dẹp hàng đợi sprite trong `mock_SwapChain_Present` / `mock_SwapChain_Present1` khi số lượng vượt ngưỡng (tránh rò rỉ RAM).
     - Cung cấp API `D3D11Bridge_GetSpriteBatchInfo` đồng bộ thread-safe giữa luồng Direct3D 11 và luồng render EGL của Android.
@@ -205,6 +205,14 @@ sequenceDiagram
     - Kích hoạt Alpha Blending (`glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`) đảm bảo các lớp sprite UI, chữ và hiệu ứng trong suốt hiển thị mượt mà không bị viền đen hoặc đè mảng đặc.
     - Vẽ tuần tự từng quad qua `glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, indices)` với toạ độ đỉnh và UV thực tế từ engine.
     - Tự động fallback về full-screen quad khi frame chưa có batch command riêng biệt.
+- **Multi-Texture Binding & Dynamic GLES Texture Cache (Milestone M4 - Multi-Texture Composition)**:
+  - **Texture Association per Sprite**:
+    - Mỗi `SpriteDrawCommand` lưu trữ con trỏ `textureHandle` của texture đang kích hoạt tại thời điểm `DrawIndexed`.
+    - API `D3D11Bridge_GetTextureInfoByHandle`: Cho phép EGL render thread truy vấn pixel RGBA8 và kích thước của bất kỳ texture handle nào trong `ResourceRegistry`.
+  - **Dynamic GLES Texture Caching (`jni_bridge.cpp`)**:
+    - Quản lý map `sGlesTextureCache` liên kết giữa COM handle và ID kết cấu OpenGL ES `GLuint`.
+    - Tự động khởi tạo kết cấu mới khi gặp texture handle mới và tái sử dụng qua các frame mà không cần giải phóng/khởi tạo lại liên tục.
+    - Khi vẽ chuỗi sprite quads, tự động chuyển đổi `glBindTexture(GL_TEXTURE_2D, spriteTexId)` tương ứng với từng quad, cho phép hiển thị đồng thời nhiều atlas UI, background và font texture trên cùng một khung hình.
 - **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
   - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
   - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.
