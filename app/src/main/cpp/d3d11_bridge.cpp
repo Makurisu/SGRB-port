@@ -781,6 +781,12 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                 cmd.uv[i][1] = rawV;
             }
 
+            float width01 = std::abs(cmd.pos[1][0] - cmd.pos[0][0]);
+            float width23 = std::abs(cmd.pos[3][0] - cmd.pos[2][0]);
+            float height02 = std::abs(cmd.pos[2][1] - cmd.pos[0][1]);
+            float height13 = std::abs(cmd.pos[3][1] - cmd.pos[1][1]);
+            bool isDegenerate = (width01 < 0.001f && width23 < 0.001f) || (height02 < 0.001f && height13 < 0.001f);
+
             static uint32_t sDiagCount = 0;
             if (++sDiagCount % 120 == 1) {
                 float dbgX = (vDesc.byteWidth >= 8) ? *reinterpret_cast<const float*>(vView.data) : 0.0f;
@@ -790,33 +796,32 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
             }
 
             if (validQuad && !isDegenerate) {
-                    cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
-                    cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
-                    cmd.textureHandle = sActiveTextureResource;
-                    cmd.textureWidth = 0;
-                    cmd.textureHeight = 0;
-                    if (sActiveTextureResource != nullptr) {
-                        sgre::TextureDesc tDesc{};
-                        if (sRegistry.getTextureDesc(sActiveTextureResource, tDesc)) {
-                            cmd.textureWidth = tDesc.width;
-                            cmd.textureHeight = tDesc.height;
-                        }
+                cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
+                cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
+                cmd.textureHandle = sActiveTextureResource;
+                cmd.textureWidth = 0;
+                cmd.textureHeight = 0;
+                if (sActiveTextureResource != nullptr) {
+                    sgre::TextureDesc tDesc{};
+                    if (sRegistry.getTextureDesc(sActiveTextureResource, tDesc)) {
+                        cmd.textureWidth = tDesc.width;
+                        cmd.textureHeight = tDesc.height;
                     }
+                }
 
-                    static uint32_t sSpriteLogCount = 0;
-                    if (++sSpriteLogCount % 60 == 1) {
-                        LOGI("Extracted Valid Sprite #%u: Tex=%p (%ux%u) | NDC: V0=(%.2f, %.2f) V1=(%.2f, %.2f) V2=(%.2f, %.2f) V3=(%.2f, %.2f) | UV0=[%.2f, %.2f]",
-                             sSpriteLogCount,
-                             cmd.textureHandle, cmd.textureWidth, cmd.textureHeight,
-                             cmd.pos[0][0], cmd.pos[0][1], cmd.pos[1][0], cmd.pos[1][1],
-                             cmd.pos[2][0], cmd.pos[2][1], cmd.pos[3][0], cmd.pos[3][1],
-                             cmd.uv[0][0], cmd.uv[0][1]);
-                    }
+                static uint32_t sSpriteLogCount = 0;
+                if (++sSpriteLogCount % 60 == 1) {
+                    LOGI("Extracted Valid Sprite #%u: Tex=%p (%ux%u) | NDC: V0=(%.2f, %.2f) V1=(%.2f, %.2f) V2=(%.2f, %.2f) V3=(%.2f, %.2f) | UV0=[%.2f, %.2f]",
+                         sSpriteLogCount,
+                         cmd.textureHandle, cmd.textureWidth, cmd.textureHeight,
+                         cmd.pos[0][0], cmd.pos[0][1], cmd.pos[1][0], cmd.pos[1][1],
+                         cmd.pos[2][0], cmd.pos[2][1], cmd.pos[3][0], cmd.pos[3][1],
+                         cmd.uv[0][0], cmd.uv[0][1]);
+                }
 
-                    std::lock_guard<std::mutex> lock(sSpriteMutex);
-                    if (sActiveDrawingSprites.size() < 1024) {
-                        sActiveDrawingSprites.push_back(cmd);
-                    }
+                std::lock_guard<std::mutex> lock(sSpriteMutex);
+                if (sActiveDrawingSprites.size() < 1024) {
+                    sActiveDrawingSprites.push_back(cmd);
                 }
             }
         }
