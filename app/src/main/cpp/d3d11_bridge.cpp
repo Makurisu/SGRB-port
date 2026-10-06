@@ -349,6 +349,8 @@ static const void* sCurrentIndexBuffer = nullptr;
 static uint32_t sCurrentIndexFormat = 57; // DXGI_FORMAT_R16_UINT = 57
 static const void* sActiveShaderResourceView = nullptr;
 static const void* sActiveTextureResource = nullptr;
+static const void* sBoundShaderResourceViews[8] = {nullptr};
+static const void* sBoundTextureResources[8] = {nullptr};
 static uint32_t sCurrentPrimitiveTopology = 4; // D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST = 4
 
 // IDXGISwapChain methods
@@ -900,39 +902,67 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                 if (validQuad && !isDegenerate) {
                     cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
                     cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
-                    cmd.textureHandle = sActiveTextureResource;
+
+                    // Gán Texture Slot 0 (Color Texture)
+                    const void* colorTex = sBoundTextureResources[0] != nullptr ? sBoundTextureResources[0] : sActiveTextureResource;
+                    cmd.textureHandle = colorTex;
                     cmd.textureWidth = 0;
                     cmd.textureHeight = 0;
-                    if (sActiveTextureResource != nullptr) {
+                    if (colorTex != nullptr) {
                         sgre::TextureDesc tDesc{};
-                        if (sRegistry.getTextureDesc(sActiveTextureResource, tDesc)) {
+                        if (sRegistry.getTextureDesc(colorTex, tDesc)) {
                             cmd.textureWidth = tDesc.width;
                             cmd.textureHeight = tDesc.height;
                         }
                     }
 
-                    // Chuẩn hoá toạ độ UV nếu giá trị vượt quá 1.0 (ví dụ trường hợp toạ độ atlas tính theo pixel hoặc scale)
+                    // Gán Texture Slot 1 (Alpha Texture / Mask)
+                    const void* alphaTex = sBoundTextureResources[1];
+                    cmd.alphaTextureHandle = alphaTex;
+                    cmd.alphaTextureWidth = 0;
+                    cmd.alphaTextureHeight = 0;
+                    if (alphaTex != nullptr) {
+                        sgre::TextureDesc aDesc{};
+                        if (sRegistry.getTextureDesc(alphaTex, aDesc)) {
+                            cmd.alphaTextureWidth = aDesc.width;
+                            cmd.alphaTextureHeight = aDesc.height;
+                        }
+                    }
+
+                    // Chuẩn hoá toạ độ UV theo tỷ lệ Atlas ảo của M2 Engine (1920/1928 x 1080/1088 hoặc toạ độ pixel)
                     for (uint32_t vi = 0; vi < 4; ++vi) {
-                        if (cmd.uv[vi][0] > 1.0f) {
-                            if (cmd.textureWidth > 0 && cmd.uv[vi][0] > 16.0f && cmd.uv[vi][0] <= static_cast<float>(cmd.textureWidth)) {
-                                cmd.uv[vi][0] /= static_cast<float>(cmd.textureWidth);
-                            } else {
-                                cmd.uv[vi][0] = cmd.uv[vi][0] - std::floor(cmd.uv[vi][0]);
+                        float u = cmd.uv[vi][0];
+                        float v = cmd.uv[vi][1];
+
+                        if (cmd.textureWidth > 0 && cmd.textureHeight > 0) {
+                            if (u > 16.0f) {
+                                // Toạ độ pixel tuyệt đối trong texture
+                                u /= static_cast<float>(cmd.textureWidth);
+                            } else if (u > 1.0f && cmd.textureWidth > 2048) {
+                                // Toạ độ tỷ lệ theo chiều rộng cơ sở 1928 hoặc 2048 trong atlas lớn (3424x3424)
+                                float baseW = (cmd.textureWidth == 3424) ? 1928.0f : 2048.0f;
+                                u = (u * baseW) / static_cast<float>(cmd.textureWidth);
+                            } else if (u > 1.0f) {
+                                u = u - std::floor(u);
+                            }
+
+                            if (v > 16.0f) {
+                                // Toạ độ pixel tuyệt đối trong texture
+                                v /= static_cast<float>(cmd.textureHeight);
+                            } else if (v > 1.0f && cmd.textureHeight > 1088) {
+                                // Toạ độ tỷ lệ theo chiều cao cơ sở 1088 trong atlas lớn (3424x3424)
+                                float baseH = 1088.0f;
+                                v = (v * baseH) / static_cast<float>(cmd.textureHeight);
+                            } else if (v > 1.0f) {
+                                v = v - std::floor(v);
                             }
                         }
-                        if (cmd.uv[vi][1] > 1.0f) {
-                            if (cmd.textureHeight > 0 && cmd.uv[vi][1] > 16.0f && cmd.uv[vi][1] <= static_cast<float>(cmd.textureHeight)) {
-                                cmd.uv[vi][1] /= static_cast<float>(cmd.textureHeight);
-                            } else {
-                                cmd.uv[vi][1] = cmd.uv[vi][1] - std::floor(cmd.uv[vi][1]);
-                            }
-                        }
-                        if (cmd.uv[vi][0] < 0.0f) {
-                            cmd.uv[vi][0] = cmd.uv[vi][0] - std::floor(cmd.uv[vi][0]);
-                        }
-                        if (cmd.uv[vi][1] < 0.0f) {
-                            cmd.uv[vi][1] = cmd.uv[vi][1] - std::floor(cmd.uv[vi][1]);
-                        }
+
+                        if (u < 0.0f) u = u - std::floor(u);
+                        if (v < 0.0f) v = v - std::floor(v);
+
+                        cmd.uv[vi][0] = u;
+                        cmd.uv[vi][1] = v;
                     }
 
                     std::lock_guard<std::mutex> lock(sSpriteMutex);
@@ -1037,14 +1067,26 @@ static void WINAPI mock_Context_VSSetConstantBuffers(void*, uint32_t, uint32_t, 
 static void WINAPI mock_Context_PSSetConstantBuffers(void*, uint32_t, uint32_t, void* const*) {}
 
 static void WINAPI mock_Context_PSSetShaderResources(void*, uint32_t startSlot, uint32_t numViews, void* const* ppShaderResourceViews) {
-    if (numViews > 0 && ppShaderResourceViews && ppShaderResourceViews[0]) {
-        sActiveShaderResourceView = ppShaderResourceViews[0];
-        // Trích xuất con trỏ ID3D11Texture2D gốc từ MockViewCOM nếu có
-        auto* view = reinterpret_cast<const MockViewCOM*>(ppShaderResourceViews[0]);
-        if (view->pResource != nullptr) {
-            sActiveTextureResource = view->pResource;
-        } else {
-            sActiveTextureResource = ppShaderResourceViews[0];
+    if (ppShaderResourceViews != nullptr && numViews > 0) {
+        for (uint32_t i = 0; i < numViews; ++i) {
+            uint32_t slot = startSlot + i;
+            if (slot < 8) {
+                void* viewPtr = ppShaderResourceViews[i];
+                sBoundShaderResourceViews[slot] = viewPtr;
+                if (viewPtr != nullptr) {
+                    auto* view = reinterpret_cast<const MockViewCOM*>(viewPtr);
+                    sBoundTextureResources[slot] = (view->pResource != nullptr) ? view->pResource : viewPtr;
+                } else {
+                    sBoundTextureResources[slot] = nullptr;
+                }
+            }
+        }
+        if (startSlot == 0 && ppShaderResourceViews[0] != nullptr) {
+            sActiveShaderResourceView = ppShaderResourceViews[0];
+            auto* view0 = reinterpret_cast<const MockViewCOM*>(ppShaderResourceViews[0]);
+            sActiveTextureResource = (view0->pResource != nullptr) ? view0->pResource : ppShaderResourceViews[0];
+        } else if (sActiveTextureResource == nullptr && sBoundTextureResources[0] != nullptr) {
+            sActiveTextureResource = sBoundTextureResources[0];
         }
     }
 }
@@ -1136,7 +1178,7 @@ bool D3D11Bridge_GetActiveTextureInfo(uint32_t* outWidth, uint32_t* outHeight, c
     return D3D11Bridge_GetTextureInfoByHandle(sActiveTextureResource, outWidth, outHeight, outRgbaData);
 }
 
-bool D3D11Bridge_GetTextureInfoByHandle(const void* handle, uint32_t* outWidth, uint32_t* outHeight, const uint8_t** outRgbaData) {
+bool D3D11Bridge_GetTextureInfoByHandle(const void* handle, uint32_t* outWidth, uint32_t* outHeight, const uint8_t** outRgbaData, uint32_t* outFormat) {
     if (handle == nullptr) return false;
 
     sgre::TextureDesc desc{};
@@ -1148,6 +1190,7 @@ bool D3D11Bridge_GetTextureInfoByHandle(const void* handle, uint32_t* outWidth, 
     if (outWidth) *outWidth = desc.width;
     if (outHeight) *outHeight = desc.height;
     if (outRgbaData) *outRgbaData = view.data;
+    if (outFormat) *outFormat = desc.format;
     return true;
 }
 

@@ -103,8 +103,16 @@ static void renderLoop() {
         "varying vec2 vTexCoord;\n"
         "varying vec4 vColor;\n"
         "uniform sampler2D uTexture;\n"
+        "uniform sampler2D uAlphaTexture;\n"
+        "uniform int uHasAlphaTexture;\n"
         "void main() {\n"
-        "    gl_FragColor = texture2D(uTexture, vTexCoord) * vColor;\n"
+        "    vec4 baseColor = texture2D(uTexture, vTexCoord);\n"
+        "    if (uHasAlphaTexture == 1) {\n"
+        "        float maskAlpha = texture2D(uAlphaTexture, vTexCoord).a;\n"
+        "        gl_FragColor = vec4(baseColor.rgb, baseColor.a * maskAlpha) * vColor;\n"
+        "    } else {\n"
+        "        gl_FragColor = baseColor * vColor;\n"
+        "    }\n"
         "}\n";
 
     auto compileShader = [](GLenum type, const char* source) -> GLuint {
@@ -144,6 +152,8 @@ static void renderLoop() {
     GLint aTexCoordLoc = glGetAttribLocation(program, "aTexCoord");
     GLint aColorLoc = glGetAttribLocation(program, "aColor");
     GLint uTextureLoc = glGetUniformLocation(program, "uTexture");
+    GLint uAlphaTextureLoc = glGetUniformLocation(program, "uAlphaTexture");
+    GLint uHasAlphaTextureLoc = glGetUniformLocation(program, "uHasAlphaTexture");
 
     // Quad Vertex Data: [X, Y, U, V] (Full-screen quad, lật trục V để hiển thị đúng chiều)
     const float quadVertices[] = {
@@ -249,6 +259,7 @@ static void renderLoop() {
             }
 
             glUniform1i(uTextureLoc, 0);
+            glUniform1i(uAlphaTextureLoc, 1);
 
             // Truy vấn danh sách sprite quads được trích xuất từ D3D11 draw calls
             SpriteDrawCommand spriteCommands[1024];
@@ -261,10 +272,12 @@ static void renderLoop() {
             if (spriteCount > 0) {
                 // Render từng Sprite Quad với đúng toạ độ đỉnh, UV map, Vertex Color và Texture bind tương ứng
                 const void* lastBoundHandle = nullptr;
+                const void* lastAlphaBoundHandle = nullptr;
                 for (size_t s = 0; s < spriteCount; ++s) {
                     const auto& cmd = spriteCommands[s];
 
-                    // Bind texture riêng của sprite nếu khác với texture đang bind
+                    // Bind texture riêng của sprite nếu khác với texture đang bind (Slot 0 Color)
+                    glActiveTexture(GL_TEXTURE0);
                     if (cmd.textureHandle != nullptr && cmd.textureHandle != lastBoundHandle) {
                         uint32_t sTexW = 0, sTexH = 0;
                         const uint8_t* sTexPixels = nullptr;
@@ -278,6 +291,25 @@ static void renderLoop() {
                     } else if (cmd.textureHandle == nullptr && lastBoundHandle != nullptr) {
                         glBindTexture(GL_TEXTURE_2D, quadTexture);
                         lastBoundHandle = nullptr;
+                    }
+
+                    // Bind alpha mask texture nếu có (Slot 1 Alpha Mask)
+                    if (cmd.alphaTextureHandle != nullptr) {
+                        glActiveTexture(GL_TEXTURE1);
+                        if (cmd.alphaTextureHandle != lastAlphaBoundHandle) {
+                            uint32_t aTexW = 0, aTexH = 0;
+                            const uint8_t* aTexPixels = nullptr;
+                            if (D3D11Bridge_GetTextureInfoByHandle(cmd.alphaTextureHandle, &aTexW, &aTexH, &aTexPixels)) {
+                                GLuint alphaTexId = getOrCreateGlesTexture(cmd.alphaTextureHandle, aTexW, aTexH, aTexPixels);
+                                if (alphaTexId != 0) {
+                                    glBindTexture(GL_TEXTURE_2D, alphaTexId);
+                                    lastAlphaBoundHandle = cmd.alphaTextureHandle;
+                                }
+                            }
+                        }
+                        glUniform1i(uHasAlphaTextureLoc, 1);
+                    } else {
+                        glUniform1i(uHasAlphaTextureLoc, 0);
                     }
 
                     // Gom toạ độ 4 đỉnh dạng [X, Y, U, V, R, G, B, A]
@@ -315,6 +347,7 @@ static void renderLoop() {
                 // Fallback chỉ render full-screen quad khi texture khớp chính xác độ phân giải khung hình chuẩn (1920x1080)
                 // TUYỆT ĐỐI không render đè Texture Atlas thô (2048x1088, 3424x3424,...) lên toàn màn hình
                 if (activeW == 1920 && activeH == 1080) {
+                    glUniform1i(uHasAlphaTextureLoc, 0);
                     glVertexAttrib4f(aColorLoc, 1.0f, 1.0f, 1.0f, 1.0f);
 
                     glEnableVertexAttribArray(aPositionLoc);

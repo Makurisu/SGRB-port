@@ -35,7 +35,7 @@ uint32_t cpuBytesPerPixel(uint32_t dxgiFormat) {
         case kDxgiBc7UnormSrgb:
             return 4;
         case kDxgiA8Unorm:
-            return 1;
+            return 4;
         default:
             return 0;
     }
@@ -118,6 +118,18 @@ bool ResourceRegistry::registerTexture(
                     const size_t span = bc7SourceSpan(desc.width, desc.height, initRowPitch);
                     if (decodeBc7ToRgba8(src, span, desc.width, desc.height, initRowPitch, decoded)) {
                         entry.data.swap(decoded);
+                    }
+                } else if (desc.format == kDxgiA8Unorm) {
+                    const uint32_t srcPitch = initRowPitch != 0 ? initRowPitch : desc.width;
+                    for (uint32_t row = 0; row < desc.height; ++row) {
+                        const uint8_t* rowSrc = src + static_cast<size_t>(row) * srcPitch;
+                        uint8_t* rowDst = entry.data.data() + static_cast<size_t>(row) * entry.rowPitch;
+                        for (uint32_t col = 0; col < desc.width; ++col) {
+                            rowDst[col * 4 + 0] = 255;
+                            rowDst[col * 4 + 1] = 255;
+                            rowDst[col * 4 + 2] = 255;
+                            rowDst[col * 4 + 3] = rowSrc[col];
+                        }
                     }
                 } else {
                     const uint32_t srcPitch = initRowPitch != 0 ? initRowPitch : entry.rowPitch;
@@ -208,6 +220,23 @@ bool ResourceRegistry::updateTexture(
         const size_t span = bc7SourceSpan(desc.width, desc.height, srcRowPitch);
         if (!decodeBc7ToRgba8(src, span, desc.width, desc.height, srcRowPitch, decoded)) return false;
         entry.data.swap(decoded);
+        return true;
+    }
+
+    if (desc.format == kDxgiA8Unorm) {
+        const uint32_t regionPixels = right - left;
+        const uint32_t srcPitch = srcRowPitch != 0 ? srcRowPitch : regionPixels;
+        for (uint32_t row = top; row < bottom; ++row) {
+            const uint8_t* rowSrc = src + static_cast<size_t>(row - top) * srcPitch;
+            uint8_t* rowDst = entry.data.data() + static_cast<size_t>(row) * entry.rowPitch +
+                              static_cast<size_t>(left) * 4;
+            for (uint32_t col = 0; col < regionPixels; ++col) {
+                rowDst[col * 4 + 0] = 255;
+                rowDst[col * 4 + 1] = 255;
+                rowDst[col * 4 + 2] = 255;
+                rowDst[col * 4 + 3] = rowSrc[col];
+            }
+        }
         return true;
     }
 

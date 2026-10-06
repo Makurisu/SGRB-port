@@ -709,6 +709,68 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertAlmostEqual(u3, 0.5)
         self.assertAlmostEqual(v3, 0.5)
 
+    def test_uv_virtual_atlas_scaling_formula(self):
+        # Kiểm tra công thức chuẩn hoá UV ảo của M2 Engine theo atlas 3424x3424
+        def scale_uv(u, v, tex_w, tex_h):
+            if tex_w > 0 and tex_h > 0:
+                if u > 16.0:
+                    u /= float(tex_w)
+                elif u > 1.0 and tex_w > 2048:
+                    base_w = 1928.0 if tex_w == 3424 else 2048.0
+                    u = (u * base_w) / float(tex_w)
+                elif u > 1.0:
+                    u = u - int(u)
+
+                if v > 16.0:
+                    v /= float(tex_h)
+                elif v > 1.0 and tex_h > 1088:
+                    base_h = 1088.0
+                    v = (v * base_h) / float(tex_h)
+                elif v > 1.0:
+                    v = v - int(v)
+            return u, v
+
+        # Test UV trong Virtual Screen 1928x1088 map len Atlas 3424x3424
+        u_scaled, v_scaled = scale_uv(1.0, 1.0, 3424, 3424)
+        self.assertEqual(u_scaled, 1.0)
+        self.assertEqual(v_scaled, 1.0)
+
+        # Với virtual quad có toạ độ u = 1.484, v = 2.5
+        u_scaled2, v_scaled2 = scale_uv(1.484, 2.5, 3424, 3424)
+        self.assertAlmostEqual(u_scaled2, (1.484 * 1928.0) / 3424.0, places=4)
+        self.assertAlmostEqual(v_scaled2, (2.5 * 1088.0) / 3424.0, places=4)
+
+    def test_multi_texture_dual_slot_binding_logic(self):
+        # Kiểm tra mô phỏng việc trích xuất texture Slot 0 và Slot 1
+        bound_slots = [None] * 8
+        bound_slots[0] = "Texture_Color_2048x1088"
+        bound_slots[1] = "Texture_AlphaMask_1928x528"
+
+        color_tex = bound_slots[0]
+        alpha_tex = bound_slots[1]
+
+        self.assertEqual(color_tex, "Texture_Color_2048x1088")
+        self.assertEqual(alpha_tex, "Texture_AlphaMask_1928x528")
+
+        # Khi shader có cả hai texture, kết quả cuối cùng = vec4(rgb, a * mask.a) * vColor
+        has_alpha_texture = 1 if alpha_tex is not None else 0
+        self.assertEqual(has_alpha_texture, 1)
+
+    def test_a8_to_rgba8_expansion(self):
+        # Kiểm tra thuật toán mở rộng Format 65 (A8_UNORM) sang RGBA8 (255, 255, 255, alpha)
+        raw_a8 = bytes([0x00, 0x80, 0xFF])
+        expanded = bytearray()
+        for b in raw_a8:
+            expanded.extend([255, 255, 255, b])
+
+        self.assertEqual(len(expanded), 12)
+        # Pixel 0: Trong suốt hoàn toàn
+        self.assertEqual(list(expanded[0:4]), [255, 255, 255, 0x00])
+        # Pixel 1: Bán trong suốt
+        self.assertEqual(list(expanded[4:8]), [255, 255, 255, 0x80])
+        # Pixel 2: Đục hoàn toàn (màu trắng)
+        self.assertEqual(list(expanded[8:12]), [255, 255, 255, 0xFF])
+
     def test_fallback_quad_filtering_logic(self):
         # Kiểm tra điều kiện fallback quad: chỉ cho phép 1920x1080, loại bỏ hoàn toàn các texture atlas (2048x1088, 3424x3424)
         def should_draw_fullscreen_fallback(tex_w, tex_h, sprite_count):

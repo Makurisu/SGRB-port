@@ -303,6 +303,39 @@ sequenceDiagram
     - Ghi nhận số lượng sprite sẵn sàng xuất màn hình tại `Present1` và số sprite thực sự render tại `jni_bridge.cpp` phục vụ chẩn đoán thời gian thực.
 
 
+- **Hệ Thống Render Đa Kết Cấu Kép (Color & Alpha Mask) & Chuẩn Hoá Toạ Độ Atlas Ảo M2 (`d3d11_bridge.cpp`, `jni_bridge.cpp`, `resource_registry.cpp` - Milestone M13)**:
+  - **Phân Tích Cốt Lõi Cơ Chế Render M2 Engine qua IDA Pro MCP**:
+    - **RenderTarget Controller (`sub_1404C6130`)**: Game engine quản lý việc chuyển render target thông qua COM vtable slot 264 (`OMSetRenderTargets`) và slot 352 (`RSSetViewports`).
+    - **Virtual Screen Quad Submission (`sub_1404FA480`)**: M2 Engine định nghĩa hệ toạ độ UV ảo trên không gian màn hình chuẩn $1928 \times 1088$. Các quad sprite được tính toán tỷ lệ tương đối theo không gian ảo này trước khi ánh xạ lên tấm Texture Atlas kích thước lớn $3424 \times 3424$ hoặc $2048 \times 1088$.
+    - **Multi-Texture Binding (`sub_140531550` & `sub_1404F85C0`)**: Khám phá kiến trúc ghép texture kép (Dual-Slot Binding) của game:
+      - **Slot 0 (Color Texture)**: Chứa thông tin màu RGB (hoặc màu cơ sở).
+      - **Slot 1 (Alpha Mask Texture)**: Texture định dạng `DXGI_FORMAT_A8_UNORM` (Format 65) đóng vai trò mặt nạ alpha (như các đoạn chữ Startup Caution $1928 \times 528$, Logo MAGES/Chiyomaru/MTwo $2048 \times 1096$, Title Buttons "PRESS ANY BUTTON", "NEW GAME"...).
+      - Pixel Shader gốc SM4 thực hiện phép nhân màu: $\text{FinalColor} = (\text{Color.rgb}, \text{Color.a} \times \text{AlphaMask.a}) \times \text{VertexColor}$.
+  - **Giải Pháp Nâng Cấp Tầng Render Native**:
+    1. **Mở Rộng Định Dạng `DXGI_FORMAT_A8_UNORM` Trên CPU (`resource_registry.cpp`)**:
+       - Khi nạp hoặc cập nhật texture Format 65, hệ thống tự động mở rộng từng byte alpha $A$ thành 4 byte RGBA $(255, 255, 255, A)$.
+       - Đảm bảo kênh màu luôn có sắc trắng đục $(1.0, 1.0, 1.0)$, giúp cả trường hợp vẽ độc lập lẫn hoà trộn shader đều hiển thị sáng rõ, loại bỏ hoàn toàn hiện tượng chữ bị biến thành mảng đen hoặc mất tích.
+    2. **Shader Đa Kết Cấu Kép (Dual Texture Sampler Shader - `jni_bridge.cpp`)**:
+       - Khai báo thêm `uniform sampler2D uAlphaTexture` và `uniform int uHasAlphaTexture`.
+       - Logic Fragment Shader:
+         ```glsl
+         vec4 baseColor = texture2D(uTexture, vTexCoord);
+         if (uHasAlphaTexture == 1) {
+             float maskAlpha = texture2D(uAlphaTexture, vTexCoord).a;
+             gl_FragColor = vec4(baseColor.rgb, baseColor.a * maskAlpha) * vColor;
+         } else {
+             gl_FragColor = baseColor * vColor;
+         }
+         ```
+       - Trong vòng lặp sprite: Tự động bind `cmd.textureHandle` vào `GL_TEXTURE0` và `cmd.alphaTextureHandle` vào `GL_TEXTURE1`.
+    3. **Chuẩn Hoá Toạ Độ UV Theo Virtual Atlas Tỷ Lệ (`d3d11_bridge.cpp`)**:
+       - Sửa thuật toán cắt UV cũ (`uv - floor(uv)`) vốn biến đổi sai $3.079 \to 0.079$, trỏ nhầm vào vùng pixel rỗng ở đầu atlas $3424 \times 3424$.
+       - Công thức chuẩn hoá chính xác:
+         - Khi $U > 1.0$ và chiều rộng texture là $3424$: $U = (U \times 1928.0) / 3424.0$.
+         - Khi $V > 1.0$ và chiều cao texture lớn hơn $1088$: $V = (V \times 1088.0) / \text{texHeight}$.
+         - Toạ độ pixel tuyệt đối ($> 16.0$) được chia trực tiếp cho kích thước texture, và bảo vệ range an toàn $[0.0, 1.0]$.
+  - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite và mỗi lần lấy mẫu fragment trên GPU.
+
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).
 - **DXVK**: Thay vì chạy D3D11 (chỉ có trên Windows), DXVK chặn toàn bộ lệnh D3D11 từ engine gốc và biên dịch on-the-fly sang mã gọi Vulkan gửi vào `ANativeWindow` của Android.
