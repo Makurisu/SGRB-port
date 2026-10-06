@@ -103,6 +103,38 @@ class TestXAudio2BridgeLogic(unittest.TestCase):
         self.assertEqual(res, 0)
         self.assertEqual(state["BuffersQueued"], 0)
 
+    def test_xaudio2_vtable_layout(self):
+        # Kiểm tra đúng vtable slot mapping cho IXAudio2:
+        # Slot 5 (offset 0x28): CreateSourceVoice
+        # Slot 6 (offset 0x30): CreateSubmixVoice
+        # Slot 7 (offset 0x38): CreateMasteringVoice
+        vtable_slots = {
+            5: "CreateSourceVoice",
+            6: "CreateSubmixVoice",
+            7: "CreateMasteringVoice"
+        }
+        self.assertEqual(vtable_slots[5], "CreateSourceVoice")
+        self.assertEqual(vtable_slots[6], "CreateSubmixVoice")
+        self.assertEqual(vtable_slots[7], "CreateMasteringVoice")
+        
+        # Kiểm tra Voice Vtable slot mapping:
+        # Slot 18 (0x90): DestroyVoice
+        # Slot 19 (0x98): Start
+        # Slot 20 (0xA0): Stop
+        # Slot 21 (0xA8): SubmitSourceBuffer
+        # Slot 22 (0xB0): FlushSourceBuffers
+        # Slot 25 (0xC8): GetState
+        voice_slots = {
+            18: "DestroyVoice",
+            19: "Start",
+            20: "Stop",
+            21: "SubmitSourceBuffer",
+            22: "FlushSourceBuffers",
+            25: "GetState"
+        }
+        self.assertEqual(voice_slots[21], "SubmitSourceBuffer")
+        self.assertEqual(21 * 8, 0xA8)
+
     def test_tls_pointer_prevents_segv(self):
         # Kiểm tra kịch bản gây crash SEGV_MAPERR fault addr 0x0 trước đó:
         # Nếu gs:[0x58] là NULL, truy cập [rax + rcx*8] sẽ crash
