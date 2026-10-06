@@ -31,7 +31,7 @@ sequenceDiagram
 - **`MainActivity.java`**:
   - Thiết lập chế độ toàn màn hình (`SYSTEM_UI_FLAG_IMMERSIVE_STICKY`, ẩn thanh điều hướng và status bar).
   - Khởi tạo `SurfaceView` để làm mục tiêu dựng hình Vulkan (`ANativeWindow`).
-  - Kiểm tra quyền đọc dữ liệu bộ nhớ (`MANAGE_EXTERNAL_STORAGE` hoặc Scoped Storage) và kiểm tra thư mục game data.
+  - Kiểm tra quyền đọc dữ liệu bộ nhớ (`MANAGE_EXTERNAL_STORAGE` hoặc Scoped Storage). Tự động liên kết thư mục dữ liệu cố định `/sdcard/sgrb_game_data/` nếu tồn tại `sgre_steam.exe`, đảm bảo dữ liệu game không bao giờ bị hệ điều hành xóa khi gỡ hoặc cài lại APK (tránh lặp lại lỗi mất dữ liệu). Fallback về `getExternalFilesDir("data")` nếu không tìm thấy.
 - **`TouchInputHandler.java`**:
   - Lắng nghe sự kiện cảm ứng đa điểm qua `onTouchEvent`.
   - Phân loại cử chỉ:

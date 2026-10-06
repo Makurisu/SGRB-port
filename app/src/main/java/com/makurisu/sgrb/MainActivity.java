@@ -77,7 +77,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, To
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         File dataDir = getExternalFilesDir("data");
-        String dataPath = dataDir != null ? dataDir.getAbsolutePath() : "";
+        File sharedDataDir = new File(Environment.getExternalStorageDirectory(), "sgrb_game_data");
+
+        String dataPath = "";
+        if (sharedDataDir.exists() && new File(sharedDataDir, "sgre_steam.exe").exists()) {
+            dataPath = sharedDataDir.getAbsolutePath();
+        } else if (dataDir != null && dataDir.exists()) {
+            dataPath = dataDir.getAbsolutePath();
+        }
+
         nativeInit(holder.getSurface(), dataPath);
     }
 
