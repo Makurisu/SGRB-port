@@ -42,6 +42,32 @@ static int64_t WINAPI mock_DIDevice_Unacquire(void*) { return 0; }
 static int64_t WINAPI mock_DIDevice_GetDeviceState(void*, uint32_t cbData, void* lpvData) {
     if (lpvData && cbData > 0) {
         memset(lpvData, 0, cbData);
+        uint8_t* p = reinterpret_cast<uint8_t*>(lpvData);
+
+        // Ánh xạ cho Keyboard (cbData == 256)
+        if (cbData == 256) {
+            bool enterPressed = Win32Bridge_GetKeyState(0x0D) || Win32Bridge_GetKeyState(0x01); // VK_RETURN hoặc VK_LBUTTON
+            bool spacePressed = Win32Bridge_GetKeyState(0x20) || Win32Bridge_GetKeyState(0x01); // VK_SPACE
+            bool escPressed = Win32Bridge_GetKeyState(0x1B);                                   // VK_ESCAPE
+            bool upPressed = Win32Bridge_GetKeyState(0x26);                                    // VK_UP
+            bool downPressed = Win32Bridge_GetKeyState(0x28);                                  // VK_DOWN
+            bool leftPressed = Win32Bridge_GetKeyState(0x25);                                  // VK_LEFT
+            bool rightPressed = Win32Bridge_GetKeyState(0x27);                                 // VK_RIGHT
+
+            if (enterPressed) p[0x1C] = 0x80; // DIK_RETURN
+            if (spacePressed) p[0x39] = 0x80; // DIK_SPACE
+            if (escPressed) p[0x01] = 0x80;   // DIK_ESCAPE
+            if (upPressed) p[0xC8] = 0x80;    // DIK_UP
+            if (downPressed) p[0xD0] = 0x80;  // DIK_DOWN
+            if (leftPressed) p[0xCB] = 0x80;  // DIK_LEFT
+            if (rightPressed) p[0xCD] = 0x80; // DIK_RIGHT
+        } else if (cbData >= 48) {
+            // Ánh xạ Joystick Buttons (DIJOYSTATE: buttons bắt đầu từ offset 48)
+            bool buttonAPressed = Win32Bridge_GetKeyState(0x0D) || Win32Bridge_GetKeyState(0x01) || Win32Bridge_GetKeyState(0x20);
+            if (buttonAPressed && cbData > 48) {
+                p[48] = 0x80; // Button 0 (A / Enter)
+            }
+        }
     }
     return 0; // DI_OK
 }

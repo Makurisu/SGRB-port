@@ -2107,14 +2107,23 @@ void* WINAPI stub_SetFocus(void*) { return DUMMY_WINDOW; }
 int32_t WINAPI stub_IsIconic(void*) { return 0; }
 int32_t WINAPI stub_IsZoomed(void*) { return 0; }
 
+static std::atomic<int32_t> gCursorX{960};
+static std::atomic<int32_t> gCursorY{540};
+static std::atomic<uint8_t> gVirtualKeyState[256]{};
+
 int32_t WINAPI stub_GetCursorPos(void* lpPoint) {
     if (lpPoint) {
         int32_t* pt = reinterpret_cast<int32_t*>(lpPoint);
-        pt[0] = 960; pt[1] = 540;
+        pt[0] = gCursorX.load();
+        pt[1] = gCursorY.load();
     }
     return 1;
 }
-int32_t WINAPI stub_SetCursorPos(int32_t, int32_t) { return 1; }
+int32_t WINAPI stub_SetCursorPos(int32_t x, int32_t y) {
+    gCursorX.store(x);
+    gCursorY.store(y);
+    return 1;
+}
 int32_t WINAPI stub_ShowCursor(int32_t) { return 0; }
 void* WINAPI stub_SetCursor(void*) { return nullptr; }
 void* WINAPI stub_LoadCursorA(void*, const char*) { return reinterpret_cast<void*>(0x1234); }
@@ -2170,9 +2179,19 @@ int32_t WINAPI stub_ClientToScreen(void*, void*) { return 1; }
 int32_t WINAPI stub_TrackMouseEvent(void*) { return 1; }
 uintptr_t WINAPI stub_SetTimer(void*, uintptr_t nIDEvent, uint32_t, void*) { return nIDEvent ? nIDEvent : 1; }
 int32_t WINAPI stub_KillTimer(void*, uintptr_t) { return 1; }
-int16_t WINAPI stub_GetKeyState(int32_t) { return 0; }
+int16_t WINAPI stub_GetKeyState(int32_t vKey) {
+    if (vKey >= 0 && vKey < 256) {
+        return gVirtualKeyState[vKey].load() ? static_cast<int16_t>(0x8000) : 0;
+    }
+    return 0;
+}
 int32_t WINAPI stub_GetKeyboardState(void* lpKeyState) {
-    if (lpKeyState) memset(lpKeyState, 0, 256);
+    if (lpKeyState) {
+        uint8_t* states = reinterpret_cast<uint8_t*>(lpKeyState);
+        for (int i = 0; i < 256; ++i) {
+            states[i] = gVirtualKeyState[i].load() ? 0x80 : 0x00;
+        }
+    }
     return 1;
 }
 int32_t WINAPI stub_AttachThreadInput(uint32_t, uint32_t, int32_t) { return 1; }
@@ -2590,9 +2609,15 @@ void Win32Bridge_Init() {
     gFunctionMap["GetWindowRect"] = reinterpret_cast<void*>(&stub_GetWindowRect);
     gFunctionMap["GetSystemMetrics"] = reinterpret_cast<void*>(&stub_GetSystemMetrics);
     gFunctionMap["PeekMessageA"] = reinterpret_cast<void*>(&stub_PeekMessageA);
+    gFunctionMap["PeekMessageW"] = reinterpret_cast<void*>(&stub_PeekMessageA);
+    gFunctionMap["GetMessageA"] = reinterpret_cast<void*>(&stub_PeekMessageA);
+    gFunctionMap["GetMessageW"] = reinterpret_cast<void*>(&stub_PeekMessageA);
     gFunctionMap["TranslateMessage"] = reinterpret_cast<void*>(&stub_TranslateMessage);
     gFunctionMap["DispatchMessageA"] = reinterpret_cast<void*>(&stub_DispatchMessageA);
+    gFunctionMap["DispatchMessageW"] = reinterpret_cast<void*>(&stub_DispatchMessageA);
     gFunctionMap["DefWindowProcA"] = reinterpret_cast<void*>(&stub_DefWindowProcA);
+    gFunctionMap["DefWindowProcW"] = reinterpret_cast<void*>(&stub_DefWindowProcA);
+    gFunctionMap["GetAsyncKeyState"] = reinterpret_cast<void*>(&stub_GetKeyState);
     gFunctionMap["PostQuitMessage"] = reinterpret_cast<void*>(&stub_PostQuitMessage);
     gFunctionMap["FreeLibrary"] = reinterpret_cast<void*>(&stub_FreeLibrary);
     gFunctionMap["GetSystemTimePreciseAsFileTime"] = reinterpret_cast<void*>(&stub_GetSystemTimePreciseAsFileTime);
@@ -2879,4 +2904,17 @@ extern "C" void Win32Bridge_PostMessage(uint32_t message, uint64_t wParam, int64
     msg.pt.y = static_cast<int32_t>((lParam >> 16) & 0xFFFF);
     msg.lPrivate = 0;
     gMsgQueue.push(msg);
+}
+
+extern "C" void Win32Bridge_SetKeyState(uint8_t vkCode, bool isDown) {
+    gVirtualKeyState[vkCode].store(isDown ? 1 : 0);
+}
+
+extern "C" bool Win32Bridge_GetKeyState(uint8_t vkCode) {
+    return gVirtualKeyState[vkCode].load() != 0;
+}
+
+extern "C" void Win32Bridge_SetCursorPos(int32_t x, int32_t y) {
+    gCursorX.store(x);
+    gCursorY.store(y);
 }

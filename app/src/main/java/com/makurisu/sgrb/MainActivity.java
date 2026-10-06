@@ -7,6 +7,8 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.graphics.PixelFormat;
 import android.widget.Toast;
 
@@ -20,6 +22,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, To
 
     public static native void nativeInit(Surface surface, String dataPath);
     public static native void nativeSendTouchEvent(int action, float normalizedX, float normalizedY);
+    public static native void nativeSendKeyEvent(int keyCode, boolean isDown);
     public static native void nativePause();
     public static native void nativeResume();
     public static native void nativeDestroy();
@@ -91,6 +94,34 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, To
     @Override
     public void onTouchEventDispatched(int action, float normalizedX, float normalizedY) {
         nativeSendTouchEvent(action, normalizedX, normalizedY);
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        if (touchInputHandler != null) {
+            View decorView = getWindow().getDecorView();
+            int w = decorView.getWidth() > 0 ? decorView.getWidth() : 1920;
+            int h = decorView.getHeight() > 0 ? decorView.getHeight() : 1080;
+            return touchInputHandler.handleTouchEvent(event, w, h);
+        }
+        return super.onTouchEvent(event);
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        nativeSendKeyEvent(keyCode, true);
+        return true;
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        nativeSendKeyEvent(keyCode, false);
+        return true;
+    }
+
+    @Override
+    public boolean onGenericMotionEvent(MotionEvent event) {
+        return super.onGenericMotionEvent(event);
     }
 
     @Override
