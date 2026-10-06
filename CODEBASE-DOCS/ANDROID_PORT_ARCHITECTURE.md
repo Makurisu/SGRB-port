@@ -262,6 +262,15 @@ sequenceDiagram
   - Gán trực tiếp con trỏ mảng vào trường `gs:[0x58]` của cấu trúc Windows 64-bit TEB.
   - Tự động sao chép template data ban đầu từ `StartAddressOfRawData` và xác lập `_tls_index = 0`.
   - Loại bỏ hoàn toàn lỗi crash null-pointer dereference (`SEGV_MAPERR fault addr 0x0`) khi các container C++ (như `std::vector`), luồng hoặc từ khoá `thread_local` của game engine giải tham chiếu `[rax + rcx*8]` qua thanh ghi phân đoạn `GS`.
+- **Hệ Thống XAudio2 Audio Voice Mock (`xaudio2_bridge.cpp` - Milestone M9)**:
+  - Cung cấp mô phỏng đầy đủ các đối tượng âm thanh COM của DirectX XAudio2:
+    - `IXAudio2`: Cài đặt `CreateSourceVoice` (slot 6), `CreateMasteringVoice` (slot 7), `CreateSubmixVoice` (slot 8).
+    - `IXAudio2Voice`: Cài đặt `DestroyVoice` (slot 18).
+    - `IXAudio2SourceVoice`: Cài đặt `Start` (slot 19), `Stop` (slot 20), `SubmitSourceBuffer` (slot 21, vtable offset `0xA8`), `FlushSourceBuffers` (slot 22), và `GetState` (slot 25, xóa trắng 24 bytes `XAUDIO2_VOICE_STATE`).
+    - `IXAudio2SubmixVoice`: Cài đặt vtable độc lập 32 slots cho submix routing.
+  - Khi game nhận sự kiện tương tác chạm/bấm phím từ người dùng, engine chuẩn bị phát âm thanh UI (Click Sound Effect) bằng lệnh:
+    `mov rax, [rcx]; call [rax + 0xA8]`. Việc `CreateSourceVoice` gán chuẩn con trỏ `*ppSourceVoice` giúp loại bỏ hoàn toàn lỗi crash null-pointer dereference (`SEGV_MAPERR fault addr 0x0`) tại RVA `0x39193E-0x391941`.
+
 
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).
