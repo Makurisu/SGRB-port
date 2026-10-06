@@ -234,6 +234,14 @@ sequenceDiagram
     - Tách biệt hai vùng nhớ đệm sprite: `sActiveDrawingSprites` (luồng D3D11 tích luỹ các lệnh vẽ trong frame hiện tại) và `sReadyFrameSprites` (luồng EGL Render đọc và xuất ra màn hình).
     - Tại thời điểm `mock_SwapChain_Present` / `mock_SwapChain_Present1`, thực hiện hoán đổi nguyên tử (atomic move swap) giữa hai bộ đệm và dọn dẹp bộ đệm tích luỹ, loại bỏ triệt để hiện tượng dồn tích hàng trăm sprite rác qua các frame.
     - Khi một frame không có sprite riêng lẻ hợp lệ (`sReadyFrameSprites` rỗng), renderer tự động kích hoạt chế độ fallback quad toàn màn hình cho texture đang kích hoạt (`ActiveTexture` 2048x1088 / 3424x3424), đảm bảo background và menu luôn được hiển thị liên tục.
+- **Pipeline Resource Retention & Deferred Mock Release (Milestone M7 - Pipeline Retention & Sprite Composition)**:
+  - **Pipeline Reference Retention (`IASetVertexBuffers`, `IASetIndexBuffer`)**:
+    - Áp dụng cơ chế chuẩn COM DirectX 11: Khi game engine bind vertex buffer hoặc index buffer vào pipeline, hệ thống tự động tăng biến đếm tham chiếu (`sRegistry.addRef`), và giải phóng (`sRegistry.release`) buffer cũ khi chuyển đổi hoặc kết thúc frame.
+    - Đảm bảo vùng nhớ đệm CPU của buffer không bị giải phóng giữa chừng trong khi pipeline đang chuẩn bị gọi `DrawIndexed`.
+  - **Deferred COM Mock Object Deletion (`sDeferredReleaseList`)**:
+    - Khi một đối tượng COM mock nhận `Release()` dẫn đến `refCount == 0`, hệ thống không lập tức gọi `delete` trên vùng nhớ heap.
+    - Đưa con trỏ vào hàng đợi `sDeferredReleaseList` và chỉ dọn dẹp hàng loạt tại thời điểm `Present` (khi kết thúc khung hình).
+    - Ngăn chặn hoàn toàn hiện tượng bộ cấp phát `malloc` tái sử dụng cùng địa chỉ cho các buffer khác nhau trong cùng một frame, loại bỏ lỗi ghi đè dữ liệu giữa Vertex Buffer và Index Buffer.
 - **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
   - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
   - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.
