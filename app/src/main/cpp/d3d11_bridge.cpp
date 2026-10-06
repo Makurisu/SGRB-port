@@ -923,7 +923,6 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                 LOGI("DrawIndexed #%u: extracted %u quads (total active: %zu)",
                      sDrawIndexedCount, extractedQuads, sActiveDrawingSprites.size());
             }
-            }
         }
     }
 }
