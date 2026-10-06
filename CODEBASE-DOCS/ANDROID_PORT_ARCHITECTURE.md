@@ -190,6 +190,21 @@ sequenceDiagram
     - Khởi tạo Shader Program GLES 2.0 (Vertex + Fragment Shaders) cùng cấu trúc quad đỉnh 4 điểm `GL_TRIANGLE_STRIP` với toạ độ UV lật trục V để hiển thị hình ảnh đúng chiều.
     - Tự động cấp phát GLES Texture2D, nạp pixel RGBA8 bằng `glTexImage2D` (khi đổi texture/kích thước) hoặc `glTexSubImage2D` (khi cập nhật khung hình).
     - Render trực tiếp quad toàn màn hình lên `ANativeWindow` và đồng bộ qua `eglSwapBuffers`, kết nối toàn bộ pixel game engine lên màn hình thiết bị Android.
+- **Sprite Geometry Composition & Alpha Blending Pipeline (Milestone M3 - Sprite Geometry Composition)**:
+  - **D3D11 Input Assembler Tracking (`IASetVertexBuffers`, `IASetIndexBuffer`)**:
+    - Lưu vết con trỏ Vertex Buffer đang hoạt động và stride kích thước đỉnh (mặc định 20 bytes = 5 floats: `pos.x, pos.y, pos.z, uv.u, uv.v`).
+    - Theo dõi con trỏ Index Buffer và định dạng index DXGI (16-bit uint).
+  - **Sprite Quad Geometry Extraction (`DrawIndexed` slot 12)**:
+    - Bắt chặn các lệnh vẽ quad (`IndexCount >= 4`) từ game engine M2.
+    - Đọc dữ liệu toạ độ đỉnh từ vùng nhớ CPU của Vertex Buffer qua `ResourceRegistry::map`, bóc tách chính xác toạ độ chuẩn hoá NDC `(x, y)` và toạ độ texture mapping `(u, v)`.
+    - Đóng gói dữ liệu vào cấu trúc `SpriteDrawCommand` (88 bytes) chứa 4 toạ độ đỉnh và 6 indices tam giác (`[0, 1, 2, 2, 1, 3]`), lưu vào hàng đợi đa luồng `sCurrentFrameSprites`.
+  - **Frame Lifecycle & Memory Safety**:
+    - Tự động dọn dẹp hàng đợi sprite trong `mock_SwapChain_Present` / `mock_SwapChain_Present1` khi số lượng vượt ngưỡng (tránh rò rỉ RAM).
+    - Cung cấp API `D3D11Bridge_GetSpriteBatchInfo` đồng bộ thread-safe giữa luồng Direct3D 11 và luồng render EGL của Android.
+  - **OpenGL ES 2.0 Batch Quad Rendering & Alpha Blending (`jni_bridge.cpp`)**:
+    - Kích hoạt Alpha Blending (`glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`) đảm bảo các lớp sprite UI, chữ và hiệu ứng trong suốt hiển thị mượt mà không bị viền đen hoặc đè mảng đặc.
+    - Vẽ tuần tự từng quad qua `glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, indices)` với toạ độ đỉnh và UV thực tế từ engine.
+    - Tự động fallback về full-screen quad khi frame chưa có batch command riêng biệt.
 - **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
   - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
   - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.

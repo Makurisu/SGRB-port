@@ -369,6 +369,60 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         expected_bytes = w * h * bpp
         self.assertEqual(expected_bytes, 8294400)
 
+    def test_sprite_draw_command_structure(self):
+        # Kiểm tra cấu trúc SpriteDrawCommand
+        # 4 vertices * 2 floats (pos: x, y) = 8 floats = 32 bytes
+        # 4 vertices * 2 floats (uv: u, v)  = 8 floats = 32 bytes
+        # 6 indices (uint32_t)              = 6 ints   = 24 bytes
+        # Tổng cộng: 32 + 32 + 24 = 88 bytes
+        import ctypes
+        class SpriteDrawCommand(ctypes.Structure):
+            _fields_ = [
+                ('pos', (ctypes.c_float * 2) * 4),
+                ('uv', (ctypes.c_float * 2) * 4),
+                ('indices', ctypes.c_uint * 6),
+            ]
+        self.assertEqual(ctypes.sizeof(SpriteDrawCommand), 88)
+        self.assertEqual(SpriteDrawCommand.pos.offset, 0)
+        self.assertEqual(SpriteDrawCommand.uv.offset, 32)
+        self.assertEqual(SpriteDrawCommand.indices.offset, 64)
+
+    def test_sprite_geometry_extraction_from_vertex_buffer(self):
+        # Giả lập Vertex Buffer 80 bytes (4 vertices * 20 bytes/vertex: x, y, z, u, v)
+        # và trích xuất toạ độ pos (x, y) cùng UV (u, v)
+        vertex_data = struct.pack(
+            "20f",
+            # Vertex 0: x, y, z, u, v
+            -0.5, 0.5, 0.0, 0.1, 0.2,
+            # Vertex 1: x, y, z, u, v
+            -0.5, -0.5, 0.0, 0.1, 0.8,
+            # Vertex 2: x, y, z, u, v
+            0.5, 0.5, 0.0, 0.9, 0.2,
+            # Vertex 3: x, y, z, u, v
+            0.5, -0.5, 0.0, 0.9, 0.8
+        )
+        self.assertEqual(len(vertex_data), 80)
+
+        # Trích xuất 4 vertices theo stride 20 bytes (5 floats)
+        stride_floats = 5
+        floats = struct.unpack("20f", vertex_data)
+        extracted_pos = []
+        extracted_uv = []
+        for i in range(4):
+            offset = i * stride_floats
+            extracted_pos.append((floats[offset + 0], floats[offset + 1]))
+            extracted_uv.append((floats[offset + 3], floats[offset + 4]))
+
+        self.assertAlmostEqual(extracted_pos[0][0], -0.5)
+        self.assertAlmostEqual(extracted_pos[0][1], 0.5)
+        self.assertAlmostEqual(extracted_uv[0][0], 0.1)
+        self.assertAlmostEqual(extracted_uv[0][1], 0.2)
+
+        self.assertAlmostEqual(extracted_pos[3][0], 0.5)
+        self.assertAlmostEqual(extracted_pos[3][1], -0.5)
+        self.assertAlmostEqual(extracted_uv[3][0], 0.9)
+        self.assertAlmostEqual(extracted_uv[3][1], 0.8)
+
 if __name__ == "__main__":
     unittest.main()
 
