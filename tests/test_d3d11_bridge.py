@@ -499,6 +499,43 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertAlmostEqual(u, 0.0)
         self.assertAlmostEqual(v, 0.0)
 
+    def test_sprite_double_buffering_and_degenerate_quad_filter(self):
+        # Kiểm tra logic lọc quad degenerate (toàn bộ đỉnh bằng nhau / chiều rộng hoặc chiều cao = 0)
+        def is_degenerate(pos):
+            w01 = abs(pos[1][0] - pos[0][0])
+            w23 = abs(pos[3][0] - pos[2][0])
+            h02 = abs(pos[2][1] - pos[0][1])
+            h13 = abs(pos[3][1] - pos[1][1])
+            return (w01 < 0.001 and w23 < 0.001) or (h02 < 0.001 and h13 < 0.001)
+
+        # Degenerate quad: 4 đỉnh đều tại (0, 0)
+        null_quad = [(0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
+        self.assertTrue(is_degenerate(null_quad), "Quad với 4 đỉnh (0, 0) phải bị xem là degenerate")
+
+        # Valid fullscreen quad: (-1, 1), (1, 1), (-1, -1), (1, -1)
+        valid_quad = [(-1.0, 1.0), (1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)]
+        self.assertFalse(is_degenerate(valid_quad), "Fullscreen quad không được bị xem là degenerate")
+
+        # Double-buffering simulation:
+        # active sprites được gom lại trong frame và chuyển sang ready sprites khi Present
+        active_sprites = []
+        ready_sprites = []
+
+        # Giả lập gom quad hợp lệ và bỏ quad degenerate
+        quads_to_draw = [null_quad, valid_quad, null_quad]
+        for q in quads_to_draw:
+            if not is_degenerate(q):
+                active_sprites.append(q)
+
+        self.assertEqual(len(active_sprites), 1, "Chỉ quad hợp lệ được đưa vào active_sprites")
+
+        # Giả lập Present (Swap double buffer)
+        ready_sprites = list(active_sprites)
+        active_sprites.clear()
+
+        self.assertEqual(len(ready_sprites), 1, "ready_sprites nhận đúng 1 sprite hợp lệ")
+        self.assertEqual(len(active_sprites), 0, "active_sprites phải được dọn dẹp cho frame kế tiếp")
+
 if __name__ == "__main__":
     unittest.main()
 

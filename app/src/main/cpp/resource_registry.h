@@ -85,6 +85,7 @@ public:
 
     bool contains(const void* handle) const;
     bool getTextureDesc(const void* handle, TextureDesc& out) const;
+    bool getBufferDesc(const void* handle, BufferDesc& out) const;
 
     // Ghi dữ liệu (UpdateSubresource). box = nullptr nghĩa là ghi toàn bộ tài nguyên.
     bool updateBuffer(const void* handle, const UpdateBox* box, const void* data);

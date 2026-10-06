@@ -268,9 +268,29 @@ static void testStatsCounters() {
     CHECK(s.liveBuffers == 0 && s.totalBuffersCreated == 1);
 }
 
+static void testBufferGetDesc() {
+    ResourceRegistry reg;
+    int b = 0;
+    BufferDesc inDesc = makeBufferDesc(128);
+    inDesc.bindFlags = 0x1;
+    inDesc.structureByteStride = 20;
+    CHECK(reg.registerBuffer(&b, inDesc, nullptr));
+
+    BufferDesc outDesc{};
+    CHECK(reg.getBufferDesc(&b, outDesc));
+    CHECK(outDesc.byteWidth == 128);
+    CHECK(outDesc.bindFlags == 0x1);
+    CHECK(outDesc.structureByteStride == 20);
+
+    int unknown = 1;
+    BufferDesc unkDesc{};
+    CHECK(!reg.getBufferDesc(&unknown, unkDesc));
+}
+
 int main() {
     testBufferLifecycle();
     testBufferInvalidInputs();
+    testBufferGetDesc();
     testRefCounting();
     testTextureRawUploadWithPitch();
     testTextureRegionUpdate();

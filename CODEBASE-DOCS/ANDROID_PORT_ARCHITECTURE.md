@@ -222,6 +222,18 @@ sequenceDiagram
     - Ngăn chặn hoàn toàn hiện tượng đỉnh bị clip ngoài màn hình khi Vertex Shader nhận trực tiếp toạ độ pixel mà không qua projection matrix.
   - **Bảo vệ toạ độ UV (Safety Clamping)**:
     - Kiểm tra và lọc bỏ các giá trị dị thường (NaN, Inf hoặc nằm ngoài dải hợp lý $[-10, 10]$) trước khi gửi vào lệnh vẽ OpenGL ES, tránh artifacts render.
+- **Index-Buffer-Driven Sprite Quad Extraction & Double-Buffering Frame Sync (Milestone M6 - Index Buffer Quad Extraction & Double Buffering)**:
+  - **Index Buffer Driven Extraction (`mock_Context_DrawIndexed`)**:
+    - Thay vì luôn đọc 4 đỉnh đầu tiên từ Vertex Buffer, hệ thống ánh xạ `sCurrentIndexBuffer` (hỗ trợ `DXGI_FORMAT_R16_UINT` và `R32_UINT`) kết hợp `startIndexLocation` và `baseVertexLocation` để giải mã chính xác các đỉnh mà engine yêu cầu vẽ:
+      $$\text{vertexIndex} = \text{IndexBuffer}[\text{startIndexLocation} + i] + \text{baseVertexLocation}$$
+    - Tính toán độ lệch byte trong vertex buffer an toàn dựa trên `sCurrentVertexOffset` và `sCurrentVertexStride` (20 bytes: pos.x, pos.y, color, uv.u, uv.v), bảo vệ chống tràn biên bộ nhớ (`byteOffset + stride <= byteWidth`).
+  - **Degenerate Quad Filtering**:
+    - Tự động nhận diện và loại bỏ các quad bị suy biến (degenerate quads có 4 đỉnh trùng nhau tại $(0, 0)$ hoặc chiều rộng / chiều cao xấp xỉ 0).
+    - Ngăn ngừa hiện tượng quad rỗng làm ô nhiễm hàng đợi sprite khiến pipeline rơi vào trạng thái vẽ vô hình.
+  - **Sprite Batch Double-Buffering Sync**:
+    - Tách biệt hai vùng nhớ đệm sprite: `sActiveDrawingSprites` (luồng D3D11 tích luỹ các lệnh vẽ trong frame hiện tại) và `sReadyFrameSprites` (luồng EGL Render đọc và xuất ra màn hình).
+    - Tại thời điểm `mock_SwapChain_Present` / `mock_SwapChain_Present1`, thực hiện hoán đổi nguyên tử (atomic move swap) giữa hai bộ đệm và dọn dẹp bộ đệm tích luỹ, loại bỏ triệt để hiện tượng dồn tích hàng trăm sprite rác qua các frame.
+    - Khi một frame không có sprite riêng lẻ hợp lệ (`sReadyFrameSprites` rỗng), renderer tự động kích hoạt chế độ fallback quad toàn màn hình cho texture đang kích hoạt (`ActiveTexture` 2048x1088 / 3424x3424), đảm bảo background và menu luôn được hiển thị liên tục.
 - **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
   - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
   - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.
