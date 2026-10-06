@@ -654,18 +654,28 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertEqual(q12_list[0], [0, 1, 2, 5])
         self.assertEqual(q12_list[1], [6, 7, 8, 11])
 
-    def test_batch_quad_extraction_multiple_quads(self):
-        # Mô phỏng drawIndexed với IndexCount=40 theo chuẩn strip restart
-        index_count = 40
+    def test_start_index_location_offset_handling(self):
+        # Mô phỏng lệnh vẽ có startIndexLocation > 0 trong index buffer chung
+        index_buffer = list(range(100)) # 100 indices [0, 1, ..., 99]
+        start_index = 24
+        index_count = 10 # 2 quads strip restart
         num_quads = (index_count - 4) // 6 + 1
-        quads = []
-        for q in range(num_quads):
-            base = q * 6
-            quads.append([base, base + 1, base + 2, base + 3])
+        quad_stride = 6
 
-        self.assertEqual(len(quads), 7, "IndexCount=40 với strip restart phải trích xuất được 7 quads")
-        self.assertEqual(quads[0], [0, 1, 2, 3])
-        self.assertEqual(quads[6], [36, 37, 38, 39])
+        extracted_vertices = []
+        for q in range(num_quads):
+            base_offset = q * quad_stride
+            quad_idx = []
+            for i in range(4):
+                idx_offset = base_offset + i
+                self.assertLess(idx_offset, index_count, "idx_offset phải nhỏ hơn index_count")
+                actual_index = index_buffer[start_index + idx_offset]
+                quad_idx.append(actual_index)
+            extracted_vertices.append(quad_idx)
+
+        self.assertEqual(len(extracted_vertices), 2)
+        self.assertEqual(extracted_vertices[0], [24, 25, 26, 27])
+        self.assertEqual(extracted_vertices[1], [30, 31, 32, 33])
 
 if __name__ == "__main__":
     unittest.main()

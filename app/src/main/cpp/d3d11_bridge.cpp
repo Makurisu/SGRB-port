@@ -814,9 +814,20 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                         idxOffset += i;
                     }
 
-                    if (startIndexLocation + idxOffset >= indexCount) {
+                    if (idxOffset >= indexCount) {
                         validQuad = false;
                         break;
+                    }
+
+                    if (idx16 != nullptr) {
+                        sgre::BufferDesc iDesc{};
+                        if (sCurrentIndexBuffer != nullptr && sRegistry.getBufferDesc(sCurrentIndexBuffer, iDesc)) {
+                            size_t requiredBytes = (static_cast<size_t>(startIndexLocation) + idxOffset + 1) * sizeof(uint16_t);
+                            if (requiredBytes > iDesc.byteWidth) {
+                                validQuad = false;
+                                break;
+                            }
+                        }
                     }
 
                     int32_t vertexIdx = static_cast<int32_t>(idxOffset);
@@ -826,6 +837,11 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                         vertexIdx = static_cast<int32_t>(idx32[startIndexLocation + idxOffset]);
                     }
                     vertexIdx += baseVertexLocation;
+
+                    if (vertexIdx < 0) {
+                        validQuad = false;
+                        break;
+                    }
 
                     size_t byteOffset = sCurrentVertexOffset + static_cast<size_t>(vertexIdx) * sCurrentVertexStride;
                     if (byteOffset + sCurrentVertexStride > vDesc.byteWidth) {
@@ -898,8 +914,15 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                     std::lock_guard<std::mutex> lock(sSpriteMutex);
                     if (sActiveDrawingSprites.size() < 1024) {
                         sActiveDrawingSprites.push_back(cmd);
+                        extractedQuads++;
                     }
                 }
+            }
+
+            if (shouldLog && extractedQuads > 0) {
+                LOGI("DrawIndexed #%u: extracted %u quads (total active: %zu)",
+                     sDrawIndexedCount, extractedQuads, sActiveDrawingSprites.size());
+            }
             }
         }
     }
