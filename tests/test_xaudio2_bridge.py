@@ -32,6 +32,35 @@ class TestXAudio2BridgeLogic(unittest.TestCase):
         
         return module_tls_data
 
+    def mock_create_source_voice(self, p_xaudio2, pp_source_voice):
+        if p_xaudio2 is None:
+            raise ValueError("Null pointer dereference on IXAudio2")
+        if pp_source_voice is None:
+            return 0x80070057
+        return 0, "MockIXAudio2SourceVoice"
+
+    def mock_create_submix_voice(self, p_xaudio2, pp_submix_voice):
+        if p_xaudio2 is None:
+            raise ValueError("Null pointer dereference on IXAudio2")
+        if pp_submix_voice is None:
+            return 0x80070057
+        return 0, "MockIXAudio2SubmixVoice"
+
+    def mock_source_voice_submit_buffer(self, p_source_voice, p_buffer):
+        if p_source_voice is None:
+            raise ValueError("Null pointer dereference: IXAudio2SourceVoice is NULL (SEGV_MAPERR)")
+        # Mô phỏng nạp buffer thành công
+        return 0
+
+    def mock_source_voice_get_state(self, p_source_voice, p_voice_state):
+        if p_source_voice is None:
+            raise ValueError("Null pointer dereference: IXAudio2SourceVoice is NULL")
+        if p_voice_state is not None:
+            p_voice_state.clear()
+            p_voice_state["BuffersQueued"] = 0
+            p_voice_state["SamplesPlayed"] = 0
+        return 0
+
     def test_xaudio2_create_success(self):
         hr, p_xaudio2 = self.mock_xaudio2_create({}, 0, 1)
         self.assertEqual(hr, 0, "XAudio2Create phải trả về S_OK (0)")
@@ -45,6 +74,34 @@ class TestXAudio2BridgeLogic(unittest.TestCase):
         hr, p_master = self.mock_create_mastering_voice(self.mock_xaudio2, {})
         self.assertEqual(hr, 0)
         self.assertEqual(p_master, "MockIXAudio2MasteringVoice")
+
+    def test_create_source_voice_success(self):
+        hr, p_source = self.mock_create_source_voice(self.mock_xaudio2, {})
+        self.assertEqual(hr, 0)
+        self.assertEqual(p_source, "MockIXAudio2SourceVoice")
+
+    def test_create_source_voice_invalid_arg(self):
+        hr = self.mock_create_source_voice(self.mock_xaudio2, None)
+        self.assertEqual(hr, 0x80070057)
+
+    def test_create_submix_voice_success(self):
+        hr, p_submix = self.mock_create_submix_voice(self.mock_xaudio2, {})
+        self.assertEqual(hr, 0)
+        self.assertEqual(p_submix, "MockIXAudio2SubmixVoice")
+
+    def test_source_voice_submit_buffer_prevents_segv(self):
+        # Tránh crash lỗi mov rax, [rcx]; call [rax + 0xA8] khi rcx = NULL
+        with self.assertRaises(ValueError):
+            self.mock_source_voice_submit_buffer(None, {})
+
+        res = self.mock_source_voice_submit_buffer("MockIXAudio2SourceVoice", {"AudioBytes": 1024})
+        self.assertEqual(res, 0)
+
+    def test_source_voice_get_state(self):
+        state = {}
+        res = self.mock_source_voice_get_state("MockIXAudio2SourceVoice", state)
+        self.assertEqual(res, 0)
+        self.assertEqual(state["BuffersQueued"], 0)
 
     def test_tls_pointer_prevents_segv(self):
         # Kiểm tra kịch bản gây crash SEGV_MAPERR fault addr 0x0 trước đó:
@@ -61,3 +118,4 @@ class TestXAudio2BridgeLogic(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
