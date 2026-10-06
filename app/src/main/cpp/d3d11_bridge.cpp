@@ -762,8 +762,15 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                 }
 
                 const uint8_t* vertPtr = vView.data + byteOffset;
-                float rawX = *reinterpret_cast<const float*>(vertPtr + 0);
-                float rawY = *reinterpret_cast<const float*>(vertPtr + 4);
+                const float* fPtr = reinterpret_cast<const float*>(vertPtr);
+                static uint32_t sVLog = 0;
+                if (i == 0 && ++sVLog % 120 == 1) {
+                    LOGI("Vertex0 20 bytes: f[0]=%.3f, f[1]=%.3f, f[2]=%.3f, f[3]=%.3f, f[4]=%.3f (hex2=0x%08X)",
+                         fPtr[0], fPtr[1], fPtr[2], fPtr[3], fPtr[4], *reinterpret_cast<const uint32_t*>(vertPtr + 8));
+                }
+
+                float rawX = fPtr[0];
+                float rawY = fPtr[1];
                 float rawU = *reinterpret_cast<const float*>(vertPtr + 12);
                 float rawV = *reinterpret_cast<const float*>(vertPtr + 16);
 
