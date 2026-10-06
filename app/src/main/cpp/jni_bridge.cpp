@@ -191,6 +191,10 @@ static void renderLoop() {
         if (hasActiveTexture && activePixels != nullptr && activeW > 0 && activeH > 0) {
             glUseProgram(program);
 
+            // Bật Alpha Blending chuẩn RGBA để tổng hợp layer sprite UI/chữ/nhân vật
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, quadTexture);
 
@@ -204,16 +208,56 @@ static void renderLoop() {
 
             glUniform1i(uTextureLoc, 0);
 
-            glEnableVertexAttribArray(aPositionLoc);
-            glVertexAttribPointer(aPositionLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[0]);
+            // Truy vấn danh sách sprite quads được trích xuất từ D3D11 draw calls
+            SpriteDrawCommand spriteCommands[256];
+            size_t spriteCount = D3D11Bridge_GetSpriteBatchInfo(spriteCommands, 256);
 
-            glEnableVertexAttribArray(aTexCoordLoc);
-            glVertexAttribPointer(aTexCoordLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[2]);
+            if (spriteCount > 0) {
+                // Render từng Sprite Quad với đúng toạ độ đỉnh và UV map trích xuất từ vertex buffer
+                for (size_t s = 0; s < spriteCount; ++s) {
+                    const auto& cmd = spriteCommands[s];
+                    // Gom toạ độ 4 đỉnh dạng [X, Y, U, V]
+                    const float spriteVerts[] = {
+                        cmd.pos[0][0], cmd.pos[0][1], cmd.uv[0][0], cmd.uv[0][1],
+                        cmd.pos[1][0], cmd.pos[1][1], cmd.uv[1][0], cmd.uv[1][1],
+                        cmd.pos[2][0], cmd.pos[2][1], cmd.uv[2][0], cmd.uv[2][1],
+                        cmd.pos[3][0], cmd.pos[3][1], cmd.uv[3][0], cmd.uv[3][1]
+                    };
+                    const uint16_t spriteIndices[] = {
+                        static_cast<uint16_t>(cmd.indices[0]),
+                        static_cast<uint16_t>(cmd.indices[1]),
+                        static_cast<uint16_t>(cmd.indices[2]),
+                        static_cast<uint16_t>(cmd.indices[3]),
+                        static_cast<uint16_t>(cmd.indices[4]),
+                        static_cast<uint16_t>(cmd.indices[5])
+                    };
 
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    glEnableVertexAttribArray(aPositionLoc);
+                    glVertexAttribPointer(aPositionLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &spriteVerts[0]);
 
-            glDisableVertexAttribArray(aPositionLoc);
-            glDisableVertexAttribArray(aTexCoordLoc);
+                    glEnableVertexAttribArray(aTexCoordLoc);
+                    glVertexAttribPointer(aTexCoordLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &spriteVerts[2]);
+
+                    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, spriteIndices);
+
+                    glDisableVertexAttribArray(aPositionLoc);
+                    glDisableVertexAttribArray(aTexCoordLoc);
+                }
+            } else {
+                // Fallback render quad toàn màn hình nếu chưa có dữ liệu batch sprite
+                glEnableVertexAttribArray(aPositionLoc);
+                glVertexAttribPointer(aPositionLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[0]);
+
+                glEnableVertexAttribArray(aTexCoordLoc);
+                glVertexAttribPointer(aTexCoordLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[2]);
+
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+                glDisableVertexAttribArray(aPositionLoc);
+                glDisableVertexAttribArray(aTexCoordLoc);
+            }
+
+            glDisable(GL_BLEND);
         }
 
         eglSwapBuffers(display, surface);

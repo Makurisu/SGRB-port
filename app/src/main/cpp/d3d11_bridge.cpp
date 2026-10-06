@@ -335,6 +335,13 @@ static int64_t WINAPI mock_Factory_CreateSwapChainForHwnd(
     return 0;
 }
 
+static std::mutex sSpriteMutex;
+static std::vector<SpriteDrawCommand> sCurrentFrameSprites;
+static const void* sCurrentVertexBuffer = nullptr;
+static uint32_t sCurrentVertexStride = 20; // 5 floats = 20 bytes: pos.x, pos.y, pos.z, uv.u, uv.v
+static const void* sCurrentIndexBuffer = nullptr;
+static uint32_t sCurrentIndexFormat = 28; // DXGI_FORMAT_R16_UINT = 57 or R8/R16
+
 // IDXGISwapChain methods
 static int64_t WINAPI mock_SwapChain_GetDevice(void*, const void*, void** ppDevice) {
     if (ppDevice) *ppDevice = &gMockDevice;
@@ -361,6 +368,14 @@ static int64_t WINAPI mock_SwapChain_Present(void*, uint32_t syncInterval, uint3
         sCurrentFrameState.cpuBytes = stats.cpuBytes;
         sCurrentFrameState.droppedResources = stats.droppedResources;
         sNewFrameAvailable = true;
+    }
+    {
+        std::lock_guard<std::mutex> sLock(sSpriteMutex);
+        // Lưu trữ danh sách cho frame này, nếu cần dọn dẹp để chuẩn bị frame kế tiếp
+        // Khi render thread đọc xong qua GetSpriteBatchInfo, danh sách sẽ được làm mới
+        if (sCurrentFrameSprites.size() > 512) {
+            sCurrentFrameSprites.clear();
+        }
     }
     sFrameCond.notify_one();
     return 0;
@@ -494,6 +509,12 @@ static int64_t WINAPI mock_SwapChain_Present1(void*, uint32_t syncInterval, uint
         sCurrentFrameState.cpuBytes = stats.cpuBytes;
         sCurrentFrameState.droppedResources = stats.droppedResources;
         sNewFrameAvailable = true;
+    }
+    {
+        std::lock_guard<std::mutex> sLock(sSpriteMutex);
+        if (sCurrentFrameSprites.size() > 512) {
+            sCurrentFrameSprites.clear();
+        }
     }
     sFrameCond.notify_one();
     return 0;
@@ -676,6 +697,30 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
         LOGI("ID3D11DeviceContext::DrawIndexed: IndexCount=%u, StartIndex=%u, BaseVertex=%d (total calls: %u)",
              indexCount, startIndexLocation, baseVertexLocation, sDrawIndexedCount);
     }
+
+    // Trích xuất toạ độ sprite nếu Vertex Buffer và Index Buffer hợp lệ
+    if (sCurrentVertexBuffer != nullptr && indexCount >= 4) {
+        sgre::MappedView vView{};
+        if (sRegistry.map(sCurrentVertexBuffer, vView) && vView.data != nullptr) {
+            const auto* vData = reinterpret_cast<const float*>(vView.data);
+            // 4 đỉnh của Quad (mỗi đỉnh 5 floats: x, y, z, u, v)
+            SpriteDrawCommand cmd{};
+            for (int i = 0; i < 4; ++i) {
+                size_t offset = i * (sCurrentVertexStride / sizeof(float));
+                cmd.pos[i][0] = vData[offset + 0]; // pos.x
+                cmd.pos[i][1] = vData[offset + 1]; // pos.y
+                cmd.uv[i][0]  = vData[offset + 3]; // uv.u
+                cmd.uv[i][1]  = vData[offset + 4]; // uv.v
+            }
+            cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
+            cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
+
+            std::lock_guard<std::mutex> lock(sSpriteMutex);
+            if (sCurrentFrameSprites.size() < 1024) {
+                sCurrentFrameSprites.push_back(cmd);
+            }
+        }
+    }
 }
 
 static void WINAPI mock_Context_Draw(void*, uint32_t vertexCount, uint32_t startVertexLocation) {
@@ -782,9 +827,24 @@ static void WINAPI mock_Context_PSSetShaderResources(void*, uint32_t startSlot, 
 static void WINAPI mock_Context_PSSetShader(void*, void*, void* const*, uint32_t) {}
 static void WINAPI mock_Context_PSSetSamplers(void*, uint32_t, uint32_t, void* const*) {}
 static void WINAPI mock_Context_VSSetShader(void*, void*, void* const*, uint32_t) {}
+
+static void WINAPI mock_Context_IASetVertexBuffers(void*, uint32_t startSlot, uint32_t numBuffers, void* const* ppVertexBuffers, const uint32_t* pStrides, const uint32_t*) {
+    if (numBuffers > 0 && ppVertexBuffers && ppVertexBuffers[0]) {
+        sCurrentVertexBuffer = ppVertexBuffers[0];
+        if (pStrides && pStrides[0] > 0) {
+            sCurrentVertexStride = pStrides[0];
+        }
+    }
+}
+
+static void WINAPI mock_Context_IASetIndexBuffer(void*, void* pIndexBuffer, uint32_t format, uint32_t) {
+    if (pIndexBuffer) {
+        sCurrentIndexBuffer = pIndexBuffer;
+        sCurrentIndexFormat = format;
+    }
+}
+
 static void WINAPI mock_Context_IASetInputLayout(void*, void*) {}
-static void WINAPI mock_Context_IASetVertexBuffers(void*, uint32_t, uint32_t, void* const*, const uint32_t*, const uint32_t*) {}
-static void WINAPI mock_Context_IASetIndexBuffer(void*, void*, uint32_t, uint32_t) {}
 static void WINAPI mock_Context_IASetPrimitiveTopology(void*, uint32_t) {}
 static void WINAPI mock_Context_VSSetShaderResources(void*, uint32_t, uint32_t, void* const*) {}
 static void WINAPI mock_Context_VSSetSamplers(void*, uint32_t, uint32_t, void* const*) {}
@@ -823,6 +883,15 @@ bool D3D11Bridge_GetActiveTextureInfo(uint32_t* outWidth, uint32_t* outHeight, c
     if (outHeight) *outHeight = desc.height;
     if (outRgbaData) *outRgbaData = view.data;
     return true;
+}
+
+size_t D3D11Bridge_GetSpriteBatchInfo(SpriteDrawCommand* outCommands, size_t maxCommands) {
+    std::lock_guard<std::mutex> lock(sSpriteMutex);
+    size_t count = std::min(sCurrentFrameSprites.size(), maxCommands);
+    if (outCommands != nullptr && count > 0) {
+        std::memcpy(outCommands, sCurrentFrameSprites.data(), count * sizeof(SpriteDrawCommand));
+    }
+    return count;
 }
 
 bool D3D11Bridge_WaitForNextFrame(RenderFrameState* outState, uint32_t timeoutMs) {
