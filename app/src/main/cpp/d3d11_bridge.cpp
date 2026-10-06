@@ -620,6 +620,20 @@ static int64_t WINAPI mock_Device_CreateTexture2D(void*, const void* pDesc, cons
     return 0;
 }
 
+struct MockViewCOM : public SGRE_COM_Mock {
+    void* pResource;
+};
+
+static int64_t WINAPI mock_Device_CreateShaderResourceView(void*, void* pResource, const void*, void** ppView) {
+    if (ppView) {
+        auto* view = new MockViewCOM();
+        view->vtable = gGenericResourceVtable;
+        view->pResource = pResource;
+        *ppView = view;
+    }
+    return 0;
+}
+
 static int64_t WINAPI mock_Device_CreateView(void*, void*, const void*, void** ppView) {
     if (ppView) *ppView = &gMockGenericResource;
     return 0;
@@ -746,6 +760,40 @@ static void WINAPI mock_Context_UpdateSubresource(
     }
 }
 
+static const void* sActiveShaderResourceView = nullptr;
+static const void* sActiveTextureResource = nullptr;
+
+static void WINAPI mock_Context_VSSetConstantBuffers(void*, uint32_t, uint32_t, void* const*) {}
+static void WINAPI mock_Context_PSSetConstantBuffers(void*, uint32_t, uint32_t, void* const*) {}
+
+static void WINAPI mock_Context_PSSetShaderResources(void*, uint32_t startSlot, uint32_t numViews, void* const* ppShaderResourceViews) {
+    if (numViews > 0 && ppShaderResourceViews && ppShaderResourceViews[0]) {
+        sActiveShaderResourceView = ppShaderResourceViews[0];
+        // Trích xuất con trỏ ID3D11Texture2D gốc từ MockViewCOM nếu có
+        auto* view = reinterpret_cast<const MockViewCOM*>(ppShaderResourceViews[0]);
+        if (view->pResource != nullptr) {
+            sActiveTextureResource = view->pResource;
+        } else {
+            sActiveTextureResource = ppShaderResourceViews[0];
+        }
+    }
+}
+
+static void WINAPI mock_Context_PSSetShader(void*, void*, void* const*, uint32_t) {}
+static void WINAPI mock_Context_PSSetSamplers(void*, uint32_t, uint32_t, void* const*) {}
+static void WINAPI mock_Context_VSSetShader(void*, void*, void* const*, uint32_t) {}
+static void WINAPI mock_Context_IASetInputLayout(void*, void*) {}
+static void WINAPI mock_Context_IASetVertexBuffers(void*, uint32_t, uint32_t, void* const*, const uint32_t*, const uint32_t*) {}
+static void WINAPI mock_Context_IASetIndexBuffer(void*, void*, uint32_t, uint32_t) {}
+static void WINAPI mock_Context_IASetPrimitiveTopology(void*, uint32_t) {}
+static void WINAPI mock_Context_VSSetShaderResources(void*, uint32_t, uint32_t, void* const*) {}
+static void WINAPI mock_Context_VSSetSamplers(void*, uint32_t, uint32_t, void* const*) {}
+static void WINAPI mock_Context_OMSetRenderTargets(void*, uint32_t, void* const*, void*) {}
+static void WINAPI mock_Context_OMSetBlendState(void*, void*, const float[4], uint32_t) {}
+static void WINAPI mock_Context_OMSetDepthStencilState(void*, void*, uint32_t) {}
+static void WINAPI mock_Context_RSSetState(void*, void*) {}
+static void WINAPI mock_Context_ClearDepthStencilView(void*, void*, uint32_t, float, uint8_t) {}
+
 static void WINAPI mock_Context_ClearRenderTargetView(void*, void*, const float colorRGBA[4]) {
     if (colorRGBA) {
         std::lock_guard<std::mutex> lock(sFrameMutex);
@@ -759,6 +807,22 @@ static void WINAPI mock_Context_ClearRenderTargetView(void*, void*, const float 
                  colorRGBA[0], colorRGBA[1], colorRGBA[2], colorRGBA[3]);
         }
     }
+}
+
+bool D3D11Bridge_GetActiveTextureInfo(uint32_t* outWidth, uint32_t* outHeight, const uint8_t** outRgbaData) {
+    const void* texHandle = sActiveTextureResource;
+    if (texHandle == nullptr) return false;
+
+    sgre::TextureDesc desc{};
+    if (!sRegistry.getTextureDesc(texHandle, desc)) return false;
+
+    sgre::MappedView view{};
+    if (!sRegistry.map(texHandle, view)) return false;
+
+    if (outWidth) *outWidth = desc.width;
+    if (outHeight) *outHeight = desc.height;
+    if (outRgbaData) *outRgbaData = view.data;
+    return true;
 }
 
 bool D3D11Bridge_WaitForNextFrame(RenderFrameState* outState, uint32_t timeoutMs) {
@@ -929,7 +993,7 @@ static void initVtablesOnce() {
     // 10. ID3D11Device slots
     gDeviceVtable[3] = reinterpret_cast<uint64_t>(&mock_Device_CreateBuffer);
     gDeviceVtable[5] = reinterpret_cast<uint64_t>(&mock_Device_CreateTexture2D);
-    gDeviceVtable[7] = reinterpret_cast<uint64_t>(&mock_Device_CreateView); // CreateShaderResourceView
+    gDeviceVtable[7] = reinterpret_cast<uint64_t>(&mock_Device_CreateShaderResourceView);
     gDeviceVtable[9] = reinterpret_cast<uint64_t>(&mock_Device_CreateView); // CreateRenderTargetView
     gDeviceVtable[10] = reinterpret_cast<uint64_t>(&mock_Device_CreateView); // CreateDepthStencilView
     gDeviceVtable[11] = reinterpret_cast<uint64_t>(&mock_Device_CreateInputLayout);
@@ -945,14 +1009,31 @@ static void initVtablesOnce() {
 
     // 11. ID3D11DeviceContext slots
     gContextVtable[3] = reinterpret_cast<uint64_t>(&mock_Resource_GetDevice);
+    gContextVtable[7] = reinterpret_cast<uint64_t>(&mock_Context_VSSetConstantBuffers);
+    gContextVtable[8] = reinterpret_cast<uint64_t>(&mock_Context_PSSetShaderResources);
+    gContextVtable[9] = reinterpret_cast<uint64_t>(&mock_Context_PSSetShader);
+    gContextVtable[10] = reinterpret_cast<uint64_t>(&mock_Context_PSSetSamplers);
+    gContextVtable[11] = reinterpret_cast<uint64_t>(&mock_Context_VSSetShader);
     gContextVtable[12] = reinterpret_cast<uint64_t>(&mock_Context_DrawIndexed);
     gContextVtable[13] = reinterpret_cast<uint64_t>(&mock_Context_Draw);
     gContextVtable[14] = reinterpret_cast<uint64_t>(&mock_Context_Map);
     gContextVtable[15] = reinterpret_cast<uint64_t>(&mock_Context_Unmap);
+    gContextVtable[16] = reinterpret_cast<uint64_t>(&mock_Context_PSSetConstantBuffers);
+    gContextVtable[17] = reinterpret_cast<uint64_t>(&mock_Context_IASetInputLayout);
+    gContextVtable[18] = reinterpret_cast<uint64_t>(&mock_Context_IASetVertexBuffers);
+    gContextVtable[19] = reinterpret_cast<uint64_t>(&mock_Context_IASetIndexBuffer);
+    gContextVtable[24] = reinterpret_cast<uint64_t>(&mock_Context_IASetPrimitiveTopology);
+    gContextVtable[25] = reinterpret_cast<uint64_t>(&mock_Context_VSSetShaderResources);
+    gContextVtable[26] = reinterpret_cast<uint64_t>(&mock_Context_VSSetSamplers);
+    gContextVtable[33] = reinterpret_cast<uint64_t>(&mock_Context_OMSetRenderTargets);
+    gContextVtable[35] = reinterpret_cast<uint64_t>(&mock_Context_OMSetBlendState);
+    gContextVtable[36] = reinterpret_cast<uint64_t>(&mock_Context_OMSetDepthStencilState);
+    gContextVtable[43] = reinterpret_cast<uint64_t>(&mock_Context_RSSetState);
     gContextVtable[44] = reinterpret_cast<uint64_t>(&mock_Context_RSSetViewports);
     gContextVtable[45] = reinterpret_cast<uint64_t>(&mock_Context_RSSetScissorRects);
     gContextVtable[48] = reinterpret_cast<uint64_t>(&mock_Context_UpdateSubresource);
     gContextVtable[50] = reinterpret_cast<uint64_t>(&mock_Context_ClearRenderTargetView);
+    gContextVtable[53] = reinterpret_cast<uint64_t>(&mock_Context_ClearDepthStencilView);
 
     // 12. ID3D11ShaderReflection slots
     gShaderReflectionVtable[3] = reinterpret_cast<uint64_t>(&mock_Reflection_GetDesc);

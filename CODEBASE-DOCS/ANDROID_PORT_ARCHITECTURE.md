@@ -181,6 +181,15 @@ sequenceDiagram
   - **BC7 Decoder**: Giải nén định dạng nén khối BC7 (DXGI_FORMAT_BC7_UNORM / BC7_UNORM_SRGB) sang định dạng chuẩn RGBA8 trên CPU sử dụng thư viện `bcdec`.
     - Xử lý mượt mà mọi kích thước texture (kể cả kích thước không chia hết cho 4), bảo vệ an toàn biên bộ nhớ.
     - Cho phép nạp trực tiếp texture nền, sprite nhân vật và UI của game vào bộ nhớ render mà không phụ thuộc vào phần cứng GPU hỗ trợ BC7.
+- **OpenGL ES 2.0 Texture Presentation Pipeline (Milestone M2 - Texture Presentation & Render Pipeline)**:
+  - **D3D11 Device Context Slot Interception**: Mở rộng bảng vtable `ID3D11DeviceContext` với các handler chuyên biệt:
+    - Slot 8 (`PSSetShaderResources`): Lưu vết con trỏ Resource/Texture đang hoạt động thông qua đối tượng `MockViewCOM`.
+    - Slot 7/16 (`VSSetConstantBuffers`, `PSSetConstantBuffers`), Slot 9/11 (`PSSetShader`, `VSSetShader`), Slot 10/26 (`PSSetSamplers`, `VSSetSamplers`), Slot 17/18/19/24 (`IASetInputLayout`, `IASetVertexBuffers`, `IASetIndexBuffer`, `IASetPrimitiveTopology`), Slot 25 (`VSSetShaderResources`), Slot 33/35/36 (`OMSetRenderTargets`, `OMSetBlendState`, `OMSetDepthStencilState`), Slot 43 (`RSSetState`), Slot 53 (`ClearDepthStencilView`).
+    - API `D3D11Bridge_GetActiveTextureInfo`: Trích xuất trực tiếp kích thước và con trỏ pixel RGBA8 đã giải mã của texture đang bind trên GPU sang EGL render thread.
+  - **OpenGL ES 2.0 Quad Renderer (`jni_bridge.cpp`)**:
+    - Khởi tạo Shader Program GLES 2.0 (Vertex + Fragment Shaders) cùng cấu trúc quad đỉnh 4 điểm `GL_TRIANGLE_STRIP` với toạ độ UV lật trục V để hiển thị hình ảnh đúng chiều.
+    - Tự động cấp phát GLES Texture2D, nạp pixel RGBA8 bằng `glTexImage2D` (khi đổi texture/kích thước) hoặc `glTexSubImage2D` (khi cập nhật khung hình).
+    - Render trực tiếp quad toàn màn hình lên `ANativeWindow` và đồng bộ qua `eglSwapBuffers`, kết nối toàn bộ pixel game engine lên màn hình thiết bị Android.
 - **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
   - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
   - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.

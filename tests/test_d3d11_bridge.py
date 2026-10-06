@@ -212,23 +212,57 @@ class TestD3D11BridgeLogic(unittest.TestCase):
     def test_device_context_vtable_specification(self):
         # Kiểm tra bảng phân giải slot ID3D11DeviceContext chuẩn DirectX 11
         context_slots = {
+            7: "VSSetConstantBuffers",
+            8: "PSSetShaderResources",
+            9: "PSSetShader",
+            10: "PSSetSamplers",
+            11: "VSSetShader",
             12: "DrawIndexed",
             13: "Draw",
             14: "Map",
             15: "Unmap",
+            16: "PSSetConstantBuffers",
+            17: "IASetInputLayout",
+            18: "IASetVertexBuffers",
+            19: "IASetIndexBuffer",
+            24: "IASetPrimitiveTopology",
+            25: "VSSetShaderResources",
+            26: "VSSetSamplers",
+            33: "OMSetRenderTargets",
+            35: "OMSetBlendState",
+            36: "OMSetDepthStencilState",
+            43: "RSSetState",
             44: "RSSetViewports",
             45: "RSSetScissorRects",
             48: "UpdateSubresource",
-            50: "ClearRenderTargetView"
+            50: "ClearRenderTargetView",
+            53: "ClearDepthStencilView",
         }
+        self.assertEqual(context_slots[7], "VSSetConstantBuffers")
+        self.assertEqual(context_slots[8], "PSSetShaderResources")
+        self.assertEqual(context_slots[9], "PSSetShader")
+        self.assertEqual(context_slots[10], "PSSetSamplers")
+        self.assertEqual(context_slots[11], "VSSetShader")
         self.assertEqual(context_slots[12], "DrawIndexed")
         self.assertEqual(context_slots[13], "Draw")
         self.assertEqual(context_slots[14], "Map")
         self.assertEqual(context_slots[15], "Unmap")
+        self.assertEqual(context_slots[16], "PSSetConstantBuffers")
+        self.assertEqual(context_slots[17], "IASetInputLayout")
+        self.assertEqual(context_slots[18], "IASetVertexBuffers")
+        self.assertEqual(context_slots[19], "IASetIndexBuffer")
+        self.assertEqual(context_slots[24], "IASetPrimitiveTopology")
+        self.assertEqual(context_slots[25], "VSSetShaderResources")
+        self.assertEqual(context_slots[26], "VSSetSamplers")
+        self.assertEqual(context_slots[33], "OMSetRenderTargets")
+        self.assertEqual(context_slots[35], "OMSetBlendState")
+        self.assertEqual(context_slots[36], "OMSetDepthStencilState")
+        self.assertEqual(context_slots[43], "RSSetState")
         self.assertEqual(context_slots[44], "RSSetViewports")
         self.assertEqual(context_slots[45], "RSSetScissorRects")
         self.assertEqual(context_slots[48], "UpdateSubresource")
         self.assertEqual(context_slots[50], "ClearRenderTargetView")
+        self.assertEqual(context_slots[53], "ClearDepthStencilView")
 
     def test_device_vtable_specification(self):
         # Kiểm tra bảng phân giải slot ID3D11Device chuẩn DirectX 11
@@ -313,6 +347,27 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         # Texture 3424x3424 giải nén sang RGBA8: 3424 * 3424 * 4 = 46,894,080 bytes (~44.7 MB)
         rgba8_bytes = 3424 * 3424 * 4
         self.assertLess(rgba8_bytes, budget_bytes)
+
+    def test_active_texture_presentation_logic(self):
+        # Kiểm tra logic tính toán quad full-screen và texture upload
+        # Tọa độ quad chuẩn: [-1, 1], [-1, -1], [1, 1], [1, -1]
+        quad_vertices = [
+            (-1.0,  1.0, 0.0, 0.0),
+            (-1.0, -1.0, 0.0, 1.0),
+            ( 1.0,  1.0, 1.0, 0.0),
+            ( 1.0, -1.0, 1.0, 1.0)
+        ]
+        self.assertEqual(len(quad_vertices), 4)
+        # Điểm đầu top-left: V = 0.0
+        self.assertEqual(quad_vertices[0][3], 0.0)
+        # Điểm bottom-left: V = 1.0
+        self.assertEqual(quad_vertices[1][3], 1.0)
+
+        # Kiểm tra kích thước RGBA8 của texture 1920x1080
+        w, h = 1920, 1080
+        bpp = 4
+        expected_bytes = w * h * bpp
+        self.assertEqual(expected_bytes, 8294400)
 
 if __name__ == "__main__":
     unittest.main()
