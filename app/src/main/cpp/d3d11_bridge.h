@@ -37,6 +37,7 @@ public:
 
 bool D3D11Bridge_WaitForNextFrame(RenderFrameState* outState, uint32_t timeoutMs);
 void D3D11Bridge_GetLatestFrameState(RenderFrameState* outState);
+bool D3D11Bridge_GetActiveTextureInfo(uint32_t* outWidth, uint32_t* outHeight, const uint8_t** outRgbaData);
 
 #if defined(__x86_64__)
 #define WINAPI __attribute__((ms_abi))

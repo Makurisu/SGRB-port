@@ -83,7 +83,82 @@ static void renderLoop() {
         return;
     }
 
-    LOGI("EGL Context đã sẵn sàng, bắt đầu vòng lặp Render đồ hoạ đồng bộ theo D3D11 SwapChain...");
+    LOGI("EGL Context đã sẵn sàng, thiết lập Shader Program GLES 2.0 cho Quad Rendering...");
+
+    const char* vertexShaderSource =
+        "attribute vec2 aPosition;\n"
+        "attribute vec2 aTexCoord;\n"
+        "varying vec2 vTexCoord;\n"
+        "void main() {\n"
+        "    gl_Position = vec4(aPosition, 0.0, 1.0);\n"
+        "    vTexCoord = aTexCoord;\n"
+        "}\n";
+
+    const char* fragmentShaderSource =
+        "precision mediump float;\n"
+        "varying vec2 vTexCoord;\n"
+        "uniform sampler2D uTexture;\n"
+        "void main() {\n"
+        "    gl_FragColor = texture2D(uTexture, vTexCoord);\n"
+        "}\n";
+
+    auto compileShader = [](GLenum type, const char* source) -> GLuint {
+        GLuint shader = glCreateShader(type);
+        glShaderSource(shader, 1, &source, nullptr);
+        glCompileShader(shader);
+        GLint compiled = 0;
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+        if (!compiled) {
+            GLint infoLen = 0;
+            glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &infoLen);
+            if (infoLen > 0) {
+                std::string infoLog(infoLen, '\0');
+                glGetShaderInfoLog(shader, infoLen, nullptr, &infoLog[0]);
+                LOGE("Lỗi biên dịch shader (%u): %s", type, infoLog.c_str());
+            }
+            glDeleteShader(shader);
+            return 0;
+        }
+        return shader;
+    };
+
+    GLuint vertShader = compileShader(GL_VERTEX_SHADER, vertexShaderSource);
+    GLuint fragShader = compileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertShader);
+    glAttachShader(program, fragShader);
+    glLinkProgram(program);
+
+    GLint linked = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        LOGE("glLinkProgram thất bại");
+    }
+
+    GLint aPositionLoc = glGetAttribLocation(program, "aPosition");
+    GLint aTexCoordLoc = glGetAttribLocation(program, "aTexCoord");
+    GLint uTextureLoc = glGetUniformLocation(program, "uTexture");
+
+    // Quad Vertex Data: [X, Y, U, V] (Full-screen quad, lật trục V để hiển thị đúng chiều)
+    const float quadVertices[] = {
+        -1.0f,  1.0f,  0.0f, 0.0f,
+        -1.0f, -1.0f,  0.0f, 1.0f,
+         1.0f,  1.0f,  1.0f, 0.0f,
+         1.0f, -1.0f,  1.0f, 1.0f,
+    };
+
+    GLuint quadTexture = 0;
+    glGenTextures(1, &quadTexture);
+    glBindTexture(GL_TEXTURE_2D, quadTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    uint32_t currentTexWidth = 0;
+    uint32_t currentTexHeight = 0;
+
+    LOGI("Bắt đầu vòng lặp Render đồ hoạ đồng bộ theo D3D11 SwapChain...");
 
     RenderFrameState frameState = {};
     float hue = 0.0f;
@@ -107,15 +182,63 @@ static void renderLoop() {
         }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // Kiểm tra xem có texture game RGBA8 hợp lệ đang hoạt động để render quad hay không
+        uint32_t activeW = 0, activeH = 0;
+        const uint8_t* activePixels = nullptr;
+        bool hasActiveTexture = D3D11Bridge_GetActiveTextureInfo(&activeW, &activeH, &activePixels);
+
+        if (hasActiveTexture && activePixels != nullptr && activeW > 0 && activeH > 0) {
+            glUseProgram(program);
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, quadTexture);
+
+            if (currentTexWidth != activeW || currentTexHeight != activeH) {
+                currentTexWidth = activeW;
+                currentTexHeight = activeH;
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, activeW, activeH, 0, GL_RGBA, GL_UNSIGNED_BYTE, activePixels);
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, activeW, activeH, GL_RGBA, GL_UNSIGNED_BYTE, activePixels);
+            }
+
+            glUniform1i(uTextureLoc, 0);
+
+            glEnableVertexAttribArray(aPositionLoc);
+            glVertexAttribPointer(aPositionLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[0]);
+
+            glEnableVertexAttribArray(aTexCoordLoc);
+            glVertexAttribPointer(aTexCoordLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), &quadVertices[2]);
+
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+            glDisableVertexAttribArray(aPositionLoc);
+            glDisableVertexAttribArray(aTexCoordLoc);
+        }
+
         eglSwapBuffers(display, surface);
 
         static uint32_t sPresentCounter = 0;
         if (hasFrame && ++sPresentCounter % 60 == 1) {
-            LOGI("EGL Present: Frame %u (%ux%u) | Color: (%.2f, %.2f, %.2f) | DrawIndexed: %u | Textures: %u | Shaders: %u",
+            LOGI("EGL Present: Frame %u (%ux%u) | ActiveTex: %dx%d (%s) | Color: (%.2f, %.2f, %.2f) | DrawIndexed: %u | Textures: %u | Shaders: %u",
                  frameState.frameIndex, frameState.width, frameState.height,
+                 activeW, activeH, hasActiveTexture ? "BOUND" : "NONE",
                  frameState.clearColor[0], frameState.clearColor[1], frameState.clearColor[2],
                  frameState.indexDraws, frameState.texturesCreated, frameState.shadersCreated);
         }
+    }
+
+    if (quadTexture != 0) {
+        glDeleteTextures(1, &quadTexture);
+    }
+    if (program != 0) {
+        glDeleteProgram(program);
+    }
+    if (vertShader != 0) {
+        glDeleteShader(vertShader);
+    }
+    if (fragShader != 0) {
+        glDeleteShader(fragShader);
     }
 
     LOGI("Dừng vòng lặp render, giải phóng EGL...");
