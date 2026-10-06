@@ -370,22 +370,47 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertEqual(expected_bytes, 8294400)
 
     def test_sprite_draw_command_structure(self):
-        # Kiểm tra cấu trúc SpriteDrawCommand
-        # 4 vertices * 2 floats (pos: x, y) = 8 floats = 32 bytes
-        # 4 vertices * 2 floats (uv: u, v)  = 8 floats = 32 bytes
-        # 6 indices (uint32_t)              = 6 ints   = 24 bytes
-        # Tổng cộng: 32 + 32 + 24 = 88 bytes
+        # Kiểm tra cấu trúc SpriteDrawCommand:
+        # - pos: 4 * 2 floats = 32 bytes (offset 0)
+        # - uv: 4 * 2 floats = 32 bytes (offset 32)
+        # - indices: 6 * uint32 = 24 bytes (offset 64)
+        # - textureHandle: void* (8 bytes trên 64-bit) (offset 88)
+        # - textureWidth: uint32 (4 bytes) (offset 96)
+        # - textureHeight: uint32 (4 bytes) (offset 100)
+        # Tổng cộng: 104 bytes
         import ctypes
         class SpriteDrawCommand(ctypes.Structure):
             _fields_ = [
                 ('pos', (ctypes.c_float * 2) * 4),
                 ('uv', (ctypes.c_float * 2) * 4),
                 ('indices', ctypes.c_uint * 6),
+                ('textureHandle', ctypes.c_void_p),
+                ('textureWidth', ctypes.c_uint),
+                ('textureHeight', ctypes.c_uint),
             ]
-        self.assertEqual(ctypes.sizeof(SpriteDrawCommand), 88)
+        self.assertEqual(ctypes.sizeof(SpriteDrawCommand), 104)
         self.assertEqual(SpriteDrawCommand.pos.offset, 0)
         self.assertEqual(SpriteDrawCommand.uv.offset, 32)
         self.assertEqual(SpriteDrawCommand.indices.offset, 64)
+        self.assertEqual(SpriteDrawCommand.textureHandle.offset, 88)
+        self.assertEqual(SpriteDrawCommand.textureWidth.offset, 96)
+        self.assertEqual(SpriteDrawCommand.textureHeight.offset, 100)
+
+    def test_sprite_texture_association_logic(self):
+        # Kiểm tra logic ánh xạ handle kết cấu sang SpriteDrawCommand
+        fake_tex_handle = 0x12345678
+        tex_w = 2048
+        tex_h = 1088
+        cmd = {
+            "pos": [(-1.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (1.0, -1.0)],
+            "uv": [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)],
+            "textureHandle": fake_tex_handle,
+            "textureWidth": tex_w,
+            "textureHeight": tex_h
+        }
+        self.assertEqual(cmd["textureHandle"], fake_tex_handle)
+        self.assertEqual(cmd["textureWidth"], 2048)
+        self.assertEqual(cmd["textureHeight"], 1088)
 
     def test_sprite_geometry_extraction_from_vertex_buffer(self):
         # Giả lập Vertex Buffer 80 bytes (4 vertices * 20 bytes/vertex: x, y, z, u, v)
