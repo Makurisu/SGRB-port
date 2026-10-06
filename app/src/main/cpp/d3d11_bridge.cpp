@@ -349,6 +349,7 @@ static const void* sCurrentIndexBuffer = nullptr;
 static uint32_t sCurrentIndexFormat = 57; // DXGI_FORMAT_R16_UINT = 57
 static const void* sActiveShaderResourceView = nullptr;
 static const void* sActiveTextureResource = nullptr;
+static uint32_t sCurrentPrimitiveTopology = 4; // D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST = 4
 
 // IDXGISwapChain methods
 static int64_t WINAPI mock_SwapChain_GetDevice(void*, const void*, void** ppDevice) {
@@ -988,7 +989,6 @@ static void WINAPI mock_Context_IASetIndexBuffer(void*, void* pIndexBuffer, uint
 }
 
 static void WINAPI mock_Context_IASetInputLayout(void*, void*) {}
-static uint32_t sCurrentPrimitiveTopology = 4;
 static void WINAPI mock_Context_IASetPrimitiveTopology(void*, uint32_t topology) {
     sCurrentPrimitiveTopology = topology;
 }
