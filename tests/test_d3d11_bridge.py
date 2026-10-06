@@ -536,6 +536,48 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertEqual(len(ready_sprites), 1, "ready_sprites nhận đúng 1 sprite hợp lệ")
         self.assertEqual(len(active_sprites), 0, "active_sprites phải được dọn dẹp cho frame kế tiếp")
 
+    def test_deferred_release_and_pipeline_retention(self):
+        # Giả lập pipeline retention: khi buffer được bind vào IASet, refCount được giữ
+        class MockRegistry:
+            def __init__(self):
+                self.ref_counts = {}
+
+            def register(self, handle):
+                self.ref_counts[handle] = 1
+
+            def add_ref(self, handle):
+                if handle in self.ref_counts:
+                    self.ref_counts[handle] += 1
+                return self.ref_counts.get(handle, -1)
+
+            def release(self, handle):
+                if handle in self.ref_counts:
+                    self.ref_counts[handle] -= 1
+                    r = self.ref_counts[handle]
+                    if r == 0:
+                        del self.ref_counts[handle]
+                    return r
+                return -1
+
+        reg = MockRegistry()
+        vb_handle = 0x1000
+        reg.register(vb_handle)
+        self.assertEqual(reg.ref_counts[vb_handle], 1)
+
+        # Pipeline binds vb -> add_ref
+        reg.add_ref(vb_handle)
+        self.assertEqual(reg.ref_counts[vb_handle], 2)
+
+        # Engine calls Release() -> refCount drops to 1, still retained!
+        r = reg.release(vb_handle)
+        self.assertEqual(r, 1, "Buffer vẫn được pipeline giữ")
+        self.assertIn(vb_handle, reg.ref_counts)
+
+        # Present / switch buffer -> pipeline releases
+        r = reg.release(vb_handle)
+        self.assertEqual(r, 0, "Buffer được giải phóng an toàn khi pipeline thôi sử dụng")
+        self.assertNotIn(vb_handle, reg.ref_counts)
+
 if __name__ == "__main__":
     unittest.main()
 

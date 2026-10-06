@@ -147,10 +147,13 @@ static uint32_t WINAPI mock_COM_AddRef(void* thisPtr) {
     int32_t ref = sRegistry.addRef(thisPtr);
     return ref > 0 ? static_cast<uint32_t>(ref) : 1;
 }
+static std::mutex sDeferredMutex;
+static std::vector<void*> sDeferredReleaseList;
+
 static uint32_t WINAPI mock_COM_Release(void* thisPtr) {
     int32_t ref = sRegistry.release(thisPtr);
     if (ref == 0) {
-        // Handle đã bị huỷ khỏi sRegistry, giải phóng wrapper struct nếu không phải static mock
+        // Trì hoãn giải phóng heap pointer cho đến Present để tránh tái cấp phát đè ô nhớ trong cùng frame
         if (thisPtr != &gMockDevice &&
             thisPtr != &gMockContext &&
             thisPtr != &gMockMultithread &&
@@ -164,7 +167,8 @@ static uint32_t WINAPI mock_COM_Release(void* thisPtr) {
             thisPtr != &gMockShaderConstantBuffer &&
             thisPtr != &gMockShaderVariable &&
             thisPtr != &gMockShaderType) {
-            delete reinterpret_cast<SGRE_COM_Mock*>(thisPtr);
+            std::lock_guard<std::mutex> lock(sDeferredMutex);
+            sDeferredReleaseList.push_back(thisPtr);
         }
         return 0;
     }
@@ -378,6 +382,13 @@ static int64_t WINAPI mock_SwapChain_Present(void*, uint32_t syncInterval, uint3
         sReadyFrameSprites = std::move(sActiveDrawingSprites);
         sActiveDrawingSprites.clear();
     }
+    {
+        std::lock_guard<std::mutex> lock(sDeferredMutex);
+        for (void* ptr : sDeferredReleaseList) {
+            delete reinterpret_cast<SGRE_COM_Mock*>(ptr);
+        }
+        sDeferredReleaseList.clear();
+    }
     sFrameCond.notify_one();
     return 0;
 }
@@ -515,6 +526,13 @@ static int64_t WINAPI mock_SwapChain_Present1(void*, uint32_t syncInterval, uint
         std::lock_guard<std::mutex> sLock(sSpriteMutex);
         sReadyFrameSprites = std::move(sActiveDrawingSprites);
         sActiveDrawingSprites.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(sDeferredMutex);
+        for (void* ptr : sDeferredReleaseList) {
+            delete reinterpret_cast<SGRE_COM_Mock*>(ptr);
+        }
+        sDeferredReleaseList.clear();
     }
     sFrameCond.notify_one();
     return 0;
@@ -763,14 +781,15 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                 cmd.uv[i][1] = rawV;
             }
 
-            if (validQuad) {
-                float width01 = std::abs(cmd.pos[1][0] - cmd.pos[0][0]);
-                float width23 = std::abs(cmd.pos[3][0] - cmd.pos[2][0]);
-                float height02 = std::abs(cmd.pos[2][1] - cmd.pos[0][1]);
-                float height13 = std::abs(cmd.pos[3][1] - cmd.pos[1][1]);
-                bool isDegenerate = (width01 < 0.001f && width23 < 0.001f) || (height02 < 0.001f && height13 < 0.001f);
+            static uint32_t sDiagCount = 0;
+            if (++sDiagCount % 120 == 1) {
+                float dbgX = (vDesc.byteWidth >= 8) ? *reinterpret_cast<const float*>(vView.data) : 0.0f;
+                float dbgY = (vDesc.byteWidth >= 8) ? *reinterpret_cast<const float*>(vView.data + 4) : 0.0f;
+                LOGI("DrawIndexed Diag: VbWidth=%u, Offset=%u, valid=%d, degen=%d, rawX0=%.1f, rawY0=%.1f",
+                     vDesc.byteWidth, sCurrentVertexOffset, validQuad, isDegenerate, dbgX, dbgY);
+            }
 
-                if (!isDegenerate) {
+            if (validQuad && !isDegenerate) {
                     cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
                     cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
                     cmd.textureHandle = sActiveTextureResource;
@@ -909,7 +928,14 @@ static void WINAPI mock_Context_VSSetShader(void*, void*, void* const*, uint32_t
 static void WINAPI mock_Context_IASetVertexBuffers(void*, uint32_t startSlot, uint32_t numBuffers, void* const* ppVertexBuffers, const uint32_t* pStrides, const uint32_t* pOffsets) {
     static uint32_t sVbLogCount = 0;
     if (numBuffers > 0 && ppVertexBuffers && ppVertexBuffers[0]) {
-        sCurrentVertexBuffer = ppVertexBuffers[0];
+        void* newVb = ppVertexBuffers[0];
+        if (sCurrentVertexBuffer != newVb) {
+            if (sCurrentVertexBuffer != nullptr) {
+                sRegistry.release(sCurrentVertexBuffer);
+            }
+            sCurrentVertexBuffer = newVb;
+            sRegistry.addRef(sCurrentVertexBuffer);
+        }
         if (pStrides && pStrides[0] > 0) {
             sCurrentVertexStride = pStrides[0];
         }
@@ -928,7 +954,13 @@ static void WINAPI mock_Context_IASetVertexBuffers(void*, uint32_t startSlot, ui
 
 static void WINAPI mock_Context_IASetIndexBuffer(void*, void* pIndexBuffer, uint32_t format, uint32_t) {
     if (pIndexBuffer) {
-        sCurrentIndexBuffer = pIndexBuffer;
+        if (sCurrentIndexBuffer != pIndexBuffer) {
+            if (sCurrentIndexBuffer != nullptr) {
+                sRegistry.release(sCurrentIndexBuffer);
+            }
+            sCurrentIndexBuffer = pIndexBuffer;
+            sRegistry.addRef(sCurrentIndexBuffer);
+        }
         sCurrentIndexFormat = format;
         static uint32_t sIbLogCount = 0;
         if (++sIbLogCount % 60 == 1) {
