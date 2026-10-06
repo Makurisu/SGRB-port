@@ -1,5 +1,6 @@
 #include "dinput_bridge.h"
 #include "d3d11_bridge.h"
+#include "win32_bridge.h"
 #include <android/log.h>
 #include <cstring>
 #include <cstdint>
