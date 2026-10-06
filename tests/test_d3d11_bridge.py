@@ -502,11 +502,11 @@ class TestD3D11BridgeLogic(unittest.TestCase):
     def test_sprite_double_buffering_and_degenerate_quad_filter(self):
         # Kiểm tra logic lọc quad degenerate (toàn bộ đỉnh bằng nhau / chiều rộng hoặc chiều cao = 0)
         def is_degenerate(pos):
-            w01 = abs(pos[1][0] - pos[0][0])
-            w23 = abs(pos[3][0] - pos[2][0])
-            h02 = abs(pos[2][1] - pos[0][1])
-            h13 = abs(pos[3][1] - pos[1][1])
-            return (w01 < 0.001 and w23 < 0.001) or (h02 < 0.001 and h13 < 0.001)
+            min_x = min(p[0] for p in pos)
+            max_x = max(p[0] for p in pos)
+            min_y = min(p[1] for p in pos)
+            max_y = max(p[1] for p in pos)
+            return ((max_x - min_x) < 0.001) or ((max_y - min_y) < 0.001)
 
         # Degenerate quad: 4 đỉnh đều tại (0, 0)
         null_quad = [(0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
