@@ -226,7 +226,9 @@ sequenceDiagram
   - **Index Buffer Driven Extraction (`mock_Context_DrawIndexed`)**:
     - Thay vì luôn đọc 4 đỉnh đầu tiên từ Vertex Buffer, hệ thống ánh xạ `sCurrentIndexBuffer` (hỗ trợ `DXGI_FORMAT_R16_UINT` và `R32_UINT`) kết hợp `startIndexLocation` và `baseVertexLocation` để giải mã chính xác các đỉnh mà engine yêu cầu vẽ:
       $$\text{vertexIndex} = \text{IndexBuffer}[\text{startIndexLocation} + i] + \text{baseVertexLocation}$$
-    - Tính toán độ lệch byte trong vertex buffer an toàn dựa trên `sCurrentVertexOffset` và `sCurrentVertexStride` (20 bytes: pos.x, pos.y, color, uv.u, uv.v), bảo vệ chống tràn biên bộ nhớ (`byteOffset + stride <= byteWidth`).
+    - Tính toán độ lệch byte trong vertex buffer an toàn dựa trên `sCurrentVertexOffset` và `sCurrentVertexStride` (20 bytes: pos.x [float 4B], pos.y [float 4B], color [uint32 4B], uv.u [float 4B], uv.v [float 4B]), bảo vệ chống tràn biên bộ nhớ (`byteOffset + stride <= byteWidth`).
+    - Bố cục 20-byte Vertex Struct được xác thực thực nghiệm:
+      $$\text{Offset 0: Pos.X (float)}, \quad \text{Offset 4: Pos.Y (float)}, \quad \text{Offset 8: Color (uint32)}, \quad \text{Offset 12: UV.U (float)}, \quad \text{Offset 16: UV.V (float)}$$
   - **Degenerate Quad Filtering**:
     - Tự động nhận diện và loại bỏ các quad bị suy biến (degenerate quads có 4 đỉnh trùng nhau tại $(0, 0)$ hoặc chiều rộng / chiều cao xấp xỉ 0).
     - Ngăn ngừa hiện tượng quad rỗng làm ô nhiễm hàng đợi sprite khiến pipeline rơi vào trạng thái vẽ vô hình.
