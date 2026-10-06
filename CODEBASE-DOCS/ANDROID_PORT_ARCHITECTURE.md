@@ -328,12 +328,10 @@ sequenceDiagram
          }
          ```
        - Trong vòng lặp sprite: Tự động bind `cmd.textureHandle` vào `GL_TEXTURE0` và `cmd.alphaTextureHandle` vào `GL_TEXTURE1`.
-    3. **Chuẩn Hoá Toạ Độ UV Theo Virtual Atlas Tỷ Lệ (`d3d11_bridge.cpp`)**:
-       - Sửa thuật toán cắt UV cũ (`uv - floor(uv)`) vốn biến đổi sai $3.079 \to 0.079$, trỏ nhầm vào vùng pixel rỗng ở đầu atlas $3424 \times 3424$.
-       - Công thức chuẩn hoá chính xác:
-         - Khi $U > 1.0$ và chiều rộng texture là $3424$: $U = (U \times 1928.0) / 3424.0$.
-         - Khi $V > 1.0$ và chiều cao texture lớn hơn $1088$: $V = (V \times 1088.0) / \text{texHeight}$.
-         - Toạ độ pixel tuyệt đối ($> 16.0$) được chia trực tiếp cho kích thước texture, và bảo vệ range an toàn $[0.0, 1.0]$.
+    3. **Chuẩn Hoá Toạ Độ UV Cho Atlas M2 Engine (`d3d11_bridge.cpp` - Milestone M14)**:
+       - M2 Engine sử dụng cơ chế toạ độ chuẩn hoá theo chu kỳ (wrapped normalized coordinates): $U_{\text{norm}} = \text{frac}(U) = U - \lfloor U \rfloor$, $V_{\text{norm}} = \text{frac}(V) = V - \lfloor V \rfloor$.
+       - Toạ độ đỉnh của chữ và nút menu (như $U = 1.484, V = 3.079$) trỏ chính xác vào vùng ký tự tại $U = 0.484, V = 0.079$ của Texture Atlas $3424 \times 3424$.
+       - Toạ độ pixel tuyệt đối ($> 16.0$) được chia trực tiếp cho kích thước texture, và toàn bộ dải $u > 1.0, v > 1.0$ được lấy phần thập phân wrap chuẩn xác.
   - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite và mỗi lần lấy mẫu fragment trên GPU.
 
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)

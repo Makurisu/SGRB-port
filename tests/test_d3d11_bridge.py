@@ -715,30 +715,29 @@ class TestD3D11BridgeLogic(unittest.TestCase):
             if tex_w > 0 and tex_h > 0:
                 if u > 16.0:
                     u /= float(tex_w)
-                elif u > 1.0 and tex_w > 2048:
-                    base_w = 1928.0 if tex_w == 3424 else 2048.0
-                    u = (u * base_w) / float(tex_w)
                 elif u > 1.0:
                     u = u - int(u)
 
                 if v > 16.0:
                     v /= float(tex_h)
-                elif v > 1.0 and tex_h > 1088:
-                    base_h = 1088.0
-                    v = (v * base_h) / float(tex_h)
                 elif v > 1.0:
                     v = v - int(v)
             return u, v
 
-        # Test UV trong Virtual Screen 1928x1088 map len Atlas 3424x3424
+        # Test UV chuẩn hoá trong Atlas 3424x3424
         u_scaled, v_scaled = scale_uv(1.0, 1.0, 3424, 3424)
         self.assertEqual(u_scaled, 1.0)
         self.assertEqual(v_scaled, 1.0)
 
-        # Với virtual quad có toạ độ u = 1.484, v = 2.5
-        u_scaled2, v_scaled2 = scale_uv(1.484, 2.5, 3424, 3424)
-        self.assertAlmostEqual(u_scaled2, (1.484 * 1928.0) / 3424.0, places=4)
-        self.assertAlmostEqual(v_scaled2, (2.5 * 1088.0) / 3424.0, places=4)
+        # Với sprite atlas có toạ độ u = 1.484, v = 3.079
+        u_scaled2, v_scaled2 = scale_uv(1.484, 3.079, 3424, 3424)
+        self.assertAlmostEqual(u_scaled2, 0.484, places=4)
+        self.assertAlmostEqual(v_scaled2, 0.079, places=4)
+
+        # Với sprite toạ độ pixel tuyệt đối > 16.0 (ví dụ: 1712, 1712)
+        u_pixel, v_pixel = scale_uv(1712.0, 1712.0, 3424, 3424)
+        self.assertAlmostEqual(u_pixel, 0.5, places=4)
+        self.assertAlmostEqual(v_pixel, 0.5, places=4)
 
     def test_multi_texture_dual_slot_binding_logic(self):
         # Kiểm tra mô phỏng việc trích xuất texture Slot 0 và Slot 1
