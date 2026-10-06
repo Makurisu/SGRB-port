@@ -213,6 +213,15 @@ sequenceDiagram
     - Quản lý map `sGlesTextureCache` liên kết giữa COM handle và ID kết cấu OpenGL ES `GLuint`.
     - Tự động khởi tạo kết cấu mới khi gặp texture handle mới và tái sử dụng qua các frame mà không cần giải phóng/khởi tạo lại liên tục.
     - Khi vẽ chuỗi sprite quads, tự động chuyển đổi `glBindTexture(GL_TEXTURE_2D, spriteTexId)` tương ứng với từng quad, cho phép hiển thị đồng thời nhiều atlas UI, background và font texture trên cùng một khung hình.
+- **Pixel-Space to NDC Coordinate Normalization & UV Mapping (Milestone M5 - Sprite UV Mapping & Projection)**:
+  - **Quy luật toạ độ đỉnh Game Engine M2**:
+    - Game engine sử dụng hệ toạ độ Pixel Screen Space với tâm tại $(0, 0)$: dải toạ độ ngang $X \in [-960, 960]$ (tổng chiều rộng 1920px), trục dọc $Y \in [-540, 540]$ (tổng chiều cao 1080px, hướng dương đi xuống dưới).
+  - **Chuẩn hoá đỉnh sang OpenGL ES NDC $[-1.0, 1.0] \times [-1.0, 1.0]$**:
+    - Khi phát hiện toạ độ đỉnh vượt ngưỡng pixel space ($|x| > 1.5$ hoặc $|y| > 1.5$), tự động thực hiện phép chiếu chuẩn hoá và lật trục $Y$:
+      $$\text{pos.x}_{\text{NDC}} = \frac{\text{rawX}}{960.0f}, \quad \text{pos.y}_{\text{NDC}} = -\frac{\text{rawY}}{540.0f}$$
+    - Ngăn chặn hoàn toàn hiện tượng đỉnh bị clip ngoài màn hình khi Vertex Shader nhận trực tiếp toạ độ pixel mà không qua projection matrix.
+  - **Bảo vệ toạ độ UV (Safety Clamping)**:
+    - Kiểm tra và lọc bỏ các giá trị dị thường (NaN, Inf hoặc nằm ngoài dải hợp lý $[-10, 10]$) trước khi gửi vào lệnh vẽ OpenGL ES, tránh artifacts render.
 - **Windows Thread Local Storage (TLS) Subsystem (`gs:[0x58]`)**:
   - Tự động bóc tách thư mục PE DataDirectory[9] (`IMAGE_DIRECTORY_ENTRY_TLS`).
   - Phân bổ vùng nhớ động 64KB chứa bảng con trỏ `ThreadLocalStoragePointer` (128 slots) và 32KB đệm TLS data cho thread.

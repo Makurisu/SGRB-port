@@ -448,6 +448,57 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertAlmostEqual(extracted_uv[3][0], 0.9)
         self.assertAlmostEqual(extracted_uv[3][1], 0.8)
 
+    def test_sprite_coordinate_normalization_to_ndc(self):
+        # Kiểm tra logic chuẩn hoá pixel space [-960, 960] x [-540, 540] sang OpenGL ES NDC [-1, 1]
+        def normalize_vertex(raw_x, raw_y, raw_u, raw_v):
+            if abs(raw_x) > 1.5 or abs(raw_y) > 1.5:
+                pos_x = raw_x / 960.0
+                pos_y = -raw_y / 540.0 # Lật trục Y
+            else:
+                pos_x = raw_x
+                pos_y = raw_y
+
+            import math
+            if math.isnan(raw_u) or math.isinf(raw_u) or raw_u < -10.0 or raw_u > 10.0:
+                uv_u = 0.0
+            else:
+                uv_u = raw_u
+
+            if math.isnan(raw_v) or math.isinf(raw_v) or raw_v < -10.0 or raw_v > 10.0:
+                uv_v = 0.0
+            else:
+                uv_v = raw_v
+
+            return (pos_x, pos_y, uv_u, uv_v)
+
+        # 1. Fullscreen Quad M2 (-960, -540) -> NDC (-1.0, 1.0)
+        px, py, u, v = normalize_vertex(-960.0, -540.0, 0.0, 0.0)
+        self.assertAlmostEqual(px, -1.0)
+        self.assertAlmostEqual(py, 1.0)
+        self.assertAlmostEqual(u, 0.0)
+        self.assertAlmostEqual(v, 0.0)
+
+        # 2. Bottom-right Fullscreen Quad (960, 540) -> NDC (1.0, -1.0)
+        px, py, u, v = normalize_vertex(960.0, 540.0, 1.0, 1.0)
+        self.assertAlmostEqual(px, 1.0)
+        self.assertAlmostEqual(py, -1.0)
+        self.assertAlmostEqual(u, 1.0)
+        self.assertAlmostEqual(v, 1.0)
+
+        # 3. Sprite UI nhỏ: (-508, -110)
+        px, py, u, v = normalize_vertex(-508.0, -110.0, 0.25, 0.5)
+        self.assertAlmostEqual(px, -508.0 / 960.0)
+        self.assertAlmostEqual(py, 110.0 / 540.0)
+        self.assertAlmostEqual(u, 0.25)
+        self.assertAlmostEqual(v, 0.5)
+
+        # 4. Bảo vệ UV dị thường (NaN, Inf, Out-of-bounds)
+        px, py, u, v = normalize_vertex(0.0, 0.0, float('nan'), float('inf'))
+        self.assertAlmostEqual(px, 0.0)
+        self.assertAlmostEqual(py, 0.0)
+        self.assertAlmostEqual(u, 0.0)
+        self.assertAlmostEqual(v, 0.0)
+
 if __name__ == "__main__":
     unittest.main()
 

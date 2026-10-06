@@ -718,13 +718,30 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
         if (sRegistry.map(sCurrentVertexBuffer, vView) && vView.data != nullptr) {
             const auto* vData = reinterpret_cast<const float*>(vView.data);
             // 4 đỉnh của Quad (mỗi đỉnh 5 floats: x, y, z, u, v)
+            // Tọa độ đỉnh game engine M2 sử dụng pixel screen-space với tâm (0, 0): [-960, 960] x [-540, 540]
+            // Chuẩn hoá sang OpenGL ES NDC [-1.0, 1.0] x [-1.0, 1.0] và lật trục Y cho đúng chiều hiển thị
             SpriteDrawCommand cmd{};
             for (int i = 0; i < 4; ++i) {
                 size_t offset = i * (sCurrentVertexStride / sizeof(float));
-                cmd.pos[i][0] = vData[offset + 0]; // pos.x
-                cmd.pos[i][1] = vData[offset + 1]; // pos.y
-                cmd.uv[i][0]  = vData[offset + 3]; // uv.u
-                cmd.uv[i][1]  = vData[offset + 4]; // uv.v
+                float rawX = vData[offset + 0];
+                float rawY = vData[offset + 1];
+                float rawU = vData[offset + 3];
+                float rawV = vData[offset + 4];
+
+                // Nếu toạ độ là pixel space (|rawX| > 1.5 hoặc |rawY| > 1.5), chuẩn hoá về NDC
+                if (std::abs(rawX) > 1.5f || std::abs(rawY) > 1.5f) {
+                    cmd.pos[i][0] = rawX / 960.0f;
+                    cmd.pos[i][1] = -rawY / 540.0f; // Lật trục Y vì pixel space Y dương đi xuống
+                } else {
+                    cmd.pos[i][0] = rawX;
+                    cmd.pos[i][1] = rawY;
+                }
+
+                // Bảo vệ UV trong phạm vi an toàn, tránh giá trị rác/không khởi tạo
+                if (std::isnan(rawU) || std::isinf(rawU) || rawU < -10.0f || rawU > 10.0f) rawU = 0.0f;
+                if (std::isnan(rawV) || std::isinf(rawV) || rawV < -10.0f || rawV > 10.0f) rawV = 0.0f;
+                cmd.uv[i][0] = rawU;
+                cmd.uv[i][1] = rawV;
             }
             cmd.indices[0] = 0; cmd.indices[1] = 1; cmd.indices[2] = 2;
             cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
@@ -741,13 +758,12 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
 
             static uint32_t sSpriteLogCount = 0;
             if (++sSpriteLogCount % 60 == 1) {
-                LOGI("Extracted Sprite #%u: Tex=%p (%ux%u) | V0=[pos:(%.2f, %.2f, %.2f) uv:(%.2f, %.2f)] V1=[pos:(%.2f, %.2f, %.2f) uv:(%.2f, %.2f)] V2=[pos:(%.2f, %.2f, %.2f) uv:(%.2f, %.2f)] V3=[pos:(%.2f, %.2f, %.2f) uv:(%.2f, %.2f)]",
+                LOGI("Extracted Sprite #%u: Tex=%p (%ux%u) | NDC: V0=(%.2f, %.2f) V1=(%.2f, %.2f) V2=(%.2f, %.2f) V3=(%.2f, %.2f) | Raw0=[%.1f, %.1f] UV0=[%.2f, %.2f]",
                      sSpriteLogCount,
                      cmd.textureHandle, cmd.textureWidth, cmd.textureHeight,
-                     vData[0], vData[1], vData[2], vData[3], vData[4],
-                     vData[5], vData[6], vData[7], vData[8], vData[9],
-                     vData[10], vData[11], vData[12], vData[13], vData[14],
-                     vData[15], vData[16], vData[17], vData[18], vData[19]);
+                     cmd.pos[0][0], cmd.pos[0][1], cmd.pos[1][0], cmd.pos[1][1],
+                     cmd.pos[2][0], cmd.pos[2][1], cmd.pos[3][0], cmd.pos[3][1],
+                     vData[0], vData[1], cmd.uv[0][0], cmd.uv[0][1]);
             }
 
             std::lock_guard<std::mutex> lock(sSpriteMutex);
