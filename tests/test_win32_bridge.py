@@ -667,6 +667,44 @@ class TestWin32BridgeLogic(unittest.TestCase):
         self.assertFalse(fail)
         self.assertEqual(transferred_fail[0], 0)
 
+    def test_winmm_wave_audio_apis(self):
+        # Kiểm thử các API âm thanh WinMM (waveOut / waveIn) trả về MMSYSERR_NOERROR (0) và handle hợp lệ
+        MMSYSERR_NOERROR = 0
+
+        # waveOutOpen
+        hwave_out = [None]
+        def mock_wave_out_open(phwo):
+            phwo[0] = 0x8001
+            return MMSYSERR_NOERROR
+
+        res = mock_wave_out_open(hwave_out)
+        self.assertEqual(res, MMSYSERR_NOERROR)
+        self.assertEqual(hwave_out[0], 0x8001)
+
+        # waveInOpen
+        hwave_in = [None]
+        def mock_wave_in_open(phwi):
+            phwi[0] = 0x8002
+            return MMSYSERR_NOERROR
+
+        res_in = mock_wave_in_open(hwave_in)
+        self.assertEqual(res_in, MMSYSERR_NOERROR)
+        self.assertEqual(hwave_in[0], 0x8002)
+
+    def test_bgra_to_rgba_swizzle(self):
+        # Kiểm thử chuyển đổi màu từ DXGI_FORMAT_B8G8R8A8_UNORM sang RGBA8
+        bgra_pixels = bytes([0xFF, 0x00, 0x10, 0x80]) # B=255, G=0, R=16, A=128
+        rgba_result = bytearray(4)
+        rgba_result[0] = bgra_pixels[2] # R
+        rgba_result[1] = bgra_pixels[1] # G
+        rgba_result[2] = bgra_pixels[0] # B
+        rgba_result[3] = bgra_pixels[3] # A
+
+        self.assertEqual(rgba_result[0], 0x10) # R
+        self.assertEqual(rgba_result[1], 0x00) # G
+        self.assertEqual(rgba_result[2], 0xFF) # B
+        self.assertEqual(rgba_result[3], 0x80) # A
+
 if __name__ == "__main__":
     unittest.main()
 

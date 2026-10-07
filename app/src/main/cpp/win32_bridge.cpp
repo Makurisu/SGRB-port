@@ -2511,6 +2511,42 @@ int32_t WINAPI stub_PropVariantToInt64(const void*, int64_t* pret) {
     return 0; // S_OK
 }
 
+// WinMM (Wave Audio) Stubs
+uint32_t WINAPI stub_waveOutGetNumDevs() { return 1; }
+uint32_t WINAPI stub_waveOutGetDevCapsA(uintptr_t, void* pwoc, uint32_t cbwoc) {
+    if (pwoc && cbwoc > 0) memset(pwoc, 0, cbwoc);
+    return 0; // MMSYSERR_NOERROR
+}
+uint32_t WINAPI stub_waveOutOpen(void** phwo, uint32_t, const void*, uintptr_t, uintptr_t, uint32_t) {
+    if (phwo) *phwo = reinterpret_cast<void*>(0x8001);
+    return 0; // MMSYSERR_NOERROR
+}
+uint32_t WINAPI stub_waveOutClose(void*) { return 0; }
+uint32_t WINAPI stub_waveOutPrepareHeader(void*, void*, uint32_t) { return 0; }
+uint32_t WINAPI stub_waveOutUnprepareHeader(void*, void*, uint32_t) { return 0; }
+uint32_t WINAPI stub_waveOutWrite(void*, void*, uint32_t) { return 0; }
+uint32_t WINAPI stub_waveOutReset(void*) { return 0; }
+uint32_t WINAPI stub_waveOutPause(void*) { return 0; }
+uint32_t WINAPI stub_waveOutRestart(void*) { return 0; }
+uint32_t WINAPI stub_waveOutGetPosition(void*, void*, uint32_t) { return 0; }
+
+uint32_t WINAPI stub_waveInGetNumDevs() { return 1; }
+uint32_t WINAPI stub_waveInGetDevCapsA(uintptr_t, void* pwic, uint32_t cbwic) {
+    if (pwic && cbwic > 0) memset(pwic, 0, cbwic);
+    return 0; // MMSYSERR_NOERROR
+}
+uint32_t WINAPI stub_waveInOpen(void** phwi, uint32_t, const void*, uintptr_t, uintptr_t, uint32_t) {
+    if (phwi) *phwi = reinterpret_cast<void*>(0x8002);
+    return 0; // MMSYSERR_NOERROR
+}
+uint32_t WINAPI stub_waveInClose(void*) { return 0; }
+uint32_t WINAPI stub_waveInPrepareHeader(void*, void*, uint32_t) { return 0; }
+uint32_t WINAPI stub_waveInUnprepareHeader(void*, void*, uint32_t) { return 0; }
+uint32_t WINAPI stub_waveInAddBuffer(void*, void*, uint32_t) { return 0; }
+uint32_t WINAPI stub_waveInStart(void*) { return 0; }
+uint32_t WINAPI stub_waveInStop(void*) { return 0; }
+uint32_t WINAPI stub_waveInReset(void*) { return 0; }
+
 // Bảng ánh xạ hàm API
 static std::unordered_map<std::string, void*> gFunctionMap;
 
@@ -2865,6 +2901,30 @@ void Win32Bridge_Init() {
     gFunctionMap["MFInvokeCallback"] = reinterpret_cast<void*>(&stub_MFInvokeCallback);
     gFunctionMap["MFCreateSourceReaderFromMediaSource"] = reinterpret_cast<void*>(&stub_MFCreateSourceReaderFromMediaSource);
     gFunctionMap["MFCreateSourceReaderFromURL"] = reinterpret_cast<void*>(&stub_MFCreateSourceReaderFromURL);
+
+    // WinMM (Wave Audio) Registration
+    gFunctionMap["waveOutGetNumDevs"] = reinterpret_cast<void*>(&stub_waveOutGetNumDevs);
+    gFunctionMap["waveOutGetDevCapsA"] = reinterpret_cast<void*>(&stub_waveOutGetDevCapsA);
+    gFunctionMap["waveOutOpen"] = reinterpret_cast<void*>(&stub_waveOutOpen);
+    gFunctionMap["waveOutClose"] = reinterpret_cast<void*>(&stub_waveOutClose);
+    gFunctionMap["waveOutPrepareHeader"] = reinterpret_cast<void*>(&stub_waveOutPrepareHeader);
+    gFunctionMap["waveOutUnprepareHeader"] = reinterpret_cast<void*>(&stub_waveOutUnprepareHeader);
+    gFunctionMap["waveOutWrite"] = reinterpret_cast<void*>(&stub_waveOutWrite);
+    gFunctionMap["waveOutReset"] = reinterpret_cast<void*>(&stub_waveOutReset);
+    gFunctionMap["waveOutPause"] = reinterpret_cast<void*>(&stub_waveOutPause);
+    gFunctionMap["waveOutRestart"] = reinterpret_cast<void*>(&stub_waveOutRestart);
+    gFunctionMap["waveOutGetPosition"] = reinterpret_cast<void*>(&stub_waveOutGetPosition);
+
+    gFunctionMap["waveInGetNumDevs"] = reinterpret_cast<void*>(&stub_waveInGetNumDevs);
+    gFunctionMap["waveInGetDevCapsA"] = reinterpret_cast<void*>(&stub_waveInGetDevCapsA);
+    gFunctionMap["waveInOpen"] = reinterpret_cast<void*>(&stub_waveInOpen);
+    gFunctionMap["waveInClose"] = reinterpret_cast<void*>(&stub_waveInClose);
+    gFunctionMap["waveInPrepareHeader"] = reinterpret_cast<void*>(&stub_waveInPrepareHeader);
+    gFunctionMap["waveInUnprepareHeader"] = reinterpret_cast<void*>(&stub_waveInUnprepareHeader);
+    gFunctionMap["waveInAddBuffer"] = reinterpret_cast<void*>(&stub_waveInAddBuffer);
+    gFunctionMap["waveInStart"] = reinterpret_cast<void*>(&stub_waveInStart);
+    gFunctionMap["waveInStop"] = reinterpret_cast<void*>(&stub_waveInStop);
+    gFunctionMap["waveInReset"] = reinterpret_cast<void*>(&stub_waveInReset);
 
     LOGI("Bảng Win32 Bridge đã khởi tạo thành công %zu hàm stub native!", gFunctionMap.size());
 }

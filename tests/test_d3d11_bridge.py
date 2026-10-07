@@ -715,7 +715,7 @@ class TestD3D11BridgeLogic(unittest.TestCase):
             if tex_w > 0 and tex_h > 0:
                 if u > 16.0:
                     u /= float(tex_w)
-                else:
+                elif u > 1.0:
                     import math
                     u = u - math.floor(u)
                     if tex_w > 2048:
@@ -723,7 +723,7 @@ class TestD3D11BridgeLogic(unittest.TestCase):
 
                 if v > 16.0:
                     v /= float(tex_h)
-                else:
+                elif v > 1.0:
                     import math
                     v = v - math.floor(v)
                     if tex_h > 1088:
@@ -731,13 +731,10 @@ class TestD3D11BridgeLogic(unittest.TestCase):
             return u, v
 
         # Test UV chuẩn hoá trong Atlas 3424x3424:
-        # Với nút bấm menu width=348, height=25: deltaU = 348 / 2048 = 0.1699, deltaV = 25 / 1088 = 0.0229
-        # Khi map lên atlas 3424x3424: deltaU_atlas = deltaU * (2048 / 3424) = 348 / 3424 = 0.1016
-        u_raw_btn = 0.1699
-        v_raw_btn = 0.0229
-        u_scaled_btn, v_scaled_btn = scale_uv(u_raw_btn, v_raw_btn, 3424, 3424)
-        self.assertAlmostEqual(u_scaled_btn, 348.0 / 3424.0, places=3)
-        self.assertAlmostEqual(v_scaled_btn, 25.0 / 3424.0, places=3)
+        # Full-screen quad hoặc sprite chuẩn [0, 1] không bị thu nhỏ hoặc collapse về 0
+        u_full, v_full = scale_uv(1.0, 1.0, 3424, 3424)
+        self.assertEqual(u_full, 1.0)
+        self.assertEqual(v_full, 1.0)
 
         # Với sprite atlas có toạ độ u = 1.409, v = 1.997 (chữ Caution)
         u_scaled2, v_scaled2 = scale_uv(1.409, 1.997, 3424, 3424)

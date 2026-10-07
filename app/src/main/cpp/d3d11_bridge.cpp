@@ -941,8 +941,8 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                             if (u > 16.0f) {
                                 // Toạ độ pixel tuyệt đối trong texture
                                 u /= static_cast<float>(cmd.textureWidth);
-                            } else {
-                                // Lấy phần thập phân (frac) của toạ độ gốc
+                            } else if (u > 1.0f) {
+                                // Toạ độ sprite vượt quá 1.0 do scale atlas, lấy phần lẻ và scale theo atlas lớn
                                 u = u - std::floor(u);
                                 if (cmd.textureWidth > 2048) {
                                     u = (u * 2048.0f) / static_cast<float>(cmd.textureWidth);
@@ -952,8 +952,8 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                             if (v > 16.0f) {
                                 // Toạ độ pixel tuyệt đối trong texture
                                 v /= static_cast<float>(cmd.textureHeight);
-                            } else {
-                                // Lấy phần thập phân (frac) của toạ độ gốc
+                            } else if (v > 1.0f) {
+                                // Toạ độ sprite vượt quá 1.0 do scale atlas, lấy phần lẻ và scale theo atlas lớn
                                 v = v - std::floor(v);
                                 if (cmd.textureHeight > 1088) {
                                     v = (v * 1088.0f) / static_cast<float>(cmd.textureHeight);

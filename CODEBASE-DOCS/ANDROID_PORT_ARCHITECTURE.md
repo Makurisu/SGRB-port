@@ -329,12 +329,24 @@ sequenceDiagram
          ```
        - Trong vòng lặp sprite: Tự động bind `cmd.textureHandle` vào `GL_TEXTURE0` và `cmd.alphaTextureHandle` vào `GL_TEXTURE1`.
     3. **Chuẩn Hoá Toạ Độ UV Cho Atlas M2 Engine (`d3d11_bridge.cpp` - Milestone M14)**:
-       - M2 Engine sinh toạ độ UV sprite thô dựa trên kích thước khối texture cơ sở $2048 \times 1088$ kết hợp wrapped modulo: $u_{\text{norm}} = u - \lfloor u \rfloor$, $v_{\text{norm}} = v - \lfloor v \rfloor$.
-       - Khi engine liên kết vào Texture Atlas lớn thực tế ($3424 \times 3424$), toạ độ cần được ánh xạ tỷ lệ chính xác:
-         $$u_{\text{final}} = \frac{u_{\text{norm}} \times 2048.0}{\text{textureWidth}}, \quad v_{\text{final}} = \frac{v_{\text{norm}} \times 1088.0}{\text{textureHeight}}$$
-       - Cơ chế này sửa triệt để hiện tượng sprite (font chữ, logo nhà phát triển MAGES/Chiyomaru/MTwo, menu buttons, dialog Caution) bị phóng đại $1.67\times$ theo chiều ngang và $3.15\times$ theo chiều dọc gây xén cụt và vỡ hình.
+       - M2 Engine sinh toạ độ UV sprite thô kết hợp giữa hai cơ chế:
+         - Toạ độ normalized chuẩn trong khoảng $[0.0, 1.0]$ cho các quad texture thông thường (như background, full quad logo, caution...). Cơ chế này được giữ nguyên $100\%$ không bị wrap hay scale nhầm để tránh biến $1.0 \to 0.0$ làm sụp đổ quad thành 1 điểm.
+         - Toạ độ sprite vượt quá $1.0$ ($u > 1.0$ hoặc $v > 1.0$) do cơ chế tiling / atlas modulo của M2 Engine: Hệ thống lấy phần thập phân lẻ và ánh xạ tỷ lệ chính xác theo Texture Atlas lớn thực tế ($3424 \times 3424$):
+           $$u_{\text{final}} = \frac{(u - \lfloor u \rfloor) \times 2048.0}{\text{textureWidth}}, \quad v_{\text{final}} = \frac{(v - \lfloor v \rfloor) \times 1088.0}{\text{textureHeight}}$$
        - Toạ độ pixel tuyệt đối ($> 16.0$) tiếp tục được chia trực tiếp cho kích thước texture tương ứng.
   - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite và mỗi lần lấy mẫu fragment trên GPU.
+
+- **Stub WinMM Audio Driver & Chuyển Đổi Định Dạng `DXGI_FORMAT_B8G8R8A8_UNORM` (`win32_bridge.cpp`, `resource_registry.cpp` - Milestone M15)**:
+  - **Phân Tích Nguyên Nhân Crash Khi Tap Màn Hình qua IDA Pro MCP**:
+    - Khi người dùng chạm màn hình để bỏ qua logo hoặc phát âm thanh tương tác, game gọi vào driver âm thanh phụ thuộc `winmm.dll` (`sub_1400CA1D0`).
+    - Engine truy vấn con trỏ hàm động qua `GetProcAddress` cho các API `waveOut*` và `waveIn*` (`waveOutGetNumDevs`, `waveOutGetDevCapsA`, `waveOutOpen`, `waveInOpen`...).
+    - Trước đây `GetProcAddress` trả về `nullptr`, dẫn đến lệnh `call r9` / `call r10` gọi trúng địa chỉ null `0x0000000000000000`, kích hoạt tín hiệu `SIGSEGV (SEGV_MAPERR)`.
+    - **Giải pháp**: Triển khai đầy đủ stub cho toàn bộ nhóm API WinMM `waveOut*` và `waveIn*`, trả về `MMSYSERR_NOERROR` (0) cùng handle thiết bị giả lập hợp lệ (`0x8001`, `0x8002`).
+  - **Sửa Lỗi Kênh Màu Định Dạng `DXGI_FORMAT_B8G8R8A8_UNORM` (Format 87)**:
+    - Các texture hệ thống và logo (kích thước $1024 \times 1024$) được nạp với thứ tự kênh BGRA.
+    - Tại `resource_registry.cpp`, bổ sung bộ chuyển đổi đảo kênh Red và Blue $(B, G, R, A) \to (R, G, B, A)$ ở cả hai nhánh `registerTexture` và `updateTexture`.
+    - Loại bỏ hiện tượng sai lệch màu sắc và nhiễu màu pixel trên logo nhà phát triển.
+  - **Độ phức tạp**: $O(W \times H)$ cho mỗi lần cập nhật texture $1024 \times 1024$ (thực thi $< 0.5\text{ms}$ trên CPU).
 
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).

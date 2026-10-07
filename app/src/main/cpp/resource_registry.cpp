@@ -131,6 +131,18 @@ bool ResourceRegistry::registerTexture(
                             rowDst[col * 4 + 3] = rowSrc[col];
                         }
                     }
+                } else if (desc.format == kDxgiB8G8R8A8Unorm) {
+                    const uint32_t srcPitch = initRowPitch != 0 ? initRowPitch : entry.rowPitch;
+                    for (uint32_t row = 0; row < desc.height; ++row) {
+                        const uint8_t* rowSrc = src + static_cast<size_t>(row) * srcPitch;
+                        uint8_t* rowDst = entry.data.data() + static_cast<size_t>(row) * entry.rowPitch;
+                        for (uint32_t col = 0; col < desc.width; ++col) {
+                            rowDst[col * 4 + 0] = rowSrc[col * 4 + 2]; // R
+                            rowDst[col * 4 + 1] = rowSrc[col * 4 + 1]; // G
+                            rowDst[col * 4 + 2] = rowSrc[col * 4 + 0]; // B
+                            rowDst[col * 4 + 3] = rowSrc[col * 4 + 3]; // A
+                        }
+                    }
                 } else {
                     const uint32_t srcPitch = initRowPitch != 0 ? initRowPitch : entry.rowPitch;
                     for (uint32_t row = 0; row < desc.height; ++row) {
@@ -235,6 +247,23 @@ bool ResourceRegistry::updateTexture(
                 rowDst[col * 4 + 1] = 255;
                 rowDst[col * 4 + 2] = 255;
                 rowDst[col * 4 + 3] = rowSrc[col];
+            }
+        }
+        return true;
+    }
+
+    if (desc.format == kDxgiB8G8R8A8Unorm) {
+        const uint32_t regionPixels = right - left;
+        const uint32_t srcPitch = srcRowPitch != 0 ? srcRowPitch : regionPixels * 4;
+        for (uint32_t row = top; row < bottom; ++row) {
+            const uint8_t* rowSrc = src + static_cast<size_t>(row - top) * srcPitch;
+            uint8_t* rowDst = entry.data.data() + static_cast<size_t>(row) * entry.rowPitch +
+                              static_cast<size_t>(left) * 4;
+            for (uint32_t col = 0; col < regionPixels; ++col) {
+                rowDst[col * 4 + 0] = rowSrc[col * 4 + 2]; // R
+                rowDst[col * 4 + 1] = rowSrc[col * 4 + 1]; // G
+                rowDst[col * 4 + 2] = rowSrc[col * 4 + 0]; // B
+                rowDst[col * 4 + 3] = rowSrc[col * 4 + 3]; // A
             }
         }
         return true;
