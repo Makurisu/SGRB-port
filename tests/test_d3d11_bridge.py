@@ -767,6 +767,45 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         has_alpha_texture = 1 if alpha_tex is not None else 0
         self.assertEqual(has_alpha_texture, 1)
 
+    def test_ps_set_shader_resources_slot1_reset_leak_prevention(self):
+        # Kiểm tra việc reset Slot 1 khi game chỉ bind Slot 0 (startSlot = 0, numViews = 1)
+        slots = [None] * 8
+        slots[0] = "Tex0"
+        slots[1] = "Tex1"
+
+        def ps_set_shader_resources(start_slot, views):
+            num_views = len(views)
+            if num_views > 0:
+                for i in range(num_views):
+                    slot = start_slot + i
+                    if slot < 8:
+                        slots[slot] = views[i]
+                if start_slot == 0 and num_views == 1:
+                    slots[1] = None
+
+        # Giả sử trước đó frame có slot 1
+        ps_set_shader_resources(0, ["TexColor", "TexAlpha"])
+        self.assertEqual(slots[0], "TexColor")
+        self.assertEqual(slots[1], "TexAlpha")
+
+        # Frame/draw call tiếp theo chỉ truyền slot 0 -> slot 1 phải tự động được dọn dẹp
+        ps_set_shader_resources(0, ["TexColorOnly"])
+        self.assertEqual(slots[0], "TexColorOnly")
+        self.assertIsNone(slots[1], "Slot 1 phải được reset về None để ngăn ngừa rò rỉ Alpha Texture")
+
+    def test_alpha_texture_format_filter(self):
+        # Alpha Texture chỉ được gán nếu texture format là DXGI_FORMAT_A8_UNORM (65)
+        kDxgiA8Unorm = 65
+        kDxgiR8G8B8A8Unorm = 28
+
+        def select_alpha_mask(alpha_tex, fmt):
+            if alpha_tex is not None and fmt == kDxgiA8Unorm:
+                return alpha_tex
+            return None
+
+        self.assertIsNone(select_alpha_mask("TexRGBA", kDxgiR8G8B8A8Unorm))
+        self.assertEqual(select_alpha_mask("TexMask", kDxgiA8Unorm), "TexMask")
+
     def test_a8_to_rgba8_expansion(self):
         # Kiểm tra thuật toán mở rộng Format 65 (A8_UNORM) sang RGBA8 (255, 255, 255, alpha)
         raw_a8 = bytes([0x00, 0x80, 0xFF])

@@ -918,21 +918,27 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
 
                     // Gán Texture Slot 1 (Alpha Texture / Mask)
                     const void* alphaTex = sBoundTextureResources[1];
-                    cmd.alphaTextureHandle = alphaTex;
+                    cmd.alphaTextureHandle = nullptr;
                     cmd.alphaTextureWidth = 0;
                     cmd.alphaTextureHeight = 0;
                     if (alphaTex != nullptr) {
                         sgre::TextureDesc aDesc{};
                         if (sRegistry.getTextureDesc(alphaTex, aDesc)) {
-                            cmd.alphaTextureWidth = aDesc.width;
-                            cmd.alphaTextureHeight = aDesc.height;
+                            // Chỉ áp dụng Alpha Mask khi format là A8_UNORM (format 65)
+                            if (aDesc.format == sgre::kDxgiA8Unorm) {
+                                cmd.alphaTextureHandle = alphaTex;
+                                cmd.alphaTextureWidth = aDesc.width;
+                                cmd.alphaTextureHeight = aDesc.height;
+                            }
                         }
                     }
 
                     // Chuẩn hoá toạ độ UV cho Atlas của M2 Engine:
-                    // M2 Engine mã hoá toạ độ UV sprite dựa trên không gian texture gốc 2048x1088.
-                    // Khi ghép vào texture atlas kích thước lớn (như 3424x3424), toạ độ gốc (sau khi wrap phần thập phân)
-                    // cần được nhân với tỷ lệ (2048 / textureWidth) và (1088 / textureHeight) để trỏ chính xác vào vùng sub-image.
+                    // Với quad toàn màn hình / logo (textureWidth <= 2048, textureHeight <= 1088):
+                    // UV nằm trong dải [0.0, 1.0] hoặc toạ độ pixel tuyệt đối (> 16.0).
+                    // Với Atlas lớn (textureWidth == 3424 && textureHeight == 3424):
+                    // M2 Engine mã hoá sprite qua các cell ảo 2048x1088, do đó u, v > 1.0 (ví dụ 1.484, 3.079)
+                    // cần lấy phần lẻ và scale theo tỉ lệ (2048 / 3424) và (1088 / 3424).
                     for (uint32_t vi = 0; vi < 4; ++vi) {
                         float u = cmd.uv[vi][0];
                         float v = cmd.uv[vi][1];
@@ -941,26 +947,21 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                             if (u > 16.0f) {
                                 // Toạ độ pixel tuyệt đối trong texture
                                 u /= static_cast<float>(cmd.textureWidth);
-                            } else if (u > 1.0f) {
-                                // Toạ độ sprite vượt quá 1.0 do scale atlas, lấy phần lẻ và scale theo atlas lớn
-                                u = u - std::floor(u);
-                                if (cmd.textureWidth > 2048) {
-                                    u = (u * 2048.0f) / static_cast<float>(cmd.textureWidth);
-                                }
+                            } else if (u > 1.0f && cmd.textureWidth > 2048) {
+                                // Chỉ áp dụng tách phần lẻ và scale khi là Texture Atlas lớn (> 2048)
+                                u = (u - std::floor(u)) * 2048.0f / static_cast<float>(cmd.textureWidth);
                             }
 
                             if (v > 16.0f) {
                                 // Toạ độ pixel tuyệt đối trong texture
                                 v /= static_cast<float>(cmd.textureHeight);
-                            } else if (v > 1.0f) {
-                                // Toạ độ sprite vượt quá 1.0 do scale atlas, lấy phần lẻ và scale theo atlas lớn
-                                v = v - std::floor(v);
-                                if (cmd.textureHeight > 1088) {
-                                    v = (v * 1088.0f) / static_cast<float>(cmd.textureHeight);
-                                }
+                            } else if (v > 1.0f && cmd.textureHeight > 1088) {
+                                // Chỉ áp dụng tách phần lẻ và scale khi là Texture Atlas lớn (> 1088)
+                                v = (v - std::floor(v)) * 1088.0f / static_cast<float>(cmd.textureHeight);
                             }
                         }
 
+                        // Giữ UV trong khoảng hợp lệ [0.0, 1.0] nếu u hoặc v âm
                         if (u < 0.0f) u = u - std::floor(u);
                         if (v < 0.0f) v = v - std::floor(v);
 
@@ -1084,12 +1085,24 @@ static void WINAPI mock_Context_PSSetShaderResources(void*, uint32_t startSlot, 
                 }
             }
         }
+        // Khi game chỉ bind Slot 0 (startSlot == 0 && numViews == 1), reset rõ ràng Slot 1 để tránh rò rỉ Alpha Texture từ draw call trước
+        if (startSlot == 0 && numViews == 1) {
+            sBoundShaderResourceViews[1] = nullptr;
+            sBoundTextureResources[1] = nullptr;
+        }
+
         if (startSlot == 0 && ppShaderResourceViews[0] != nullptr) {
             sActiveShaderResourceView = ppShaderResourceViews[0];
             auto* view0 = reinterpret_cast<const MockViewCOM*>(ppShaderResourceViews[0]);
             sActiveTextureResource = (view0->pResource != nullptr) ? view0->pResource : ppShaderResourceViews[0];
         } else if (sActiveTextureResource == nullptr && sBoundTextureResources[0] != nullptr) {
             sActiveTextureResource = sBoundTextureResources[0];
+        }
+    } else if (numViews == 0) {
+        // Unbind tất cả các slot bắt đầu từ startSlot
+        for (uint32_t s = startSlot; s < 8; ++s) {
+            sBoundShaderResourceViews[s] = nullptr;
+            sBoundTextureResources[s] = nullptr;
         }
     }
 }

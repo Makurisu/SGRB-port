@@ -328,12 +328,16 @@ sequenceDiagram
          }
          ```
        - Trong vòng lặp sprite: Tự động bind `cmd.textureHandle` vào `GL_TEXTURE0` và `cmd.alphaTextureHandle` vào `GL_TEXTURE1`.
-    3. **Chuẩn Hoá Toạ Độ UV Cho Atlas M2 Engine (`d3d11_bridge.cpp` - Milestone M14)**:
-       - M2 Engine sinh toạ độ UV sprite thô kết hợp giữa hai cơ chế:
-         - Toạ độ normalized chuẩn trong khoảng $[0.0, 1.0]$ cho các quad texture thông thường (như background, full quad logo, caution...). Cơ chế này được giữ nguyên $100\%$ không bị wrap hay scale nhầm để tránh biến $1.0 \to 0.0$ làm sụp đổ quad thành 1 điểm.
-         - Toạ độ sprite vượt quá $1.0$ ($u > 1.0$ hoặc $v > 1.0$) do cơ chế tiling / atlas modulo của M2 Engine: Hệ thống lấy phần thập phân lẻ và ánh xạ tỷ lệ chính xác theo Texture Atlas lớn thực tế ($3424 \times 3424$):
-           $$u_{\text{final}} = \frac{(u - \lfloor u \rfloor) \times 2048.0}{\text{textureWidth}}, \quad v_{\text{final}} = \frac{(v - \lfloor v \rfloor) \times 1088.0}{\text{textureHeight}}$$
-       - Toạ độ pixel tuyệt đối ($> 16.0$) tiếp tục được chia trực tiếp cho kích thước texture tương ứng.
+    3. **Chuẩn Hoá Toạ Độ UV Cho Atlas M2 Engine & Cơ Chế Reset Slot 1 Alpha (`d3d11_bridge.cpp` - Milestone M14 & M16)**:
+       - **Chống Rò Rỉ Alpha Mask Binding**:
+         - Trong `PSSetShaderResources`: Khi game chỉ truyền `startSlot == 0 && numViews == 1`, hệ thống bắt buộc reset rõ ràng `sBoundTextureResources[1] = nullptr` và `sBoundShaderResourceViews[1] = nullptr`. Điều này ngăn chặn triệt để tình trạng các draw call đơn lẻ sau đó bị lấy nhầm texture alpha rác của frame trước, gây mất hình hoặc biến thành mảng trắng.
+         - Trong `DrawIndexed`: Chỉ gán `cmd.alphaTextureHandle` khi texture ở Slot 1 có định dạng chuẩn `DXGI_FORMAT_A8_UNORM` (Format 65).
+       - **Chuẩn Hoá Toạ Độ UV Phân Biệt Giữa Texture Thông Thường & Atlas**:
+         - M2 Engine sinh toạ độ UV sprite thô kết hợp giữa hai cơ chế:
+           - **Quad thông thường / Logo / Background** ($\text{width} \le 2048, \text{height} \le 1088$): Toạ độ UV nằm trong khoảng $[0.0, 1.0]$ được bảo toàn nguyên vẹn $100\%$, tuyệt đối không bị modulo hay scale nhầm để tránh biến dạng hình ảnh hoặc làm sụp đổ quad thành 1 điểm.
+           - **Sprite Atlas Lớn** ($\text{width} > 2048$ hoặc $\text{height} > 1088$, tiêu biểu là Atlas $3424 \times 3424$): Toạ độ sprite vượt quá $1.0$ ($u > 1.0$ hoặc $v > 1.0$) do cơ chế cell modulo của M2 Engine: Hệ thống bóc tách phần thập phân lẻ và ánh xạ tỷ lệ chính xác:
+             $$u_{\text{final}} = \frac{(u - \lfloor u \rfloor) \times 2048.0}{\text{textureWidth}}, \quad v_{\text{final}} = \frac{(v - \lfloor v \rfloor) \times 1088.0}{\text{textureHeight}}$$
+         - Toạ độ pixel tuyệt đối ($> 16.0$) tiếp tục được chia trực tiếp cho kích thước texture tương ứng.
   - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite và mỗi lần lấy mẫu fragment trên GPU.
 
 - **Stub WinMM Audio Driver & Chuyển Đổi Định Dạng `DXGI_FORMAT_B8G8R8A8_UNORM` (`win32_bridge.cpp`, `resource_registry.cpp` - Milestone M15)**:
