@@ -335,17 +335,20 @@ sequenceDiagram
        - **Chuẩn Hoá Toạ Độ UV Phân Biệt Giữa Texture Thông Thường & Atlas**:
          - M2 Engine sinh toạ độ UV sprite thô kết hợp giữa hai cơ chế:
            - **Quad thông thường / Logo / Background** ($\text{width} \le 2048, \text{height} \le 1088$): Toạ độ UV nằm trong khoảng $[0.0, 1.0]$ được bảo toàn nguyên vẹn $100\%$, tuyệt đối không bị modulo hay scale nhầm để tránh biến dạng hình ảnh hoặc làm sụp đổ quad thành 1 điểm.
-           - **Sprite Atlas Lớn** ($\text{width} > 2048$ hoặc $\text{height} > 1088$, tiêu biểu là Atlas $3424 \times 3424$): Toạ độ sprite vượt quá $1.0$ ($u > 1.0$ hoặc $v > 1.0$) do cơ chế cell modulo của M2 Engine: Hệ thống bóc tách phần thập phân lẻ và ánh xạ tỷ lệ chính xác:
-             $$u_{\text{final}} = \frac{(u - \lfloor u \rfloor) \times 2048.0}{\text{textureWidth}}, \quad v_{\text{final}} = \frac{(v - \lfloor v \rfloor) \times 1088.0}{\text{textureHeight}}$$
+           - **Sprite Atlas Lớn** ($\text{width} == 3424, \text{height} == 3424$ - Milestone M17): Toạ độ các sprite trong atlas được định nghĩa trên không gian cell chuẩn $2048 \times 1088$.
+             - Nếu không phải full-screen quad ($\text{quadWidth} < 1.9\text{f} \lor \text{quadHeight} < 1.9\text{f}$): TẤT CẢ các sprite (kể cả toạ độ $u, v < 1.0$ như các nút Menu $u \in [0.19, 0.22]$) đều được scale chính xác từ không gian cell $2048 \times 1088$ sang atlas $3424 \times 3424$:
+               $$u_{\text{final}} = \frac{u_{\text{frac}} \times 2048.0}{\text{textureWidth}}, \quad v_{\text{final}} = \frac{v_{\text{frac}} \times 1088.0}{\text{textureHeight}}$$
+             - Nếu là full-screen quad ($\text{quadWidth} \ge 1.9\text{f} \land \text{quadHeight} \ge 1.9\text{f}$) với $u, v \in [0.0, 1.0]$: Bảo toàn nguyên vẹn $100\%$ làm quad nền toàn màn hình.
          - Toạ độ pixel tuyệt đối ($> 16.0$) tiếp tục được chia trực tiếp cho kích thước texture tương ứng.
   - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite và mỗi lần lấy mẫu fragment trên GPU.
 
-- **Stub WinMM Audio Driver & Chuyển Đổi Định Dạng `DXGI_FORMAT_B8G8R8A8_UNORM` (`win32_bridge.cpp`, `resource_registry.cpp` - Milestone M15)**:
+- **Stub WinMM Audio Driver, Chặn libjack.dll & Chuyển Đổi Định Dạng `DXGI_FORMAT_B8G8R8A8_UNORM` (`win32_bridge.cpp`, `resource_registry.cpp` - Milestone M15 & M17)**:
   - **Phân Tích Nguyên Nhân Crash Khi Tap Màn Hình qua IDA Pro MCP**:
     - Khi người dùng chạm màn hình để bỏ qua logo hoặc phát âm thanh tương tác, game gọi vào driver âm thanh phụ thuộc `winmm.dll` (`sub_1400CA1D0`).
     - Engine truy vấn con trỏ hàm động qua `GetProcAddress` cho các API `waveOut*` và `waveIn*` (`waveOutGetNumDevs`, `waveOutGetDevCapsA`, `waveOutOpen`, `waveInOpen`...).
     - Trước đây `GetProcAddress` trả về `nullptr`, dẫn đến lệnh `call r9` / `call r10` gọi trúng địa chỉ null `0x0000000000000000`, kích hoạt tín hiệu `SIGSEGV (SEGV_MAPERR)`.
     - **Giải pháp**: Triển khai đầy đủ stub cho toàn bộ nhóm API WinMM `waveOut*` và `waveIn*`, trả về `MMSYSERR_NOERROR` (0) cùng handle thiết bị giả lập hợp lệ (`0x8001`, `0x8002`).
+    - **Chặn Thư Viện JACK Audio (`libjack.dll` - Milestone M17)**: Thư viện miniaudio tìm kiếm driver JACK (`sub_1400BD5B0`). Nếu trả về fake module handle, engine sẽ gọi `GetProcAddress("jack_client_open")` trả về null và crash khi gọi lệnh `call rax`. Bằng cách chặn chuỗi `"jack"` tại `stub_LoadLibraryA` và `stub_LoadLibraryExW` trả về `nullptr`, miniaudio tự động fallback an toàn về WaveOut.
   - **Sửa Lỗi Kênh Màu Định Dạng `DXGI_FORMAT_B8G8R8A8_UNORM` (Format 87)**:
     - Các texture hệ thống và logo (kích thước $1024 \times 1024$) được nạp với thứ tự kênh BGRA.
     - Tại `resource_registry.cpp`, bổ sung bộ chuyển đổi đảo kênh Red và Blue $(B, G, R, A) \to (R, G, B, A)$ ở cả hai nhánh `registerTexture` và `updateTexture`.

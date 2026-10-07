@@ -1811,8 +1811,29 @@ void* WINAPI stub_GetModuleHandleExW(uint32_t, const char16_t* lpModuleName, voi
     return hMod;
 }
 
-void* WINAPI stub_LoadLibraryA(const char*) { return DUMMY_MODULE; }
-void* WINAPI stub_LoadLibraryExW(const char16_t*, void*, uint32_t) { return DUMMY_MODULE; }
+void* WINAPI stub_LoadLibraryA(const char* lpLibFileName) {
+    if (lpLibFileName) {
+        LOGI("LoadLibraryA: %s", lpLibFileName);
+        // Nếu game cố nạp libjack hoặc thư viện âm thanh ngoài, trả về nullptr để miniaudio fallback về driver audio nội bộ/WaveOut
+        if (strstr(lpLibFileName, "jack") != nullptr || strstr(lpLibFileName, "JACK") != nullptr) {
+            LOGW("LoadLibraryA: Từ chối '%s' -> trả về nullptr để game fallback", lpLibFileName);
+            return nullptr;
+        }
+    }
+    return DUMMY_MODULE;
+}
+
+void* WINAPI stub_LoadLibraryExW(const char16_t* lpLibFileName, void*, uint32_t) {
+    if (lpLibFileName) {
+        std::string libName = normalizeWinPathW(lpLibFileName);
+        LOGI("LoadLibraryExW: %s", libName.c_str());
+        if (libName.find("jack") != std::string::npos || libName.find("JACK") != std::string::npos) {
+            LOGW("LoadLibraryExW: Từ chối '%s' -> trả về nullptr để game fallback", libName.c_str());
+            return nullptr;
+        }
+    }
+    return DUMMY_MODULE;
+}
 int32_t WINAPI stub_FreeLibrary(void*) { return 1; }
 
 // SHELL32 API Implementation

@@ -934,11 +934,15 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                     }
 
                     // Chuẩn hoá toạ độ UV cho Atlas của M2 Engine:
-                    // Với quad toàn màn hình / logo (textureWidth <= 2048, textureHeight <= 1088):
-                    // UV nằm trong dải [0.0, 1.0] hoặc toạ độ pixel tuyệt đối (> 16.0).
-                    // Với Atlas lớn (textureWidth == 3424 && textureHeight == 3424):
-                    // M2 Engine mã hoá sprite qua các cell ảo 2048x1088, do đó u, v > 1.0 (ví dụ 1.484, 3.079)
-                    // cần lấy phần lẻ và scale theo tỉ lệ (2048 / 3424) và (1088 / 3424).
+                    // 1. Với quad toàn màn hình / logo (textureWidth <= 2048, textureHeight <= 1088):
+                    //    UV nằm trong dải [0.0, 1.0] hoặc toạ độ pixel tuyệt đối (> 16.0).
+                    // 2. Với Atlas lớn (textureWidth == 3424 && textureHeight == 3424):
+                    //    M2 Engine ánh xạ sprite từ không gian cell ảo 2048x1088.
+                    //    Nếu không phải quad toàn màn hình (quadWidth < 1.9f || quadHeight < 1.9f),
+                    //    toạ độ UV chuẩn hoá cell cần được scale theo tỉ lệ cell / atlas:
+                    //    u = u_frac * 2048 / 3424, v = v_frac * 1088 / 3424.
+                    //    Với full-screen quad (ví dụ background toàn màn hình [0, 1]), giữ nguyên tỉ lệ 1.0.
+                    bool isFullscreenQuad = (quadWidth >= 1.9f && quadHeight >= 1.9f);
                     for (uint32_t vi = 0; vi < 4; ++vi) {
                         float u = cmd.uv[vi][0];
                         float v = cmd.uv[vi][1];
@@ -947,16 +951,24 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                             if (u > 16.0f) {
                                 // Toạ độ pixel tuyệt đối trong texture
                                 u /= static_cast<float>(cmd.textureWidth);
+                            } else if (cmd.textureWidth == 3424 && cmd.textureHeight == 3424) {
+                                if (!isFullscreenQuad || u > 1.0f) {
+                                    float uFrac = (u < 0.0f) ? (u - std::floor(u)) : std::fmod(u, 1.0f);
+                                    u = uFrac * 2048.0f / static_cast<float>(cmd.textureWidth);
+                                }
                             } else if (u > 1.0f && cmd.textureWidth > 2048) {
-                                // Chỉ áp dụng tách phần lẻ và scale khi là Texture Atlas lớn (> 2048)
                                 u = (u - std::floor(u)) * 2048.0f / static_cast<float>(cmd.textureWidth);
                             }
 
                             if (v > 16.0f) {
                                 // Toạ độ pixel tuyệt đối trong texture
                                 v /= static_cast<float>(cmd.textureHeight);
+                            } else if (cmd.textureWidth == 3424 && cmd.textureHeight == 3424) {
+                                if (!isFullscreenQuad || v > 1.0f) {
+                                    float vFrac = (v < 0.0f) ? (v - std::floor(v)) : std::fmod(v, 1.0f);
+                                    v = vFrac * 1088.0f / static_cast<float>(cmd.textureHeight);
+                                }
                             } else if (v > 1.0f && cmd.textureHeight > 1088) {
-                                // Chỉ áp dụng tách phần lẻ và scale khi là Texture Atlas lớn (> 1088)
                                 v = (v - std::floor(v)) * 1088.0f / static_cast<float>(cmd.textureHeight);
                             }
                         }

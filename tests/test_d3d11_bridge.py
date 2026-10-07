@@ -711,43 +711,52 @@ class TestD3D11BridgeLogic(unittest.TestCase):
 
     def test_uv_virtual_atlas_scaling_formula(self):
         # Kiểm tra công thức chuẩn hoá UV ảo của M2 Engine theo atlas 3424x3424 dựa trên kích thước gốc 2048x1088
-        def scale_uv(u, v, tex_w, tex_h):
+        def scale_uv(u, v, tex_w, tex_h, quad_w=1.0, quad_h=1.0):
+            import math
+            is_fullscreen = (quad_w >= 1.9 and quad_h >= 1.9)
             if tex_w > 0 and tex_h > 0:
                 if u > 16.0:
                     u /= float(tex_w)
-                elif u > 1.0:
-                    import math
-                    u = u - math.floor(u)
-                    if tex_w > 2048:
-                        u = (u * 2048.0) / float(tex_w)
+                elif tex_w == 3424 and tex_h == 3424:
+                    if not is_fullscreen or u > 1.0:
+                        u_frac = (u - math.floor(u)) if u < 0.0 else (u % 1.0)
+                        u = (u_frac * 2048.0) / float(tex_w)
+                elif u > 1.0 and tex_w > 2048:
+                    u = (u - math.floor(u)) * 2048.0 / float(tex_w)
 
                 if v > 16.0:
                     v /= float(tex_h)
-                elif v > 1.0:
-                    import math
-                    v = v - math.floor(v)
-                    if tex_h > 1088:
-                        v = (v * 1088.0) / float(tex_h)
+                elif tex_w == 3424 and tex_h == 3424:
+                    if not is_fullscreen or v > 1.0:
+                        v_frac = (v - math.floor(v)) if v < 0.0 else (v % 1.0)
+                        v = (v_frac * 1088.0) / float(tex_h)
+                elif v > 1.0 and tex_h > 1088:
+                    v = (v - math.floor(v)) * 1088.0 / float(tex_h)
             return u, v
 
         # Test UV chuẩn hoá trong Atlas 3424x3424:
-        # Full-screen quad hoặc sprite chuẩn [0, 1] không bị thu nhỏ hoặc collapse về 0
-        u_full, v_full = scale_uv(1.0, 1.0, 3424, 3424)
+        # 1. Full-screen quad [0, 1] không bị thu nhỏ hoặc collapse về 0
+        u_full, v_full = scale_uv(1.0, 1.0, 3424, 3424, quad_w=2.0, quad_h=2.0)
         self.assertEqual(u_full, 1.0)
         self.assertEqual(v_full, 1.0)
 
-        # Với sprite atlas có toạ độ u = 1.409, v = 1.997 (chữ Caution)
-        u_scaled2, v_scaled2 = scale_uv(1.409, 1.997, 3424, 3424)
+        # 2. Với sprite Title Screen có toạ độ u = 0.19, v = 0.28 (nút chữ / menu)
+        u_sprite, v_sprite = scale_uv(0.19, 0.28, 3424, 3424, quad_w=0.05, quad_h=0.08)
+        self.assertAlmostEqual(u_sprite, (0.19 * 2048.0) / 3424.0, places=4)
+        self.assertAlmostEqual(v_sprite, (0.28 * 1088.0) / 3424.0, places=4)
+
+        # 3. Với sprite atlas có toạ độ u = 1.409, v = 1.997 (chữ Caution)
+        u_scaled2, v_scaled2 = scale_uv(1.409, 1.997, 3424, 3424, quad_w=1.0, quad_h=1.0)
         self.assertAlmostEqual(u_scaled2, (0.409 * 2048.0) / 3424.0, places=4)
         self.assertAlmostEqual(v_scaled2, (0.997 * 1088.0) / 3424.0, places=4)
 
-        # Với texture thông thường 2048x1088, giữ nguyên tỉ lệ normalized
-        u_orig, v_orig = scale_uv(1.25, 1.5, 2048, 1088)
+        # 4. Với texture thông thường 2048x1088, sprite trong khoảng [0, 1] giữ nguyên
+        u_orig, v_orig = scale_uv(0.25, 0.5, 2048, 1088, quad_w=0.5, quad_h=0.5)
         self.assertAlmostEqual(u_orig, 0.25, places=4)
         self.assertAlmostEqual(v_orig, 0.5, places=4)
 
-        # Với sprite toạ độ pixel tuyệt đối > 16.0 (ví dụ: 1712, 1712)
-        u_pixel, v_pixel = scale_uv(1712.0, 1712.0, 3424, 3424)
+        # 5. Với sprite toạ độ pixel tuyệt đối > 16.0 (ví dụ: 1712, 1712)
+        u_pixel, v_pixel = scale_uv(1712.0, 1712.0, 3424, 3424, quad_w=0.5, quad_h=0.5)
         self.assertAlmostEqual(u_pixel, 0.5, places=4)
         self.assertAlmostEqual(v_pixel, 0.5, places=4)
 
