@@ -335,10 +335,12 @@ sequenceDiagram
        - **Chuẩn Hoá Toạ Độ UV Phân Biệt Giữa Texture Thông Thường & Atlas**:
          - M2 Engine sinh toạ độ UV sprite thô kết hợp giữa hai cơ chế:
            - **Quad thông thường / Logo / Background** ($\text{width} \le 2048, \text{height} \le 1088$): Toạ độ UV nằm trong khoảng $[0.0, 1.0]$ được bảo toàn nguyên vẹn $100\%$, tuyệt đối không bị modulo hay scale nhầm để tránh biến dạng hình ảnh hoặc làm sụp đổ quad thành 1 điểm.
-           - **Sprite Atlas Lớn** ($\text{width} == 3424, \text{height} == 3424$ - Milestone M17): Toạ độ các sprite trong atlas được định nghĩa trên không gian cell chuẩn $2048 \times 1088$.
-             - Nếu không phải full-screen quad ($\text{quadWidth} < 1.9\text{f} \lor \text{quadHeight} < 1.9\text{f}$): TẤT CẢ các sprite (kể cả toạ độ $u, v < 1.0$ như các nút Menu $u \in [0.19, 0.22]$) đều được scale chính xác từ không gian cell $2048 \times 1088$ sang atlas $3424 \times 3424$:
-               $$u_{\text{final}} = \frac{u_{\text{frac}} \times 2048.0}{\text{textureWidth}}, \quad v_{\text{final}} = \frac{v_{\text{frac}} \times 1088.0}{\text{textureHeight}}$$
-             - Nếu là full-screen quad ($\text{quadWidth} \ge 1.9\text{f} \land \text{quadHeight} \ge 1.9\text{f}$) với $u, v \in [0.0, 1.0]$: Bảo toàn nguyên vẹn $100\%$ làm quad nền toàn màn hình.
+           - **Sprite Atlas & Toạ Độ Lặp (`D3D11_TEXTURE_ADDRESS_WRAP`)** (Milestone M18):
+             - Toạ độ UV sprite được engine định nghĩa trực tiếp trên kích thước thật của Texture Atlas ($3424 \times 3424$).
+             - Các giá trị toạ độ $u, v > 1.0$ (ví dụ: $1.409, 1.997$) hoặc âm bản chất là chế độ lặp Texture Address Wrapping tiêu chuẩn của DirectX (`D3D11_TEXTURE_ADDRESS_WRAP`).
+             - Hệ thống chuẩn hoá về dải $[0.0, 1.0)$ bằng phép toán:
+               $$u_{\text{norm}} = u - \lfloor u \rfloor, \quad v_{\text{norm}} = v - \lfloor v \rfloor$$
+             - Ánh xạ trực tiếp và chính xác vào toạ độ icon/sprite trên texture atlas $3424 \times 3424$, loại bỏ triệt để việc scale cell ảo $2048 \times 1088$.
          - Toạ độ pixel tuyệt đối ($> 16.0$) tiếp tục được chia trực tiếp cho kích thước texture tương ứng.
   - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite và mỗi lần lấy mẫu fragment trên GPU.
 

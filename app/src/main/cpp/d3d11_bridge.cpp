@@ -947,47 +947,30 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                         }
                     }
 
-                    // Chuẩn hoá toạ độ UV cho Atlas của M2 Engine:
-                    // 1. Với quad toàn màn hình / logo (textureWidth <= 2048, textureHeight <= 1088):
-                    //    UV nằm trong dải [0.0, 1.0] hoặc toạ độ pixel tuyệt đối (> 16.0).
-                    // 2. Với Atlas lớn (textureWidth == 3424 && textureHeight == 3424):
-                    //    M2 Engine ánh xạ sprite từ không gian cell ảo 2048x1088.
-                    //    Nếu không phải quad toàn màn hình (quadWidth < 1.9f || quadHeight < 1.9f),
-                    //    toạ độ UV chuẩn hoá cell cần được scale theo tỉ lệ cell / atlas:
-                    //    u = u_frac * 2048 / 3424, v = v_frac * 1088 / 3424.
-                    //    Với full-screen quad (ví dụ background toàn màn hình [0, 1]), giữ nguyên tỉ lệ 1.0.
-                    bool isFullscreenQuad = (quadWidth >= 1.9f && quadHeight >= 1.9f);
+                    // Chuẩn hoá toạ độ UV cho Atlas và Texture:
+                    // 1. Toạ độ pixel tuyệt đối (> 16.0f): chia trực tiếp cho kích thước texture tương ứng.
+                    // 2. Toạ độ UV chuẩn hoá (D3D11_TEXTURE_ADDRESS_WRAP):
+                    //    Game engine sinh toạ độ u, v có thể lớn hơn 1.0 (ví dụ 1.409, 3.138) hoặc âm để tile/wrap.
+                    //    Chuẩn hoá về dải [0.0, 1.0) bằng phép lấy phần thập phân u - floor(u), v - floor(v).
                     for (uint32_t vi = 0; vi < 4; ++vi) {
                         float u = cmd.uv[vi][0];
                         float v = cmd.uv[vi][1];
 
                         if (cmd.textureWidth > 0 && cmd.textureHeight > 0) {
                             if (u > 16.0f) {
-                                // Toạ độ pixel tuyệt đối trong texture
                                 u /= static_cast<float>(cmd.textureWidth);
-                            } else if (cmd.textureWidth == 3424 && cmd.textureHeight == 3424) {
-                                if (!isFullscreenQuad || u > 1.0f) {
-                                    float uFrac = (u < 0.0f) ? (u - std::floor(u)) : std::fmod(u, 1.0f);
-                                    u = uFrac * 2048.0f / static_cast<float>(cmd.textureWidth);
-                                }
-                            } else if (u > 1.0f && cmd.textureWidth > 2048) {
-                                u = (u - std::floor(u)) * 2048.0f / static_cast<float>(cmd.textureWidth);
+                            } else if (u > 1.0f || u < 0.0f) {
+                                u = u - std::floor(u);
                             }
 
                             if (v > 16.0f) {
-                                // Toạ độ pixel tuyệt đối trong texture
                                 v /= static_cast<float>(cmd.textureHeight);
-                            } else if (cmd.textureWidth == 3424 && cmd.textureHeight == 3424) {
-                                if (!isFullscreenQuad || v > 1.0f) {
-                                    float vFrac = (v < 0.0f) ? (v - std::floor(v)) : std::fmod(v, 1.0f);
-                                    v = vFrac * 1088.0f / static_cast<float>(cmd.textureHeight);
-                                }
-                            } else if (v > 1.0f && cmd.textureHeight > 1088) {
-                                v = (v - std::floor(v)) * 1088.0f / static_cast<float>(cmd.textureHeight);
+                            } else if (v > 1.0f || v < 0.0f) {
+                                v = v - std::floor(v);
                             }
                         }
 
-                        // Giữ UV trong khoảng hợp lệ [0.0, 1.0] nếu u hoặc v âm
+                        // Giữ UV an toàn trong dải [0.0, 1.0]
                         if (u < 0.0f) u = u - std::floor(u);
                         if (v < 0.0f) v = v - std::floor(v);
 
@@ -998,7 +981,7 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                     std::lock_guard<std::mutex> lock(sSpriteMutex);
                     if (sActiveDrawingSprites.size() < 1024) {
                         static uint32_t sAtlasQuadLog = 0;
-                        if (cmd.textureWidth == 3424 && !isFullscreenQuad && ++sAtlasQuadLog <= 15) {
+                        if (cmd.textureWidth == 3424 && ++sAtlasQuadLog <= 15) {
                             LOGI("AtlasQuad #%u: WxH=%.1fx%.1f | V0=[%.1f, %.1f] UV0=[%.4f, %.4f] UV1=[%.4f, %.4f] | colorTex=%p, alphaTex=%p",
                                  sAtlasQuadLog, quadWidth, quadHeight,
                                  cmd.pos[0][0], cmd.pos[0][1],
