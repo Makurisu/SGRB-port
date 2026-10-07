@@ -13,6 +13,7 @@ import android.graphics.PixelFormat;
 import android.widget.Toast;
 
 import java.io.File;
+import android.os.Environment;
 
 public class MainActivity extends Activity implements SurfaceHolder.Callback, TouchInputHandler.TouchListener {
 
