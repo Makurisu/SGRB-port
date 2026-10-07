@@ -329,9 +329,11 @@ sequenceDiagram
          ```
        - Trong vòng lặp sprite: Tự động bind `cmd.textureHandle` vào `GL_TEXTURE0` và `cmd.alphaTextureHandle` vào `GL_TEXTURE1`.
     3. **Chuẩn Hoá Toạ Độ UV Cho Atlas M2 Engine (`d3d11_bridge.cpp` - Milestone M14)**:
-       - M2 Engine sử dụng cơ chế toạ độ chuẩn hoá theo chu kỳ (wrapped normalized coordinates): $U_{\text{norm}} = \text{frac}(U) = U - \lfloor U \rfloor$, $V_{\text{norm}} = \text{frac}(V) = V - \lfloor V \rfloor$.
-       - Toạ độ đỉnh của chữ và nút menu (như $U = 1.484, V = 3.079$) trỏ chính xác vào vùng ký tự tại $U = 0.484, V = 0.079$ của Texture Atlas $3424 \times 3424$.
-       - Toạ độ pixel tuyệt đối ($> 16.0$) được chia trực tiếp cho kích thước texture, và toàn bộ dải $u > 1.0, v > 1.0$ được lấy phần thập phân wrap chuẩn xác.
+       - M2 Engine sinh toạ độ UV sprite thô dựa trên kích thước khối texture cơ sở $2048 \times 1088$ kết hợp wrapped modulo: $u_{\text{norm}} = u - \lfloor u \rfloor$, $v_{\text{norm}} = v - \lfloor v \rfloor$.
+       - Khi engine liên kết vào Texture Atlas lớn thực tế ($3424 \times 3424$), toạ độ cần được ánh xạ tỷ lệ chính xác:
+         $$u_{\text{final}} = \frac{u_{\text{norm}} \times 2048.0}{\text{textureWidth}}, \quad v_{\text{final}} = \frac{v_{\text{norm}} \times 1088.0}{\text{textureHeight}}$$
+       - Cơ chế này sửa triệt để hiện tượng sprite (font chữ, logo nhà phát triển MAGES/Chiyomaru/MTwo, menu buttons, dialog Caution) bị phóng đại $1.67\times$ theo chiều ngang và $3.15\times$ theo chiều dọc gây xén cụt và vỡ hình.
+       - Toạ độ pixel tuyệt đối ($> 16.0$) tiếp tục được chia trực tiếp cho kích thước texture tương ứng.
   - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite và mỗi lần lấy mẫu fragment trên GPU.
 
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)

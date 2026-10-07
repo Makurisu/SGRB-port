@@ -710,29 +710,44 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertAlmostEqual(v3, 0.5)
 
     def test_uv_virtual_atlas_scaling_formula(self):
-        # Kiểm tra công thức chuẩn hoá UV ảo của M2 Engine theo atlas 3424x3424
+        # Kiểm tra công thức chuẩn hoá UV ảo của M2 Engine theo atlas 3424x3424 dựa trên kích thước gốc 2048x1088
         def scale_uv(u, v, tex_w, tex_h):
             if tex_w > 0 and tex_h > 0:
                 if u > 16.0:
                     u /= float(tex_w)
-                elif u > 1.0:
-                    u = u - int(u)
+                else:
+                    import math
+                    u = u - math.floor(u)
+                    if tex_w > 2048:
+                        u = (u * 2048.0) / float(tex_w)
 
                 if v > 16.0:
                     v /= float(tex_h)
-                elif v > 1.0:
-                    v = v - int(v)
+                else:
+                    import math
+                    v = v - math.floor(v)
+                    if tex_h > 1088:
+                        v = (v * 1088.0) / float(tex_h)
             return u, v
 
-        # Test UV chuẩn hoá trong Atlas 3424x3424
-        u_scaled, v_scaled = scale_uv(1.0, 1.0, 3424, 3424)
-        self.assertEqual(u_scaled, 1.0)
-        self.assertEqual(v_scaled, 1.0)
+        # Test UV chuẩn hoá trong Atlas 3424x3424:
+        # Với nút bấm menu width=348, height=25: deltaU = 348 / 2048 = 0.1699, deltaV = 25 / 1088 = 0.0229
+        # Khi map lên atlas 3424x3424: deltaU_atlas = deltaU * (2048 / 3424) = 348 / 3424 = 0.1016
+        u_raw_btn = 0.1699
+        v_raw_btn = 0.0229
+        u_scaled_btn, v_scaled_btn = scale_uv(u_raw_btn, v_raw_btn, 3424, 3424)
+        self.assertAlmostEqual(u_scaled_btn, 348.0 / 3424.0, places=3)
+        self.assertAlmostEqual(v_scaled_btn, 25.0 / 3424.0, places=3)
 
-        # Với sprite atlas có toạ độ u = 1.484, v = 3.079
-        u_scaled2, v_scaled2 = scale_uv(1.484, 3.079, 3424, 3424)
-        self.assertAlmostEqual(u_scaled2, 0.484, places=4)
-        self.assertAlmostEqual(v_scaled2, 0.079, places=4)
+        # Với sprite atlas có toạ độ u = 1.409, v = 1.997 (chữ Caution)
+        u_scaled2, v_scaled2 = scale_uv(1.409, 1.997, 3424, 3424)
+        self.assertAlmostEqual(u_scaled2, (0.409 * 2048.0) / 3424.0, places=4)
+        self.assertAlmostEqual(v_scaled2, (0.997 * 1088.0) / 3424.0, places=4)
+
+        # Với texture thông thường 2048x1088, giữ nguyên tỉ lệ normalized
+        u_orig, v_orig = scale_uv(1.25, 1.5, 2048, 1088)
+        self.assertAlmostEqual(u_orig, 0.25, places=4)
+        self.assertAlmostEqual(v_orig, 0.5, places=4)
 
         # Với sprite toạ độ pixel tuyệt đối > 16.0 (ví dụ: 1712, 1712)
         u_pixel, v_pixel = scale_uv(1712.0, 1712.0, 3424, 3424)

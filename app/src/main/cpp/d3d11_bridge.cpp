@@ -930,8 +930,9 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                     }
 
                     // Chuẩn hoá toạ độ UV cho Atlas của M2 Engine:
-                    // M2 Engine mã hoá toạ độ UV sprite dưới dạng toạ độ chuẩn hoá theo chu kỳ (wrapped normalized coordinates: frac(U), frac(V)).
-                    // Khi vẽ từ texture atlas (ví dụ: 3424x3424), toạ độ frac(U) và frac(V) chỉ định chính xác vị trí ô texture.
+                    // M2 Engine mã hoá toạ độ UV sprite dựa trên không gian texture gốc 2048x1088.
+                    // Khi ghép vào texture atlas kích thước lớn (như 3424x3424), toạ độ gốc (sau khi wrap phần thập phân)
+                    // cần được nhân với tỷ lệ (2048 / textureWidth) và (1088 / textureHeight) để trỏ chính xác vào vùng sub-image.
                     for (uint32_t vi = 0; vi < 4; ++vi) {
                         float u = cmd.uv[vi][0];
                         float v = cmd.uv[vi][1];
@@ -940,17 +941,23 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                             if (u > 16.0f) {
                                 // Toạ độ pixel tuyệt đối trong texture
                                 u /= static_cast<float>(cmd.textureWidth);
-                            } else if (u > 1.0f) {
-                                // M2 Engine dùng wrapped UV: U = frac(U)
+                            } else {
+                                // Lấy phần thập phân (frac) của toạ độ gốc
                                 u = u - std::floor(u);
+                                if (cmd.textureWidth > 2048) {
+                                    u = (u * 2048.0f) / static_cast<float>(cmd.textureWidth);
+                                }
                             }
 
                             if (v > 16.0f) {
                                 // Toạ độ pixel tuyệt đối trong texture
                                 v /= static_cast<float>(cmd.textureHeight);
-                            } else if (v > 1.0f) {
-                                // M2 Engine dùng wrapped UV: V = frac(V)
+                            } else {
+                                // Lấy phần thập phân (frac) của toạ độ gốc
                                 v = v - std::floor(v);
+                                if (cmd.textureHeight > 1088) {
+                                    v = (v * 1088.0f) / static_cast<float>(cmd.textureHeight);
+                                }
                             }
                         }
 
