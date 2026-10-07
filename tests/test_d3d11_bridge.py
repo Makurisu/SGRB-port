@@ -710,36 +710,43 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertAlmostEqual(v3, 0.5)
 
     def test_uv_virtual_atlas_scaling_formula(self):
-        # Kiểm tra chuẩn hoá toạ độ UV theo chuẩn DirectX D3D11_TEXTURE_ADDRESS_WRAP
+        # Kiểm tra thuật toán chuẩn hoá UV cho M2 Engine Sprite Atlas dựa trên tỷ lệ 1920x1080:
         def scale_uv(u, v, tex_w, tex_h):
             import math
+            is_m2_atlas = (tex_w == 3424 or tex_w == 488)
             if tex_w > 0 and tex_h > 0:
                 if u > 16.0:
                     u /= float(tex_w)
+                elif is_m2_atlas:
+                    u = (u * 1920.0) / float(tex_w)
                 elif u > 1.0 or u < 0.0:
                     u = u - math.floor(u)
 
                 if v > 16.0:
                     v /= float(tex_h)
+                elif is_m2_atlas:
+                    v = (v * 1080.0) / float(tex_h)
                 elif v > 1.0 or v < 0.0:
                     v = v - math.floor(v)
+
+            u = max(0.0, min(1.0, u))
+            v = max(0.0, min(1.0, v))
             return u, v
 
-        # Test UV chuẩn hoá trong Atlas 3424x3424 và các texture:
-        # 1. Full-screen quad [1.0, 1.0] được bảo toàn nguyên vẹn
-        u_full, v_full = scale_uv(1.0, 1.0, 3424, 3424)
-        self.assertEqual(u_full, 1.0)
-        self.assertEqual(v_full, 1.0)
+        # 1. Ký tự chữ cái 01 trên Atlas 3424x3424: u = 1.4089, v = 1.9972 -> pixel (2705, 2157)
+        u_c1, v_c1 = scale_uv(1.408854, 1.997222, 3424, 3424)
+        self.assertAlmostEqual(u_c1, 2705.0 / 3424.0, places=4)
+        self.assertAlmostEqual(v_c1, 2157.0 / 3424.0, places=4)
 
-        # 2. Sprite Title Screen trong khoảng [0, 1] được giữ nguyên chuẩn xác toạ độ atlas
-        u_sprite, v_sprite = scale_uv(0.186, 0.275, 3424, 3424)
-        self.assertAlmostEqual(u_sprite, 0.186, places=4)
-        self.assertAlmostEqual(v_sprite, 0.275, places=4)
+        # 2. Nút ICO_START trên Atlas 3424x3424: u = 0.29635, v = 3.13796 -> pixel (569, 3389)
+        u_ico, v_ico = scale_uv(0.296354, 3.137963, 3424, 3424)
+        self.assertAlmostEqual(u_ico, 569.0 / 3424.0, places=4)
+        self.assertAlmostEqual(v_ico, 3389.0 / 3424.0, places=4)
 
-        # 3. Sprite wrap/repeat có u = 1.409, v = 1.997 -> wrap về [0.409, 0.997]
-        u_wrap, v_wrap = scale_uv(1.409, 1.997, 3424, 3424)
-        self.assertAlmostEqual(u_wrap, 0.409, places=3)
-        self.assertAlmostEqual(v_wrap, 0.997, places=3)
+        # 3. Ký tự 02 trên Atlas 488x1088: u = 0.2171875, v = 0.275 -> pixel (417, 297)
+        u_c2, v_c2 = scale_uv(0.2171875, 0.275, 488, 1088)
+        self.assertAlmostEqual(u_c2, 417.0 / 488.0, places=4)
+        self.assertAlmostEqual(v_c2, 297.0 / 1088.0, places=4)
 
         # 4. Với texture thông thường 2048x1088, sprite trong khoảng [0, 1] giữ nguyên
         u_orig, v_orig = scale_uv(0.25, 0.5, 2048, 1088)

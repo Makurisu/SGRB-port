@@ -335,12 +335,12 @@ sequenceDiagram
        - **Chuẩn Hoá Toạ Độ UV Phân Biệt Giữa Texture Thông Thường & Atlas**:
          - M2 Engine sinh toạ độ UV sprite thô kết hợp giữa hai cơ chế:
            - **Quad thông thường / Logo / Background** ($\text{width} \le 2048, \text{height} \le 1088$): Toạ độ UV nằm trong khoảng $[0.0, 1.0]$ được bảo toàn nguyên vẹn $100\%$, tuyệt đối không bị modulo hay scale nhầm để tránh biến dạng hình ảnh hoặc làm sụp đổ quad thành 1 điểm.
-           - **Sprite Atlas & Toạ Độ Lặp (`D3D11_TEXTURE_ADDRESS_WRAP`)** (Milestone M18):
-             - Toạ độ UV sprite được engine định nghĩa trực tiếp trên kích thước thật của Texture Atlas ($3424 \times 3424$).
-             - Các giá trị toạ độ $u, v > 1.0$ (ví dụ: $1.409, 1.997$) hoặc âm bản chất là chế độ lặp Texture Address Wrapping tiêu chuẩn của DirectX (`D3D11_TEXTURE_ADDRESS_WRAP`).
-             - Hệ thống chuẩn hoá về dải $[0.0, 1.0)$ bằng phép toán:
-               $$u_{\text{norm}} = u - \lfloor u \rfloor, \quad v_{\text{norm}} = v - \lfloor v \rfloor$$
-             - Ánh xạ trực tiếp và chính xác vào toạ độ icon/sprite trên texture atlas $3424 \times 3424$, loại bỏ triệt để việc scale cell ảo $2048 \times 1088$.
+           - **Sprite Atlas M2 Engine & Toạ Độ Màn Hình Ảo 1920x1080** (Milestone M18):
+             - M2 Engine biểu diễn toạ độ UV sprite theo tỷ lệ không gian màn hình chuẩn 1920x1080 ( = x / 1920, v = y / 1080$).
+             - Khi toạ độ pixel trên Texture Atlas ( \times 3424$ hoặc  \times 1088$) vượt quá 1920 hoặc 1080, giá trị , v$ sẽ lớn hơn 1.0 (ví dụ .409, 1.997$ tương ứng pixel  \times 2157$; .296, 3.138$ tương ứng  \times 3389$).
+             - Hệ thống chuẩn hoá về toạ độ thực của Texture Atlas bằng phép toán:
+               $$u_{\text{atlas}} = \frac{u \times 1920.0}{\text{textureWidth}}, \quad v_{\text{atlas}} = \frac{v \times 1080.0}{\text{textureHeight}}$$
+             - Ánh xạ chính xác 100% từng icon/sprite từ file định nghĩa PSB vào đúng toạ độ pixel của Texture Atlas, loại bỏ hoàn toàn việc cắt lệch ảnh.
          - Toạ độ pixel tuyệt đối ($> 16.0$) tiếp tục được chia trực tiếp cho kích thước texture tương ứng.
   - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite và mỗi lần lấy mẫu fragment trên GPU.
 

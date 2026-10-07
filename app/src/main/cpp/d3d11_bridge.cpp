@@ -949,9 +949,14 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
 
                     // Chuẩn hoá toạ độ UV cho Atlas và Texture:
                     // 1. Toạ độ pixel tuyệt đối (> 16.0f): chia trực tiếp cho kích thước texture tương ứng.
-                    // 2. Toạ độ UV chuẩn hoá (D3D11_TEXTURE_ADDRESS_WRAP):
-                    //    Game engine sinh toạ độ u, v có thể lớn hơn 1.0 (ví dụ 1.409, 3.138) hoặc âm để tile/wrap.
-                    //    Chuẩn hoá về dải [0.0, 1.0) bằng phép lấy phần thập phân u - floor(u), v - floor(v).
+                    // 2. Với Texture Atlas của M2 Engine (textureWidth == 3424 hoặc textureWidth == 488):
+                    //    M2 Engine biểu diễn toạ độ UV theo tỷ lệ màn hình chuẩn 1920x1080 (ví dụ u = x_pixel / 1920, v = y_pixel / 1080).
+                    //    Do đó, để trích xuất đúng icon trên Atlas thật:
+                    //      u_atlas = (u * 1920.0f) / textureWidth
+                    //      v_atlas = (v * 1080.0f) / textureHeight
+                    // 3. Với texture thông thường (logo 1024x1024, nền 2048x1088, caution 1928x528):
+                    //    Nếu u, v nằm trong [0.0, 1.0], giữ nguyên 100%. Nếu vượt quá dải [0, 1], chuẩn hoá modulo.
+                    bool isM2Atlas = (cmd.textureWidth == 3424 || cmd.textureWidth == 488);
                     for (uint32_t vi = 0; vi < 4; ++vi) {
                         float u = cmd.uv[vi][0];
                         float v = cmd.uv[vi][1];
@@ -959,20 +964,26 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                         if (cmd.textureWidth > 0 && cmd.textureHeight > 0) {
                             if (u > 16.0f) {
                                 u /= static_cast<float>(cmd.textureWidth);
+                            } else if (isM2Atlas) {
+                                u = (u * 1920.0f) / static_cast<float>(cmd.textureWidth);
                             } else if (u > 1.0f || u < 0.0f) {
                                 u = u - std::floor(u);
                             }
 
                             if (v > 16.0f) {
                                 v /= static_cast<float>(cmd.textureHeight);
+                            } else if (isM2Atlas) {
+                                v = (v * 1080.0f) / static_cast<float>(cmd.textureHeight);
                             } else if (v > 1.0f || v < 0.0f) {
                                 v = v - std::floor(v);
                             }
                         }
 
                         // Giữ UV an toàn trong dải [0.0, 1.0]
-                        if (u < 0.0f) u = u - std::floor(u);
-                        if (v < 0.0f) v = v - std::floor(v);
+                        if (u < 0.0f) u = 0.0f;
+                        if (u > 1.0f) u = 1.0f;
+                        if (v < 0.0f) v = 0.0f;
+                        if (v > 1.0f) v = 1.0f;
 
                         cmd.uv[vi][0] = u;
                         cmd.uv[vi][1] = v;
