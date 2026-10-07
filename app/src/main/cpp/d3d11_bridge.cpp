@@ -609,8 +609,11 @@ static int64_t WINAPI mock_Device_CreateBuffer(void*, const void* pDesc, const v
     auto* mockBuf = new SGRE_COM_Mock{ gGenericResourceVtable };
     if (pDesc) {
         const auto* desc = reinterpret_cast<const MockBufferDesc*>(pDesc);
-        LOGI("ID3D11Device::CreateBuffer: mockBuf=%p, ByteWidth=%u, Usage=%u, BindFlags=0x%x, InitialData=%p",
-             mockBuf, desc->byteWidth, desc->usage, desc->bindFlags, pInitialData);
+        static uint32_t sCreateBufferLogCount = 0;
+        if (++sCreateBufferLogCount <= 20 || sCreateBufferLogCount % 120 == 1) {
+            LOGI("ID3D11Device::CreateBuffer #%u: mockBuf=%p, ByteWidth=%u, Usage=%u, BindFlags=0x%x, InitialData=%p",
+                 sCreateBufferLogCount, mockBuf, desc->byteWidth, desc->usage, desc->bindFlags, pInitialData);
+        }
 
         sgre::BufferDesc bufDesc{};
         bufDesc.byteWidth = desc->byteWidth;
@@ -627,7 +630,7 @@ static int64_t WINAPI mock_Device_CreateBuffer(void*, const void* pDesc, const v
             if (desc->byteWidth == 80 && initMem != nullptr) {
                 const auto* f = reinterpret_cast<const float*>(initMem);
                 static uint32_t sBuf80Count = 0;
-                if (++sBuf80Count % 60 == 1) {
+                if (++sBuf80Count % 300 == 1) {
                     LOGI("CreateBuffer[80] #%u: V0=[%.2f, %.2f, %.2f, %.2f, %.2f] V1=[%.2f, %.2f, %.2f, %.2f, %.2f] V2=[%.2f, %.2f, %.2f, %.2f, %.2f] V3=[%.2f, %.2f, %.2f, %.2f, %.2f]",
                          sBuf80Count,
                          f[0], f[1], f[2], f[3], f[4],
@@ -681,7 +684,18 @@ struct MockViewCOM : public SGRE_COM_Mock {
     void* pResource;
 };
 
-static int64_t WINAPI mock_Device_CreateShaderResourceView(void*, void* pResource, const void*, void** ppView) {
+static int64_t WINAPI mock_Device_CreateShaderResourceView(void*, void* pResource, const void* pDesc, void** ppView) {
+    static uint32_t sSrvLogCount = 0;
+    if (++sSrvLogCount <= 30 || sSrvLogCount % 60 == 1) {
+        sgre::TextureDesc tDesc{};
+        if (sRegistry.getTextureDesc(pResource, tDesc)) {
+            LOGI("CreateShaderResourceView #%u: Resource=%p (Texture %ux%u, Format=%u)",
+                 sSrvLogCount, pResource, tDesc.width, tDesc.height, tDesc.format);
+        } else {
+            LOGI("CreateShaderResourceView #%u: Resource=%p (non-texture / buffer)",
+                 sSrvLogCount, pResource);
+        }
+    }
     if (ppView) {
         auto* view = new MockViewCOM();
         view->vtable = gGenericResourceVtable;
@@ -983,6 +997,15 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
 
                     std::lock_guard<std::mutex> lock(sSpriteMutex);
                     if (sActiveDrawingSprites.size() < 1024) {
+                        static uint32_t sAtlasQuadLog = 0;
+                        if (cmd.textureWidth == 3424 && !isFullscreenQuad && ++sAtlasQuadLog <= 15) {
+                            LOGI("AtlasQuad #%u: WxH=%.1fx%.1f | V0=[%.1f, %.1f] UV0=[%.4f, %.4f] UV1=[%.4f, %.4f] | colorTex=%p, alphaTex=%p",
+                                 sAtlasQuadLog, quadWidth, quadHeight,
+                                 cmd.pos[0][0], cmd.pos[0][1],
+                                 cmd.uv[0][0], cmd.uv[0][1],
+                                 cmd.uv[1][0], cmd.uv[1][1],
+                                 cmd.textureHandle, cmd.alphaTextureHandle);
+                        }
                         sActiveDrawingSprites.push_back(cmd);
                         extractedQuads++;
                     }
@@ -1110,6 +1133,16 @@ static void WINAPI mock_Context_PSSetShaderResources(void*, uint32_t startSlot, 
         } else if (sActiveTextureResource == nullptr && sBoundTextureResources[0] != nullptr) {
             sActiveTextureResource = sBoundTextureResources[0];
         }
+
+        static uint32_t sPsSrvLog = 0;
+        if (++sPsSrvLog % 180 == 1) {
+            sgre::TextureDesc d0{}, d1{};
+            uint32_t w0 = 0, h0 = 0, w1 = 0, h1 = 0;
+            if (sBoundTextureResources[0] && sRegistry.getTextureDesc(sBoundTextureResources[0], d0)) { w0 = d0.width; h0 = d0.height; }
+            if (sBoundTextureResources[1] && sRegistry.getTextureDesc(sBoundTextureResources[1], d1)) { w1 = d1.width; h1 = d1.height; }
+            LOGI("PSSetShaderResources: start=%u, num=%u | Slot0: %p (%ux%u) | Slot1: %p (%ux%u)",
+                 startSlot, numViews, sBoundTextureResources[0], w0, h0, sBoundTextureResources[1], w1, h1);
+        }
     } else if (numViews == 0) {
         // Unbind tất cả các slot bắt đầu từ startSlot
         for (uint32_t s = startSlot; s < 8; ++s) {
@@ -1138,7 +1171,7 @@ static void WINAPI mock_Context_IASetVertexBuffers(void*, uint32_t startSlot, ui
             sCurrentVertexStride = pStrides[0];
         }
         sCurrentVertexOffset = (pOffsets && pOffsets[0] > 0) ? pOffsets[0] : 0;
-        if (++sVbLogCount % 60 == 1) {
+        if (++sVbLogCount % 300 == 1) {
             sgre::BufferDesc bDesc{};
             uint32_t bWidth = 0;
             if (sRegistry.getBufferDesc(sCurrentVertexBuffer, bDesc)) {
@@ -1161,7 +1194,7 @@ static void WINAPI mock_Context_IASetIndexBuffer(void*, void* pIndexBuffer, uint
         }
         sCurrentIndexFormat = format;
         static uint32_t sIbLogCount = 0;
-        if (++sIbLogCount % 60 == 1) {
+        if (++sIbLogCount % 300 == 1) {
             sgre::BufferDesc bDesc{};
             uint32_t bWidth = 0;
             if (sRegistry.getBufferDesc(sCurrentIndexBuffer, bDesc)) {
