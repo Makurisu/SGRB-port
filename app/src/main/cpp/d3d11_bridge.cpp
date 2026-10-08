@@ -895,10 +895,20 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                     uint8_t cG = vertPtr[9];
                     uint8_t cR = vertPtr[10];
                     uint8_t cA = vertPtr[11];
-                    float r = (cR == 0x80 && cG == 0x80 && cB == 0x80) ? 1.0f : std::min(1.0f, static_cast<float>(cR) / 128.0f);
-                    float g = (cR == 0x80 && cG == 0x80 && cB == 0x80) ? 1.0f : std::min(1.0f, static_cast<float>(cG) / 128.0f);
-                    float b = (cR == 0x80 && cG == 0x80 && cB == 0x80) ? 1.0f : std::min(1.0f, static_cast<float>(cB) / 128.0f);
-                    float a = static_cast<float>(cA) / 255.0f;
+                    float r = 1.0f, g = 1.0f, b = 1.0f, a = 1.0f;
+                    // Phân biệt Input Layout:
+                    // 1. Khi 4 byte tại offset 8 bằng 0x00000000 (Pos.Z = 0.0f trong layout float3 Pos + float2 UV):
+                    //    Không có thuộc tính Color trong đỉnh -> khôi phục màu đỉnh mặc định là trắng đục vec4(1, 1, 1, 1).
+                    // 2. Khi layout có trường Color (cA > 0 hoặc Modulate2X cR/cG/cB != 0):
+                    //    Tính toán hệ số màu Modulate2X và alpha theo chuẩn game engine.
+                    if (cA == 0 && cR == 0 && cG == 0 && cB == 0) {
+                        r = 1.0f; g = 1.0f; b = 1.0f; a = 1.0f;
+                    } else {
+                        r = (cR == 0x80 && cG == 0x80 && cB == 0x80) ? 1.0f : std::min(1.0f, static_cast<float>(cR) / 128.0f);
+                        g = (cR == 0x80 && cG == 0x80 && cB == 0x80) ? 1.0f : std::min(1.0f, static_cast<float>(cG) / 128.0f);
+                        b = (cR == 0x80 && cG == 0x80 && cB == 0x80) ? 1.0f : std::min(1.0f, static_cast<float>(cB) / 128.0f);
+                        a = static_cast<float>(cA) / 255.0f;
+                    }
                     cmd.color[i][0] = r;
                     cmd.color[i][1] = g;
                     cmd.color[i][2] = b;
@@ -949,14 +959,16 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
 
                     // Chuẩn hoá toạ độ UV cho Atlas và Texture:
                     // 1. Toạ độ pixel tuyệt đối (> 16.0f): chia trực tiếp cho kích thước texture tương ứng.
-                    // 2. Với Texture Atlas của M2 Engine (textureWidth == 3424 hoặc textureWidth == 488):
-                    //    M2 Engine biểu diễn toạ độ UV theo tỷ lệ màn hình chuẩn 1920x1080 (ví dụ u = x_pixel / 1920, v = y_pixel / 1080).
-                    //    Do đó, để trích xuất đúng icon trên Atlas thật:
-                    //      u_atlas = (u * 1920.0f) / textureWidth
-                    //      v_atlas = (v * 1080.0f) / textureHeight
-                    // 3. Với texture thông thường (logo 1024x1024, nền 2048x1088, caution 1928x528):
-                    //    Nếu u, v nằm trong [0.0, 1.0], giữ nguyên 100%. Nếu vượt quá dải [0, 1], chuẩn hoá modulo.
-                    bool isM2Atlas = (cmd.textureWidth == 3424 || cmd.textureWidth == 488);
+                    // 2. Với Texture Atlas của M2 Engine (3424x3424, 488x1088) và Texture Logo / Cảnh báo (2048x1088, 2048x1096, 1928x1088, 1928x1040):
+                    //    M2 Engine biểu diễn toạ độ UV theo tỷ lệ màn hình ảo chuẩn 1920x1080 (u = x / 1920, v = y / 1080).
+                    //    Do đó, để trích xuất đúng icon trên Atlas/Texture thật:
+                    //      u_norm = (u * 1920.0f) / textureWidth
+                    //      v_norm = (v * 1080.0f) / textureHeight
+                    // 3. Với texture thông thường khác: nếu u, v nằm trong [0.0, 1.0], giữ nguyên 100%. Nếu vượt quá dải [0, 1], chuẩn hoá modulo.
+                    constexpr float kVirtualCanvasW = 1920.0f;
+                    constexpr float kVirtualCanvasH = 1080.0f;
+                    bool isVirtualScreenScaled = (cmd.textureWidth == 3424 || cmd.textureWidth == 488 ||
+                                                  cmd.textureWidth == 2048 || cmd.textureWidth == 1928);
                     for (uint32_t vi = 0; vi < 4; ++vi) {
                         float u = cmd.uv[vi][0];
                         float v = cmd.uv[vi][1];
@@ -964,16 +976,16 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                         if (cmd.textureWidth > 0 && cmd.textureHeight > 0) {
                             if (u > 16.0f) {
                                 u /= static_cast<float>(cmd.textureWidth);
-                            } else if (isM2Atlas) {
-                                u = (u * 1920.0f) / static_cast<float>(cmd.textureWidth);
+                            } else if (isVirtualScreenScaled) {
+                                u = (u * kVirtualCanvasW) / static_cast<float>(cmd.textureWidth);
                             } else if (u > 1.0f || u < 0.0f) {
                                 u = u - std::floor(u);
                             }
 
                             if (v > 16.0f) {
                                 v /= static_cast<float>(cmd.textureHeight);
-                            } else if (isM2Atlas) {
-                                v = (v * 1080.0f) / static_cast<float>(cmd.textureHeight);
+                            } else if (isVirtualScreenScaled) {
+                                v = (v * kVirtualCanvasH) / static_cast<float>(cmd.textureHeight);
                             } else if (v > 1.0f || v < 0.0f) {
                                 v = v - std::floor(v);
                             }

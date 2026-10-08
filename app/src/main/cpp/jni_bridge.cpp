@@ -294,22 +294,33 @@ static void renderLoop() {
                     }
 
                     // Bind alpha mask texture nếu có (Slot 1 Alpha Mask)
+                    bool hasValidAlphaMask = false;
                     if (cmd.alphaTextureHandle != nullptr) {
                         glActiveTexture(GL_TEXTURE1);
                         if (cmd.alphaTextureHandle != lastAlphaBoundHandle) {
                             uint32_t aTexW = 0, aTexH = 0;
                             const uint8_t* aTexPixels = nullptr;
-                            if (D3D11Bridge_GetTextureInfoByHandle(cmd.alphaTextureHandle, &aTexW, &aTexH, &aTexPixels)) {
+                            if (D3D11Bridge_GetTextureInfoByHandle(cmd.alphaTextureHandle, &aTexW, &aTexH, &aTexPixels) && aTexPixels != nullptr) {
                                 GLuint alphaTexId = getOrCreateGlesTexture(cmd.alphaTextureHandle, aTexW, aTexH, aTexPixels);
                                 if (alphaTexId != 0) {
                                     glBindTexture(GL_TEXTURE_2D, alphaTexId);
                                     lastAlphaBoundHandle = cmd.alphaTextureHandle;
+                                    hasValidAlphaMask = true;
                                 }
                             }
+                        } else if (lastAlphaBoundHandle != nullptr) {
+                            hasValidAlphaMask = true;
                         }
-                        glUniform1i(uHasAlphaTextureLoc, 1);
-                    } else {
-                        glUniform1i(uHasAlphaTextureLoc, 0);
+                    }
+                    glUniform1i(uHasAlphaTextureLoc, hasValidAlphaMask ? 1 : 0);
+
+                    // Bảo vệ chống vẽ đè màn hình trắng chuyển cảnh (title_font/w_full) khi thiếu Alpha Mask:
+                    // Trong title.pure, w_full là quad toàn màn hình trên Atlas 3424x3424 (vùng UV.V > 0.6f).
+                    // Nếu mặt nạ alpha rỗng mà vẫn vẽ w_full, tấm trắng đặc sẽ che phủ toàn bộ hoạt ảnh của Logo Title.
+                    float quadSpanX = std::abs(cmd.pos[1][0] - cmd.pos[0][0]);
+                    float quadSpanY = std::abs(cmd.pos[2][1] - cmd.pos[0][1]);
+                    if (cmd.textureWidth == 3424 && quadSpanX >= 1.8f && quadSpanY >= 1.8f && !hasValidAlphaMask && cmd.uv[0][1] > 0.6f) {
+                        continue;
                     }
 
                     // Gom toạ độ 4 đỉnh dạng [X, Y, U, V, R, G, B, A]

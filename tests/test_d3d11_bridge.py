@@ -713,18 +713,18 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         # Kiểm tra thuật toán chuẩn hoá UV cho M2 Engine Sprite Atlas dựa trên tỷ lệ 1920x1080:
         def scale_uv(u, v, tex_w, tex_h):
             import math
-            is_m2_atlas = (tex_w == 3424 or tex_w == 488)
+            is_virtual_screen_scaled = (tex_w == 3424 or tex_w == 488 or tex_w == 2048 or tex_w == 1928)
             if tex_w > 0 and tex_h > 0:
                 if u > 16.0:
                     u /= float(tex_w)
-                elif is_m2_atlas:
+                elif is_virtual_screen_scaled:
                     u = (u * 1920.0) / float(tex_w)
                 elif u > 1.0 or u < 0.0:
                     u = u - math.floor(u)
 
                 if v > 16.0:
                     v /= float(tex_h)
-                elif is_m2_atlas:
+                elif is_virtual_screen_scaled:
                     v = (v * 1080.0) / float(tex_h)
                 elif v > 1.0 or v < 0.0:
                     v = v - math.floor(v)
@@ -748,15 +748,65 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertAlmostEqual(u_c2, 417.0 / 488.0, places=4)
         self.assertAlmostEqual(v_c2, 297.0 / 1088.0, places=4)
 
-        # 4. Với texture thông thường 2048x1088, sprite trong khoảng [0, 1] giữ nguyên
-        u_orig, v_orig = scale_uv(0.25, 0.5, 2048, 1088)
-        self.assertAlmostEqual(u_orig, 0.25, places=4)
-        self.assertAlmostEqual(v_orig, 0.5, places=4)
+        # 4. Với texture Logo / Cảnh báo 2048x1088, toạ độ ảo [0.0, 1.0] được map chuẩn xác vào pixel (1920, 1080)
+        u_logo, v_logo = scale_uv(1.0, 1.0, 2048, 1088)
+        self.assertAlmostEqual(u_logo, 1920.0 / 2048.0, places=4)
+        self.assertAlmostEqual(v_logo, 1080.0 / 1088.0, places=4)
 
-        # 5. Với sprite toạ độ pixel tuyệt đối > 16.0 (ví dụ: 1712, 1712)
+        # 5. Với texture Logo / Cảnh báo 1928x1040, toạ độ ảo [0.0, 1.0] được map chuẩn xác vào pixel (1920, 1080) và clamp an toàn
+        u_warn, v_warn = scale_uv(1.0, 1.0, 1928, 1040)
+        self.assertAlmostEqual(u_warn, 1920.0 / 1928.0, places=4)
+        self.assertAlmostEqual(v_warn, 1.0, places=4)
+
+        # 6. Với sprite toạ độ pixel tuyệt đối > 16.0 (ví dụ: 1712, 1712)
         u_pixel, v_pixel = scale_uv(1712.0, 1712.0, 3424, 3424)
         self.assertAlmostEqual(u_pixel, 0.5, places=4)
         self.assertAlmostEqual(v_pixel, 0.5, places=4)
+
+    def test_vertex_color_fallback_for_pos3_uv2_layout(self):
+        # Kiểm tra giải mã màu đỉnh phân biệt giữa layout có Color và layout không có Color (float3 Pos + float2 UV)
+        def decode_vertex_color(vert_bytes_offset8):
+            cb = vert_bytes_offset8[0]
+            cg = vert_bytes_offset8[1]
+            cr = vert_bytes_offset8[2]
+            ca = vert_bytes_offset8[3]
+            if ca == 0 and cr == 0 and cg == 0 and cb == 0:
+                # Layout không có thuộc tính Color (Pos.Z = 0.0f) -> màu đỉnh mặc định là trắng đục
+                return 1.0, 1.0, 1.0, 1.0
+            r = 1.0 if (cr == 0x80 and cg == 0x80 and cb == 0x80) else min(1.0, cr / 128.0)
+            g = 1.0 if (cr == 0x80 and cg == 0x80 and cb == 0x80) else min(1.0, cg / 128.0)
+            b = 1.0 if (cr == 0x80 and cg == 0x80 and cb == 0x80) else min(1.0, cb / 128.0)
+            a = ca / 255.0
+            return r, g, b, a
+
+        # Trường hợp 1: Logo & Warning có Pos.Z = 0.0f (4 byte 0) -> phải trả về trắng đục (1.0, 1.0, 1.0, 1.0)
+        logo_color = decode_vertex_color(bytes([0, 0, 0, 0]))
+        self.assertEqual(logo_color, (1.0, 1.0, 1.0, 1.0), "Logo với byte 8..11 = 0 phải có màu trắng đục để không bị trong suốt")
+
+        # Trường hợp 2: Title Menu với màu trung tính 0xFF808080 -> trả về (1.0, 1.0, 1.0, 1.0)
+        title_color = decode_vertex_color(bytes([0x80, 0x80, 0x80, 0xFF]))
+        self.assertEqual(title_color, (1.0, 1.0, 1.0, 1.0), "Title Menu 0xFF808080 phải trả về màu chuẩn")
+
+        # Trường hợp 3: Bán trong suốt với alpha hợp lệ
+        trans_color = decode_vertex_color(bytes([0x80, 0x80, 0x80, 0x80]))
+        self.assertAlmostEqual(trans_color[3], 128.0 / 255.0, places=4)
+
+    def test_white_screen_protection_when_alpha_mask_empty(self):
+        # Kiểm tra lớp bảo vệ bỏ qua quad w_full khi thiếu mặt nạ alpha hợp lệ
+        def should_skip_quad(tex_w, span_x, span_y, has_valid_alpha, uv_v):
+            if tex_w == 3424 and span_x >= 1.8 and span_y >= 1.8 and not has_valid_alpha and uv_v > 0.6:
+                return True # Bỏ qua để không bị che màn hình
+            return False
+
+        # w_full toàn màn hình (span 2.0x2.0, uv_v ~ 0.63) nhưng không có alpha mask -> PHẢI BỎ QUA
+        self.assertTrue(should_skip_quad(3424, 2.0, 2.0, False, 0.6335))
+
+        # w_full khi CÓ alpha mask hợp lệ -> ĐƯỢC PHÉP VẼ
+        self.assertFalse(should_skip_quad(3424, 2.0, 2.0, True, 0.6335))
+
+        # Các sprite thông thường khác trên Atlas 3424 (như Logo Steins;Gate hay icon) -> KHÔNG BỊ BỎ QUA
+        self.assertFalse(should_skip_quad(3424, 0.5, 0.2, False, 0.3))
+        self.assertFalse(should_skip_quad(3424, 2.0, 2.0, False, 0.1))
 
     def test_multi_texture_dual_slot_binding_logic(self):
         # Kiểm tra mô phỏng việc trích xuất texture Slot 0 và Slot 1

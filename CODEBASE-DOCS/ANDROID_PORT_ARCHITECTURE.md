@@ -357,6 +357,25 @@ sequenceDiagram
     - Loại bỏ hiện tượng sai lệch màu sắc và nhiễu màu pixel trên logo nhà phát triển.
   - **Độ phức tạp**: $O(W \times H)$ cho mỗi lần cập nhật texture $1024 \times 1024$ (thực thi $< 0.5\text{ms}$ trên CPU).
 
+- **Khôi Phục Màu Đỉnh Logo & Cảnh Báo, Chuẩn Hoá Toạ Độ UV Logo & Chống Lớp Trắng Che Phủ Hoạt Ảnh Intro (`d3d11_bridge.cpp`, `jni_bridge.cpp` - Milestone M19)**:
+  - **Khắc Phục Lỗi Vô Hình Của Logo Nhà Phát Triển & Màn Hình Cảnh Báo (Epilepsy Caution)**:
+    - **Phân Tích Cốt Lõi Vertex Layout Mismatch**:
+      - Title Screen sử dụng layout: $\text{Position (float2, 8B)} + \text{Color (uint32, 4B)} + \text{TexCoord (float2, 8B)} = 20\text{ bytes}$. Trường Color tại offset 8 mang giá trị `0xFF808080`.
+      - Logo (`MAGES.`, `Chiyomaru Studio`, `MTwo`) và Bảng Cảnh Báo sử dụng layout: $\text{Position (float3, 12B: X, Y, Z)} + \text{TexCoord (float2, 8B: U, V)} = 20\text{ bytes}$. Trường tại offset 8 là $\text{Pos.Z} = 0.0\text{f}$ (`0x00000000`), hoàn toàn không có trường Color.
+      - Trước đây hệ thống ép kiểu offset 8 thành màu RGBA. Khi byte 8..11 bằng 0, alpha đỉnh bị tính bằng $0.0\text{f}$, khiến toàn bộ quad của Logo và Cảnh Báo bị hoà trộn alpha trong suốt $100\%$ và vô hình trên màn hình.
+      - **Giải Pháp**: Khi 4 byte tại offset 8 bằng `0x00000000` (Pos.Z = 0.0f) hoặc khi $\text{cA} == 0 \land \text{cR} == 0 \land \text{cG} == 0 \land \text{cB} == 0$, hệ thống tự động nhận diện layout không có Color và khôi phục màu đỉnh mặc định là trắng đục chuẩn:
+        $$\text{vColor} = (1.0\text{f}, 1.0\text{f}, 1.0\text{f}, 1.0\text{f})$$
+  - **Chuẩn Hoá Toạ Độ UV Cho Texture Logo ($2048 \times 1088, 2048 \times 1096, 1928 \times 1088, 1928 \times 1040$)**:
+    - Nội dung hiển thị thực tế của các logo và chữ cảnh báo nằm trong vùng $1920 \times 1080$ trên kết cấu kích thước $2048 \times 1088$ (hoặc 1928x1040).
+    - Áp dụng phép chiếu tỷ lệ không gian màn hình ảo:
+      $$u_{\text{norm}} = \frac{u \times 1920.0\text{f}}{\text{textureWidth}}, \quad v_{\text{norm}} = \frac{v \times 1080.0\text{f}}{\text{textureHeight}}$$
+    - Đảm bảo toàn bộ logo và cảnh báo khớp chuẩn xác 100% tỷ lệ khung hình 1080p, loại bỏ hiện tượng co lệch ảnh và dải viền đen padding.
+  - **Loại Bỏ Màn Hình Trắng Che Khuất Hoạt Ảnh Xuất Hiện Title Screen (`w_full` Protection)**:
+    - Trong `title.pure.psb`, đối tượng `title_font/w_full` là hình chữ nhật trắng toàn màn hình ($1920 \times 1080$) trên Texture Atlas $3424 \times 3424$ dùng cho hiệu ứng fade chuyển cảnh kết hợp Alpha Mask từ Render Target Slot 1.
+    - Khi Render Target chưa có dữ liệu pixel trên CPU (`hasValidAlphaMask == false`), nếu vẽ `w_full` mà không có mặt nạ alpha, tấm trắng đặc sẽ che phủ toàn bộ màn hình và giấu kín hoạt ảnh chuyển động xuất hiện của logo STEINS;GATE RE:BOOT.
+    - **Giải Pháp**: Siết chặt kiểm tra `hasValidAlphaMask`: Chỉ kích hoạt `uHasAlphaTexture = 1` khi texture mask thực sự có dữ liệu pixel hợp lệ và tải thành công lên GPU (`alphaTexId != 0`). Đồng thời tự động bỏ qua quad `w_full` khi mặt nạ alpha chưa sẵn sàng, giải phóng tầm nhìn để hoạt ảnh xuất hiện của Logo Title hiển thị mượt mà.
+  - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite quad và mỗi chu kỳ kiểm tra texture bind.
+
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).
 - **DXVK**: Thay vì chạy D3D11 (chỉ có trên Windows), DXVK chặn toàn bộ lệnh D3D11 từ engine gốc và biên dịch on-the-fly sang mã gọi Vulkan gửi vào `ANativeWindow` của Android.
