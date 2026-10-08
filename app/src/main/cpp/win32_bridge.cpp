@@ -722,6 +722,8 @@ uint32_t WINAPI stub_WaitForSingleObjectEx(void* hHandle, uint32_t dwMillisecond
 
 int32_t WINAPI stub_SwitchToThread() { sched_yield(); return 1; }
 
+uint32_t WINAPI stub_GetCurrentThreadId();
+
 static void* win32ThreadTrampoline(void* arg) {
     auto* info = static_cast<Win32ThreadInfo*>(arg);
     info->threadId = stub_GetCurrentThreadId();
