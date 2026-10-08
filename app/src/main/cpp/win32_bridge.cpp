@@ -25,6 +25,7 @@
 #include <uchar.h>
 #include <sys/syscall.h>
 #include <condition_variable>
+#include <shared_mutex>
 
 #if defined(__x86_64__)
 #ifndef SYS_arch_prctl
@@ -723,6 +724,7 @@ int32_t WINAPI stub_SwitchToThread() { sched_yield(); return 1; }
 
 static void* win32ThreadTrampoline(void* arg) {
     auto* info = static_cast<Win32ThreadInfo*>(arg);
+    info->threadId = stub_GetCurrentThreadId();
     Win32Bridge_SetupCurrentThreadTEB();
 
     // Nếu thread được tạo với cờ CREATE_SUSPENDED (0x04), tạm dừng chờ ResumeThread()
@@ -1788,7 +1790,13 @@ uint32_t WINAPI stub_GetModuleFileNameW(void*, char16_t* lpFilename, uint32_t nS
 }
 
 uint32_t WINAPI stub_GetCurrentProcessId() { return static_cast<uint32_t>(getpid()); }
-uint32_t WINAPI stub_GetCurrentThreadId() { return static_cast<uint32_t>(pthread_self()); }
+uint32_t WINAPI stub_GetCurrentThreadId() {
+#if defined(__ANDROID__) || defined(__linux__)
+    return static_cast<uint32_t>(syscall(SYS_gettid));
+#else
+    return static_cast<uint32_t>(pthread_self());
+#endif
+}
 void* WINAPI stub_GetCurrentProcess() { return reinterpret_cast<void*>(-1); }
 
 void* WINAPI stub_GetModuleHandleA(const char* lpModuleName) {
@@ -1943,17 +1951,129 @@ void WINAPI stub_EnterCriticalSection(void*) {}
 void WINAPI stub_LeaveCriticalSection(void*) {}
 void WINAPI stub_DeleteCriticalSection(void*) {}
 
-void WINAPI stub_InitializeSRWLock(void*) {}
-void WINAPI stub_AcquireSRWLockExclusive(void*) {}
-void WINAPI stub_ReleaseSRWLockExclusive(void*) {}
-void WINAPI stub_AcquireSRWLockShared(void*) {}
-void WINAPI stub_ReleaseSRWLockShared(void*) {}
-int32_t WINAPI stub_TryAcquireSRWLockExclusive(void*) { return 1; }
+// Win32 SRWLock & ConditionVariable Subsystem
+struct Win32SRWEntry {
+    std::shared_mutex smtx;
+};
 
-void WINAPI stub_InitializeConditionVariable(void*) {}
-void WINAPI stub_WakeConditionVariable(void*) {}
-void WINAPI stub_WakeAllConditionVariable(void*) {}
-int32_t WINAPI stub_SleepConditionVariableSRW(void*, void*, uint32_t, uint32_t) { return 1; }
+struct Win32CVEntry {
+    std::condition_variable_any cv;
+};
+
+static std::mutex gSRWTableMutex;
+static std::unordered_map<void*, std::shared_ptr<Win32SRWEntry>> gSRWTable;
+
+static std::mutex gCVTableMutex;
+static std::unordered_map<void*, std::shared_ptr<Win32CVEntry>> gCVTable;
+
+static std::shared_ptr<Win32SRWEntry> getOrCreateSRW(void* pSrw) {
+    if (!pSrw) return nullptr;
+    std::lock_guard<std::mutex> lock(gSRWTableMutex);
+    auto it = gSRWTable.find(pSrw);
+    if (it != gSRWTable.end()) {
+        return it->second;
+    }
+    auto entry = std::make_shared<Win32SRWEntry>();
+    gSRWTable[pSrw] = entry;
+    return entry;
+}
+
+static std::shared_ptr<Win32CVEntry> getOrCreateCV(void* pCv) {
+    if (!pCv) return nullptr;
+    std::lock_guard<std::mutex> lock(gCVTableMutex);
+    auto it = gCVTable.find(pCv);
+    if (it != gCVTable.end()) {
+        return it->second;
+    }
+    auto entry = std::make_shared<Win32CVEntry>();
+    gCVTable[pCv] = entry;
+    return entry;
+}
+
+void WINAPI stub_InitializeSRWLock(void* SRWLock) {
+    if (SRWLock) {
+        getOrCreateSRW(SRWLock);
+    }
+}
+
+void WINAPI stub_AcquireSRWLockExclusive(void* SRWLock) {
+    if (!SRWLock) return;
+    auto entry = getOrCreateSRW(SRWLock);
+    entry->smtx.lock();
+}
+
+void WINAPI stub_ReleaseSRWLockExclusive(void* SRWLock) {
+    if (!SRWLock) return;
+    auto entry = getOrCreateSRW(SRWLock);
+    entry->smtx.unlock();
+}
+
+void WINAPI stub_AcquireSRWLockShared(void* SRWLock) {
+    if (!SRWLock) return;
+    auto entry = getOrCreateSRW(SRWLock);
+    entry->smtx.lock_shared();
+}
+
+void WINAPI stub_ReleaseSRWLockShared(void* SRWLock) {
+    if (!SRWLock) return;
+    auto entry = getOrCreateSRW(SRWLock);
+    entry->smtx.unlock_shared();
+}
+
+int32_t WINAPI stub_TryAcquireSRWLockExclusive(void* SRWLock) {
+    if (!SRWLock) return 0;
+    auto entry = getOrCreateSRW(SRWLock);
+    return entry->smtx.try_lock() ? 1 : 0;
+}
+
+void WINAPI stub_InitializeConditionVariable(void* ConditionVariable) {
+    if (ConditionVariable) {
+        getOrCreateCV(ConditionVariable);
+    }
+}
+
+void WINAPI stub_WakeConditionVariable(void* ConditionVariable) {
+    if (!ConditionVariable) return;
+    auto entry = getOrCreateCV(ConditionVariable);
+    entry->cv.notify_one();
+}
+
+void WINAPI stub_WakeAllConditionVariable(void* ConditionVariable) {
+    if (!ConditionVariable) return;
+    auto entry = getOrCreateCV(ConditionVariable);
+    entry->cv.notify_all();
+}
+
+int32_t WINAPI stub_SleepConditionVariableSRW(void* ConditionVariable, void* SRWLock, uint32_t dwMilliseconds, uint32_t Flags) {
+    if (!ConditionVariable || !SRWLock) return 0;
+    auto srwEntry = getOrCreateSRW(SRWLock);
+    auto cvEntry = getOrCreateCV(ConditionVariable);
+
+    bool sharedMode = (Flags & 0x01) != 0; // CONDITION_VARIABLE_LOCKMODE_SHARED
+    bool awakened = true;
+
+    if (sharedMode) {
+        std::shared_lock<std::shared_mutex> lock(srwEntry->smtx, std::adopt_lock);
+        if (dwMilliseconds == 0xFFFFFFFF) {
+            cvEntry->cv.wait(lock);
+        } else {
+            auto status = cvEntry->cv.wait_for(lock, std::chrono::milliseconds(dwMilliseconds));
+            awakened = (status == std::cv_status::no_timeout);
+        }
+        lock.release();
+    } else {
+        std::unique_lock<std::shared_mutex> lock(srwEntry->smtx, std::adopt_lock);
+        if (dwMilliseconds == 0xFFFFFFFF) {
+            cvEntry->cv.wait(lock);
+        } else {
+            auto status = cvEntry->cv.wait_for(lock, std::chrono::milliseconds(dwMilliseconds));
+            awakened = (status == std::cv_status::no_timeout);
+        }
+        lock.release();
+    }
+
+    return awakened ? 1 : 0;
+}
 
 void WINAPI stub_InitializeSListHead(void*) {}
 

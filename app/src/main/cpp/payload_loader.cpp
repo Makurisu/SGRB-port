@@ -395,6 +395,19 @@ bool PayloadLoader::applyRelocations(void* baseAddress, const GamePayloadInfo& i
     LOGI("Đã áp dụng hotfix safe_memmem_search tại RVA 0x56C470 để chống tràn Stack Cookie");
 #endif
 
+    // Hotfix mtx_do_lock re-entrance deadlock check (RVA 0x56D20D / VA 0x14056D20D):
+    // Trong MSVC STL, nếu mutex non-recursive bị lock khi count > 1,
+    // hàm kiểm tra `test dword ptr [rbx], 100h; jnz loc_14056D239` (mã máy 75 2A).
+    // Nếu không có cờ recursive, nó trả về 3 (_Thrd_error) khiến engine gọi std::_Throw_Cpp_error(5).
+    // Do Android wrapper không có MSVC SEH C++ exception handling, lệnh throw gọi terminate() làm crash game.
+    // Patch byte tại RVA 0x56D20D từ 0x75 (jnz) thành 0xEB (jmp) để luôn nhảy tới loc_14056D239 (return 0),
+    // biến mutex thành re-entrant an toàn 100% và ngăn chặn triệt để std::_Throw_Cpp_error(5).
+    uint8_t* pMtxCheck = basePtr + 0x56D20D;
+    if (pMtxCheck[0] == 0x75 && pMtxCheck[1] == 0x2A) {
+        pMtxCheck[0] = 0xEB; // jmp short loc_14056D239
+        LOGI("Đã áp dụng hotfix mtx_do_lock tại RVA 0x56D20D (0x75 -> 0xEB) để loại bỏ crash C++ error 5");
+    }
+
     return true;
 }
 

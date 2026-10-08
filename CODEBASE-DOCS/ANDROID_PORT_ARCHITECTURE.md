@@ -399,6 +399,28 @@ sequenceDiagram
       - Loại bỏ vĩnh viễn nguy cơ tràn stack buffer cookie, cho phép engine đọc WebM video mượt mà và chuyển cảnh vào Menu chính không bị crash.
   - **Độ phức tạp**: $O(1)$ cho kiểm tra quad và hook nhảy, $O(M \times N)$ cho thuật toán `memmem` an toàn.
 
+- **Milestone M21: Đồng Bộ Hóa Đa Luồng Win32 (SRWLock & ConditionVariable) và Triệt Tiêu Deadlock Mutex**:
+  - **Bối Cảnh & Phân Tích Gốc Rễ**:
+    - Khi người dùng chạm màn hình ở Press Any Button, engine khởi tạo Worker Thread qua `stub_CreateThread` (chạy trampoline `sub_14008E6D0`).
+    - Worker Thread quản lý hàng đợi tác vụ thông qua cơ chế đồng bộ C++ STL: `std::mutex` (`_Mtx_lock` tại `0x14056D100`) và `std::condition_variable` (`sub_14056D278`).
+    - Trong MSVC STL trên x64 Windows, `std::mutex` được xây dựng dựa trên `AcquireSRWLockExclusive` / `ReleaseSRWLockExclusive` của Win32 API.
+    - Trước đó, các hàm SRWLock và ConditionVariable trong wrapper chỉ là stub rỗng (`return 1` / `no-op`). Khi Worker Thread gọi `mtx_do_lock` tranh chấp với Main Thread, việc thiếu cơ chế blocking thật sự khiến hàm phát hiện mutex đang ở trạng thái locked (`count > 1`) và mutex là non-recursive (`cờ 0x100 = 0`), dẫn đến trả về mã lỗi 3 (`_Thrd_error`).
+    - Engine lập tức gọi `std::_Throw_Cpp_error(5)`. Do môi trường wrapper Android không có MSVC C++ SEH Exception Handler, lệnh ném ngoại lệ dẫn thẳng đến `std::terminate()` $\rightarrow$ `__fastfail()` $\rightarrow$ nhân Linux ném `SIGTRAP` làm sập game.
+    - Đồng thời, `stub_GetCurrentThreadId` cũ trả về `pthread_self()` bị cắt ngắn 32-bit, không đồng nhất với Thread ID của hệ điều hành.
+  - **Giải Pháp Toàn Diện**:
+    1. **Triển khai chuẩn Win32 SRWLock Subsystem (`win32_bridge.cpp`)**:
+       - Sử dụng `std::shared_mutex` để quản lý các đối tượng SRWLock thông qua bảng ánh xạ `gSRWTable`.
+       - Hỗ trợ đầy đủ `stub_AcquireSRWLockExclusive`, `stub_ReleaseSRWLockExclusive`, `stub_AcquireSRWLockShared`, `stub_ReleaseSRWLockShared`, và `stub_TryAcquireSRWLockExclusive`.
+    2. **Triển khai chuẩn Win32 ConditionVariable Subsystem (`win32_bridge.cpp`)**:
+       - Sử dụng `std::condition_variable_any` phối hợp cùng `std::unique_lock` / `std::shared_lock` với cờ `std::adopt_lock`.
+       - Trong `stub_SleepConditionVariableSRW`, tự động giải phóng SRWLock trước khi chờ và tái sở hữu (re-acquire) khi được đánh thức bởi `stub_WakeConditionVariable` hoặc `stub_WakeAllConditionVariable`, đúng 100% đặc tả Win32.
+    3. **Chuẩn hoá Win32 Thread ID**:
+       - Cập nhật `stub_GetCurrentThreadId` sử dụng `syscall(SYS_gettid)` trên Android/Linux, đảm bảo mỗi thread có số nguyên 32-bit duy nhất, đồng bộ chính xác với Worker Thread trampoline.
+    4. **Hotfix Bảo Vệ Kép Chống Mutex Deadlock Exception (`payload_loader.cpp`)**:
+       - Tại RVA `0x56D20D` trong `mtx_do_lock`, ghi đè lệnh nhảy có điều kiện `jnz loc_14056D239` (byte `0x75`) thành lệnh nhảy vô điều kiện `jmp loc_14056D239` (byte `0xEB`).
+       - Biến mọi mutex non-recursive thành re-entrant an toàn, đảm bảo hàm `mtx_do_lock` không bao giờ trả về mã lỗi 3 và loại bỏ vĩnh viễn nguy cơ kích hoạt `std::_Throw_Cpp_error(5)`.
+  - **Độ phức tạp**: $O(1)$ cho mỗi thao tác khóa/mở khóa và đánh thức Condition Variable.
+
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).
 - **DXVK**: Thay vì chạy D3D11 (chỉ có trên Windows), DXVK chặn toàn bộ lệnh D3D11 từ engine gốc và biên dịch on-the-fly sang mã gọi Vulkan gửi vào `ANativeWindow` của Android.

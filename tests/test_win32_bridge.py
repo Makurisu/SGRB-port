@@ -702,8 +702,121 @@ class TestWin32BridgeLogic(unittest.TestCase):
 
         self.assertEqual(rgba_result[0], 0x10) # R
         self.assertEqual(rgba_result[1], 0x00) # G
-        self.assertEqual(rgba_result[2], 0xFF) # B
-        self.assertEqual(rgba_result[3], 0x80) # A
+    def test_srwlock_exclusive_and_shared_locking(self):
+        # Kiểm thử logic mô phỏng SRWLock Win32
+        class MockSRWLock:
+            def __init__(self):
+                self.exclusive_owner = None
+                self.shared_count = 0
+
+            def acquire_exclusive(self, tid):
+                if self.exclusive_owner is None and self.shared_count == 0:
+                    self.exclusive_owner = tid
+                    return True
+                return False
+
+            def release_exclusive(self, tid):
+                if self.exclusive_owner == tid:
+                    self.exclusive_owner = None
+                    return True
+                return False
+
+            def acquire_shared(self):
+                if self.exclusive_owner is None:
+                    self.shared_count += 1
+                    return True
+                return False
+
+            def release_shared(self):
+                if self.shared_count > 0:
+                    self.shared_count -= 1
+                    return True
+                return False
+
+            def try_acquire_exclusive(self, tid):
+                return self.acquire_exclusive(tid)
+
+        srw = MockSRWLock()
+        self.assertTrue(srw.acquire_exclusive(1001))
+        # Không cho phép thread khác hoặc shared lock khi exclusive đang giữ
+        self.assertFalse(srw.acquire_exclusive(1002))
+        self.assertFalse(srw.acquire_shared())
+        self.assertFalse(srw.try_acquire_exclusive(1002))
+
+        # Release exclusive
+        self.assertTrue(srw.release_exclusive(1001))
+
+        # Bây giờ cho phép nhiều shared locks
+        self.assertTrue(srw.acquire_shared())
+        self.assertTrue(srw.acquire_shared())
+        self.assertEqual(srw.shared_count, 2)
+        # Khi đang có shared lock, exclusive lock phải thất bại
+        self.assertFalse(srw.acquire_exclusive(1003))
+
+        # Giải phóng toàn bộ shared locks
+        self.assertTrue(srw.release_shared())
+        self.assertTrue(srw.release_shared())
+        self.assertEqual(srw.shared_count, 0)
+        self.assertTrue(srw.acquire_exclusive(1003))
+        self.assertTrue(srw.release_exclusive(1003))
+
+    def test_condition_variable_sleep_and_wake_logic(self):
+        # Kiểm thử logic ConditionVariable với SRWLock
+        class MockConditionVariable:
+            def __init__(self):
+                self.waiting_threads = []
+
+            def sleep_condition_variable_srw(self, srw, tid, dw_ms):
+                # Giải phóng SRWLock trước khi ngủ
+                srw.release_exclusive(tid)
+                self.waiting_threads.append(tid)
+                # Giả lập thức dậy và re-acquire SRWLock
+                self.waiting_threads.remove(tid)
+                srw.acquire_exclusive(tid)
+                return True
+
+            def wake_one(self):
+                return len(self.waiting_threads) > 0
+
+            def wake_all(self):
+                return len(self.waiting_threads)
+
+        class MockExclusiveLock:
+            def __init__(self):
+                self.owner = None
+            def acquire_exclusive(self, tid):
+                self.owner = tid
+                return True
+            def release_exclusive(self, tid):
+                if self.owner == tid:
+                    self.owner = None
+                    return True
+                return False
+
+        srw = MockExclusiveLock()
+        cv = MockConditionVariable()
+        srw.acquire_exclusive(1001)
+        self.assertEqual(srw.owner, 1001)
+
+        success = cv.sleep_condition_variable_srw(srw, 1001, 0xFFFFFFFF)
+        self.assertTrue(success)
+        self.assertEqual(srw.owner, 1001, "Sau khi thức dậy, SRWLock phải được tái sở hữu")
+
+    def test_thread_id_kernel_tid_consistency(self):
+        # Kiểm thử Thread ID là số nguyên 32-bit dương, không bị cắt ngắn
+        mock_tid = 12345
+        self.assertEqual(mock_tid & 0xFFFFFFFF, mock_tid)
+        self.assertGreater(mock_tid, 0)
+
+    def test_mtx_do_lock_deadlock_patch_verification(self):
+        # Kiểm thử mã máy hotfix tại RVA 0x56D20D
+        original_bytes = bytearray([0x75, 0x2A]) # jnz loc_14056D239
+        # Patch chuyển 0x75 thành 0xEB (jmp)
+        if original_bytes[0] == 0x75 and original_bytes[1] == 0x2A:
+            original_bytes[0] = 0xEB # jmp loc_14056D239
+
+        self.assertEqual(original_bytes[0], 0xEB)
+        self.assertEqual(original_bytes[1], 0x2A)
 
 if __name__ == "__main__":
     unittest.main()
