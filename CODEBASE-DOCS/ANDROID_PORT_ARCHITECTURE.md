@@ -421,6 +421,22 @@ sequenceDiagram
        - Biến mọi mutex non-recursive thành re-entrant an toàn, đảm bảo hàm `mtx_do_lock` không bao giờ trả về mã lỗi 3 và loại bỏ vĩnh viễn nguy cơ kích hoạt `std::_Throw_Cpp_error(5)`.
   - **Độ phức tạp**: $O(1)$ cho mỗi thao tác khóa/mở khóa và đánh thức Condition Variable.
 
+- **Milestone M22: Khôi Phục Toàn Diện Văn Bản Cảnh Báo Attention và Triệt Tiêu Alpha Mask Rỗng**:
+  - **Bối Cảnh & Phân Tích Gốc Rễ**:
+    - Màn hình cảnh báo khởi đầu (Epilepsy / Photosensitivity Warning) hiển thị được khung vi mạch Attention nhưng phần nội dung văn bản ở giữa lòng khung bị rỗng đen xì (`tests/automation/run_m21_verified/frame_6s.png`).
+    - **Nguyên nhân 1 (Gán sai Texture Handle)**: Khung vi mạch (Texture `1928x1040`) được vẽ ở DrawIndexed #1. Đến DrawIndexed #121 (Quad vẽ văn bản ở tâm màn hình), game không unbind Slot 0 nên `sBoundTextureResources[0]` vẫn giữ con trỏ texture khung vi mạch thay vì gán texture văn bản vừa cập nhật (`sLastUpdatedTextureResource`).
+    - **Nguyên nhân 2 (Alpha Mask rỗng triệt tiêu 100% màu)**: Ngay trước draw call vẽ chữ, game bind Texture `1920x1080` Format 65 (`DXGI_FORMAT_A8_UNORM`) vào Slot 1. Do texture này là Render Target rỗng trên CPU, toàn bộ alpha bằng 0. Shader nhân `baseColor.a * maskAlpha (0.0)` khiến toàn bộ nội dung văn bản bị trong suốt hoàn toàn.
+    - **Nguyên nhân 3 (Cắt cụt bề ngang hàng trong UpdateSubresource)**: Engine tạo Dynamic Texture `1024x1024` Format 87 nhưng truyền `RowPitch = 7680` ($1920 \times 4$ pixels). Do texture chỉ cấp phát bề ngang 1024, các ký tự vượt quá pixel 1024 bị cắt bỏ.
+  - **Giải Pháp Toàn Diện**:
+    1. **Tự động mở rộng Texture Buffer (`resource_registry.cpp`)**:
+       - Trong `ResourceRegistry::updateTexture`, khi `srcPitch > entry.rowPitch` và `box == nullptr`, tự động mở rộng `entry.texture.width = srcPitch / 4` (1920) và `entry.rowPitch = srcPitch` (7680), cấp phát lại bộ đệm để chứa trọn vẹn toàn bộ canvas $1920 \times 1080$ mà không cắt mất ký tự nào.
+    2. **Nhận diện và Gán Texture Văn Bản Attention (`d3d11_bridge.cpp`)**:
+       - Trong `mock_Context_DrawIndexed`: Nhận diện Quad vẽ văn bản ở dải giữa màn hình ($X \in [-960, 960]$, $Y \in [-250, 250]$, Vertex Color `0xFFFFFFFF`) khi Slot 0 đang giữ khung vi mạch và có `sLastUpdatedTextureResource`.
+       - Tự động ưu tiên gán `colorTex = sLastUpdatedTextureResource` và loại bỏ Render Target mask rỗng (`cmd.alphaTextureHandle = nullptr`).
+    3. **Bộ lọc kiểm tra Alpha Mask thực tế (`jni_bridge.cpp`)**:
+       - Trong `jni_bridge.cpp`: Chỉ kích hoạt `hasValidAlphaMask = true` khi dữ liệu mask thực sự có ít nhất 1 pixel alpha khác 0. Loại bỏ hoàn toàn fallback dùng mask rỗng, đảm bảo văn bản không bao giờ bị nhân với 0.
+  - **Độ phức tạp**: $O(1)$ cho kiểm tra quad và lấy mẫu alpha mask, $O(W \times H)$ cho sao chép mảng pixel BGRA $\to$ RGBA.
+
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).
 - **DXVK**: Thay vì chạy D3D11 (chỉ có trên Windows), DXVK chặn toàn bộ lệnh D3D11 từ engine gốc và biên dịch on-the-fly sang mã gọi Vulkan gửi vào `ANativeWindow` của Android.

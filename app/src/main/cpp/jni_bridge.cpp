@@ -297,10 +297,21 @@ static void renderLoop() {
                     bool hasValidAlphaMask = false;
                     if (cmd.alphaTextureHandle != nullptr) {
                         glActiveTexture(GL_TEXTURE1);
-                        if (cmd.alphaTextureHandle != lastAlphaBoundHandle) {
-                            uint32_t aTexW = 0, aTexH = 0;
-                            const uint8_t* aTexPixels = nullptr;
-                            if (D3D11Bridge_GetTextureInfoByHandle(cmd.alphaTextureHandle, &aTexW, &aTexH, &aTexPixels) && aTexPixels != nullptr) {
+                        uint32_t aTexW = 0, aTexH = 0;
+                        const uint8_t* aTexPixels = nullptr;
+                        if (D3D11Bridge_GetTextureInfoByHandle(cmd.alphaTextureHandle, &aTexW, &aTexH, &aTexPixels) && aTexPixels != nullptr) {
+                            // Kiểm tra an toàn: Mặt nạ phải thực sự chứa dữ liệu alpha khác 0
+                            // Ngăn ngừa RenderTarget rỗng (toàn bộ alpha = 0) làm triệt tiêu màu của Quad
+                            bool hasNonZeroAlpha = false;
+                            const size_t totalPixels = static_cast<size_t>(aTexW) * aTexH;
+                            const size_t step = std::max<size_t>(1, totalPixels / 64);
+                            for (size_t p = 0; p < totalPixels; p += step) {
+                                if (aTexPixels[p * 4 + 3] > 0) {
+                                    hasNonZeroAlpha = true;
+                                    break;
+                                }
+                            }
+                            if (hasNonZeroAlpha) {
                                 GLuint alphaTexId = getOrCreateGlesTexture(cmd.alphaTextureHandle, aTexW, aTexH, aTexPixels);
                                 if (alphaTexId != 0) {
                                     glBindTexture(GL_TEXTURE_2D, alphaTexId);
@@ -308,9 +319,10 @@ static void renderLoop() {
                                     hasValidAlphaMask = true;
                                 }
                             }
-                        } else if (lastAlphaBoundHandle != nullptr) {
-                            hasValidAlphaMask = true;
                         }
+                    }
+                    if (!hasValidAlphaMask) {
+                        lastAlphaBoundHandle = nullptr;
                     }
                     glUniform1i(uHasAlphaTextureLoc, hasValidAlphaMask ? 1 : 0);
 

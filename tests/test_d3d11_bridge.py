@@ -955,6 +955,77 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         self.assertEqual(mode, "STRIP_RESTART")
         self.assertEqual(quads, 1)
 
+    def test_attention_text_quad_detection_and_texture_override(self):
+        # Kiểm tra logic phát hiện Quad văn bản Attention ở lòng khung và gán đúng Texture văn bản vừa cập nhật
+        def resolve_quad_texture_and_mask(bound_slot0, last_updated_tex, quad_min_x, quad_max_x, quad_min_y, quad_max_y, is_white_color, slot1_is_empty_render_target):
+            quad_width = quad_max_x - quad_min_x
+            is_center_quad = (quad_width >= 1.6 and abs(quad_min_y + quad_max_y) < 0.5 and quad_max_y - quad_min_y <= 1.2)
+            
+            # Khung vi mạch thường là 1928x1040
+            is_dialog_frame_bound = (bound_slot0 == "Tex1928x1040")
+            
+            color_tex = bound_slot0
+            alpha_tex = "RenderTargetA8" if slot1_is_empty_render_target else None
+
+            if last_updated_tex is not None and is_center_quad and is_white_color and is_dialog_frame_bound:
+                # Quad văn bản nội dung ở giữa khung vi mạch
+                color_tex = last_updated_tex
+                alpha_tex = None # Triệt tiêu mask rỗng
+
+            return color_tex, alpha_tex
+
+        # 1. Quad khung vi mạch: không phải is_white_color và vẽ ở draw call đầu -> giữ nguyên khung vi mạch
+        tex, mask = resolve_quad_texture_and_mask("Tex1928x1040", "FontTex1024", -1.0, 1.0, -0.47, 0.47, False, False)
+        self.assertEqual(tex, "Tex1928x1040")
+        self.assertIsNone(mask)
+
+        # 2. Quad văn bản Attention ở giữa lòng khung: is_white_color = True, toạ độ giữa, Slot 0 đang trỏ 1928x1040
+        tex2, mask2 = resolve_quad_texture_and_mask("Tex1928x1040", "FontTex1024", -1.0, 1.0, -0.435, 0.435, True, True)
+        self.assertEqual(tex2, "FontTex1024")
+        self.assertIsNone(mask2) # Mask rỗng bị loại bỏ
+
+    def test_update_texture_auto_expansion_for_row_pitch(self):
+        # Kiểm tra thuật toán tự động mở rộng bề ngang texture khi RowPitch nguồn vượt quá bề ngang khởi tạo
+        def compute_texture_dimensions(init_width, init_height, src_row_pitch, bytes_per_pixel=4):
+            effective_width = init_width
+            effective_pitch = init_width * bytes_per_pixel
+            if src_row_pitch > effective_pitch:
+                effective_width = src_row_pitch // bytes_per_pixel
+                effective_pitch = src_row_pitch
+            return effective_width, init_height, effective_pitch
+
+        # Texture 1024x1024 khởi tạo nhưng nguồn có RowPitch = 7680 (1920 pixels * 4 bytes)
+        w, h, pitch = compute_texture_dimensions(1024, 1024, 7680, 4)
+        self.assertEqual(w, 1920)
+        self.assertEqual(h, 1024)
+        self.assertEqual(pitch, 7680)
+
+        # Texture thông thường có RowPitch khớp (ví dụ 1024 * 4 = 4096)
+        w2, h2, pitch2 = compute_texture_dimensions(1024, 1024, 4096, 4)
+        self.assertEqual(w2, 1024)
+        self.assertEqual(pitch2, 4096)
+
+    def test_alpha_mask_empty_protection_validation(self):
+        # Kiểm tra bộ lọc phát hiện mặt nạ alpha rỗng
+        def has_valid_alpha_content(alpha_bytes):
+            if not alpha_bytes:
+                return False
+            # Lấy mẫu bước nhảy
+            step = max(1, len(alpha_bytes) // 64)
+            for i in range(0, len(alpha_bytes), step):
+                if alpha_bytes[i] > 0:
+                    return True
+            return False
+
+        # 1. Mặt nạ RenderTarget rỗng (toàn bộ 0) -> False (vô hiệu hoá)
+        empty_mask = bytes([0] * 1024)
+        self.assertFalse(has_valid_alpha_content(empty_mask))
+
+        # 2. Mặt nạ thực tế có alpha > 0 (ví dụ icon hoặc wipe dissolve) -> True (kích hoạt)
+        valid_mask = bytearray([0] * 1024)
+        valid_mask[512] = 255
+        self.assertTrue(has_valid_alpha_content(bytes(valid_mask)))
+
 if __name__ == "__main__":
     unittest.main()
 

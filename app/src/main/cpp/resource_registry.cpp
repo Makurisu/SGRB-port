@@ -253,8 +253,15 @@ bool ResourceRegistry::updateTexture(
     }
 
     if (desc.format == kDxgiB8G8R8A8Unorm) {
-        const uint32_t regionPixels = right - left;
-        const uint32_t srcPitch = srcRowPitch != 0 ? srcRowPitch : regionPixels * 4;
+        uint32_t effectiveWidth = desc.width;
+        const uint32_t srcPitch = srcRowPitch != 0 ? srcRowPitch : (right - left) * 4;
+        if (srcPitch > entry.rowPitch && box == nullptr) {
+            effectiveWidth = srcPitch / 4;
+            entry.texture.width = effectiveWidth;
+            entry.rowPitch = srcPitch;
+            entry.data.resize(static_cast<size_t>(srcPitch) * desc.height, 0);
+        }
+        const uint32_t regionPixels = std::min(entry.texture.width - left, srcPitch / 4);
         for (uint32_t row = top; row < bottom; ++row) {
             const uint8_t* rowSrc = src + static_cast<size_t>(row - top) * srcPitch;
             uint8_t* rowDst = entry.data.data() + static_cast<size_t>(row) * entry.rowPitch +

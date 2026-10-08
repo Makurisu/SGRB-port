@@ -939,6 +939,32 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                             colorTex = sLastUpdatedTextureResource;
                         }
                     }
+
+                    // Nhận diện Quad văn bản Attention ở lòng khung vi mạch:
+                    // 1. Tọa độ nằm ở dải giữa màn hình (quadWidth >= 1.6f, centerY gần 0, quadHeight <= 1.2f)
+                    // 2. Vertex Color là trắng đục (0xFFFFFFFF)
+                    // 3. Slot 0 đang giữ texture khung vi mạch (1928x1040) từ draw call trước
+                    // 4. Có sLastUpdatedTextureResource (Texture Format 87 vừa được cập nhật qua UpdateSubresource)
+                    float centerY = (minY + maxY) * 0.5f;
+                    bool isWhiteColor = (cmd.color[0][0] >= 0.95f && cmd.color[0][1] >= 0.95f &&
+                                         cmd.color[0][2] >= 0.95f && cmd.color[0][3] >= 0.95f);
+                    bool isCenterTextQuad = false;
+                    if (sLastUpdatedTextureResource != nullptr && quadWidth >= 1.6f &&
+                        std::abs(centerY) < 0.5f && quadHeight <= 1.2f && isWhiteColor) {
+                        sgre::TextureDesc boundDesc{};
+                        if (colorTex != nullptr && sRegistry.getTextureDesc(colorTex, boundDesc)) {
+                            if (boundDesc.width == 1928 && boundDesc.height == 1040) {
+                                isCenterTextQuad = true;
+                            }
+                        } else if (colorTex == nullptr) {
+                            isCenterTextQuad = true;
+                        }
+                    }
+
+                    if (isCenterTextQuad && sLastUpdatedTextureResource != nullptr) {
+                        colorTex = sLastUpdatedTextureResource;
+                    }
+
                     cmd.textureHandle = colorTex;
                     cmd.textureWidth = 0;
                     cmd.textureHeight = 0;
@@ -955,7 +981,7 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                     cmd.alphaTextureHandle = nullptr;
                     cmd.alphaTextureWidth = 0;
                     cmd.alphaTextureHeight = 0;
-                    if (alphaTex != nullptr) {
+                    if (alphaTex != nullptr && !isCenterTextQuad) {
                         sgre::TextureDesc aDesc{};
                         if (sRegistry.getTextureDesc(alphaTex, aDesc)) {
                             // Chỉ áp dụng Alpha Mask khi format là A8_UNORM (format 65)
