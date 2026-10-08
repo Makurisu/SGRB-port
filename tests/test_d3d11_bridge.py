@@ -878,17 +878,82 @@ class TestD3D11BridgeLogic(unittest.TestCase):
         # Pixel 2: Đục hoàn toàn (màu trắng)
         self.assertEqual(list(expanded[8:12]), [255, 255, 255, 0xFF])
 
-    def test_fallback_quad_filtering_logic(self):
-        # Kiểm tra điều kiện fallback quad: chỉ cho phép 1920x1080, loại bỏ hoàn toàn các texture atlas (2048x1088, 3424x3424)
-        def should_draw_fullscreen_fallback(tex_w, tex_h, sprite_count):
-            if sprite_count > 0:
-                return False
-            return (tex_w == 1920 and tex_h == 1080)
+    def test_unconditional_w_full_intro_screen_protection(self):
+        # Kiểm tra lớp bảo vệ loại bỏ triệt để tấm trắng w_full toàn màn hình (kể cả khi has_valid_alpha = True)
+        def should_skip_w_full(tex_w, span_x, span_y, uv_v):
+            return (tex_w == 3424 and span_x >= 1.8 and span_y >= 1.8 and uv_v > 0.6)
 
-        self.assertTrue(should_draw_fullscreen_fallback(1920, 1080, 0))
-        self.assertFalse(should_draw_fullscreen_fallback(1920, 1080, 5))
-        self.assertFalse(should_draw_fullscreen_fallback(2048, 1088, 0), "Atlas 2048x1088 tuyệt đối không được fallback đè toàn màn hình")
-        self.assertFalse(should_draw_fullscreen_fallback(3424, 3424, 0), "Atlas 3424x3424 tuyệt đối không được fallback đè toàn màn hình")
+        # w_full toàn màn hình (span 2.0x2.0, uv_v ~ 0.63) -> PHẢI BỎ QUA dù có hay không có mặt nạ alpha
+        self.assertTrue(should_skip_w_full(3424, 2.0, 2.0, 0.6335))
+        # Logo STEINS;GATE trên Atlas 3424 -> KHÔNG BỊ BỎ QUA
+        self.assertFalse(should_skip_w_full(3424, 0.8, 0.3, 0.2))
+
+    def test_safe_memmem_search_logic(self):
+        # Kiểm tra thuật toán safe_memmem_search thay thế sub_14056C470 chống tràn stack cookie
+        def safe_memmem_search(haystack, needle):
+            if len(needle) == 0:
+                return 0 # Con trỏ tới haystack_begin (offset 0)
+            if len(haystack) < len(needle):
+                return len(haystack) # Con trỏ tới haystack_end
+            pos = haystack.find(needle)
+            return pos if pos != -1 else len(haystack)
+
+        data = b"\x1a\x45\xdf\xa3\x93\x42\x82\x88matroska\x42\x87\x81\x02\x42\x85\x81\x02"
+        # 1. Tìm needle rỗng
+        self.assertEqual(safe_memmem_search(data, b""), 0)
+        # 2. Tìm needle ở đầu
+        self.assertEqual(safe_memmem_search(data, b"\x1a\x45"), 0)
+        # 3. Tìm needle "matroska" trong EBML header
+        self.assertEqual(safe_memmem_search(data, b"matroska"), 8)
+        # 4. Tìm needle không tồn tại -> trả về haystack_end
+        self.assertEqual(safe_memmem_search(data, b"webm_video"), len(data))
+        # 5. Needle dài hơn haystack -> trả về haystack_end an toàn, không buffer overflow
+        self.assertEqual(safe_memmem_search(b"short", b"very_long_needle_pattern"), 5)
+
+    def test_smart_color_texture_fallback_for_topology_4(self):
+        # Kiểm tra logic gán colorTex khi vẽ text glyphs (Topology = 4)
+        def resolve_color_texture(bound_tex0, active_tex, last_updated_tex, topology):
+            color_tex = bound_tex0
+            if color_tex is None:
+                if topology == 4 and last_updated_tex is not None:
+                    color_tex = last_updated_tex
+                elif active_tex is not None:
+                    color_tex = active_tex
+                else:
+                    color_tex = last_updated_tex
+            return color_tex
+
+        # Trường hợp 1: Bound Tex0 có sẵn -> dùng trực tiếp
+        self.assertEqual(resolve_color_texture("Tex0", "ActiveTex", "UpdatedFontTex", 4), "Tex0")
+        # Trường hợp 2: Bound Tex0 bị unbind (None), Topology = 4 (TriangleList chữ) -> ưu tiên font texture vừa UpdateSubresource
+        self.assertEqual(resolve_color_texture(None, "ActiveBgTex", "UpdatedFontTex", 4), "UpdatedFontTex")
+        # Trường hợp 3: Bound Tex0 bị unbind (None), Topology = 5 (TriangleStrip nền) -> lấy ActiveTex
+        self.assertEqual(resolve_color_texture(None, "ActiveBgTex", "UpdatedFontTex", 5), "ActiveBgTex")
+
+    def test_topology_4_triangle_list_precedence(self):
+        # Kiểm tra ưu tiên nhận diện Topology 4 (TriangleList) trước StripRestart
+        def parse_quad_mode(topo, index_count):
+            if topo == 4 and index_count % 6 == 0:
+                return "TRI_LIST", index_count // 6
+            elif index_count >= 4 and (index_count - 4) % 6 == 0:
+                return "STRIP_RESTART", (index_count - 4) // 6 + 1
+            else:
+                return "QUADS", index_count // 4
+
+        # index_count = 6: TriangleList chuẩn cho 1 quad
+        mode, quads = parse_quad_mode(4, 6)
+        self.assertEqual(mode, "TRI_LIST")
+        self.assertEqual(quads, 1)
+
+        # index_count = 24: TriangleList cho 4 ký tự text
+        mode, quads = parse_quad_mode(4, 24)
+        self.assertEqual(mode, "TRI_LIST")
+        self.assertEqual(quads, 4)
+
+        # index_count = 4 với Topology 5: Strip đơn lẻ
+        mode, quads = parse_quad_mode(5, 4)
+        self.assertEqual(mode, "STRIP_RESTART")
+        self.assertEqual(quads, 1)
 
 if __name__ == "__main__":
     unittest.main()

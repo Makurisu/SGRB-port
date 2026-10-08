@@ -351,6 +351,7 @@ static const void* sActiveShaderResourceView = nullptr;
 static const void* sActiveTextureResource = nullptr;
 static const void* sBoundShaderResourceViews[8] = {nullptr};
 static const void* sBoundTextureResources[8] = {nullptr};
+static const void* sLastUpdatedTextureResource = nullptr;
 static uint32_t sCurrentPrimitiveTopology = 4; // D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST = 4
 
 // IDXGISwapChain methods
@@ -803,14 +804,14 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
             bool isStripRestart = false;
             bool isTriList = false;
 
-            if (indexCount >= 4 && (indexCount - 4) % 6 == 0) {
-                numQuads = (indexCount - 4) / 6 + 1;
-                quadStride = 6;
-                isStripRestart = true;
-            } else if (sCurrentPrimitiveTopology == 4 && indexCount % 6 == 0) {
+            if (sCurrentPrimitiveTopology == 4 && indexCount % 6 == 0) {
                 numQuads = indexCount / 6;
                 quadStride = 6;
                 isTriList = true;
+            } else if (indexCount >= 4 && (indexCount - 4) % 6 == 0) {
+                numQuads = (indexCount - 4) / 6 + 1;
+                quadStride = 6;
+                isStripRestart = true;
             } else {
                 numQuads = indexCount / 4;
                 quadStride = 4;
@@ -928,7 +929,16 @@ static void WINAPI mock_Context_DrawIndexed(void*, uint32_t indexCount, uint32_t
                     cmd.indices[3] = 2; cmd.indices[4] = 1; cmd.indices[5] = 3;
 
                     // Gán Texture Slot 0 (Color Texture)
-                    const void* colorTex = sBoundTextureResources[0] != nullptr ? sBoundTextureResources[0] : sActiveTextureResource;
+                    const void* colorTex = sBoundTextureResources[0];
+                    if (colorTex == nullptr) {
+                        if (sCurrentPrimitiveTopology == 4 && sLastUpdatedTextureResource != nullptr) {
+                            colorTex = sLastUpdatedTextureResource;
+                        } else if (sActiveTextureResource != nullptr) {
+                            colorTex = sActiveTextureResource;
+                        } else {
+                            colorTex = sLastUpdatedTextureResource;
+                        }
+                    }
                     cmd.textureHandle = colorTex;
                     cmd.textureWidth = 0;
                     cmd.textureHeight = 0;
@@ -1103,7 +1113,9 @@ static void WINAPI mock_Context_UpdateSubresource(
     if (pDstResource && pSrcData) {
         const auto* box = reinterpret_cast<const sgre::UpdateBox*>(pDstBox);
         if (!sRegistry.updateBuffer(pDstResource, box, pSrcData)) {
-            sRegistry.updateTexture(pDstResource, box, pSrcData, srcRowPitch);
+            if (sRegistry.updateTexture(pDstResource, box, pSrcData, srcRowPitch)) {
+                sLastUpdatedTextureResource = pDstResource;
+            }
         }
     }
 }
@@ -1218,7 +1230,23 @@ static void WINAPI mock_Context_IASetPrimitiveTopology(void*, uint32_t topology)
     }
     sCurrentPrimitiveTopology = topology;
 }
-static void WINAPI mock_Context_VSSetShaderResources(void*, uint32_t, uint32_t, void* const*) {}
+static void WINAPI mock_Context_VSSetShaderResources(void*, uint32_t startSlot, uint32_t numViews, void* const* ppShaderResourceViews) {
+    if (ppShaderResourceViews != nullptr && numViews > 0) {
+        for (uint32_t i = 0; i < numViews; ++i) {
+            uint32_t slot = startSlot + i;
+            if (slot < 8) {
+                void* viewPtr = ppShaderResourceViews[i];
+                if (viewPtr != nullptr) {
+                    auto* view = reinterpret_cast<const MockViewCOM*>(viewPtr);
+                    void* res = (view->pResource != nullptr) ? view->pResource : viewPtr;
+                    if (slot == 0 && sBoundTextureResources[0] == nullptr) {
+                        sBoundTextureResources[0] = res;
+                    }
+                }
+            }
+        }
+    }
+}
 static void WINAPI mock_Context_VSSetSamplers(void*, uint32_t, uint32_t, void* const*) {}
 static void WINAPI mock_Context_OMSetRenderTargets(void*, uint32_t, void* const*, void*) {}
 static void WINAPI mock_Context_OMSetBlendState(void*, void*, const float[4], uint32_t) {}

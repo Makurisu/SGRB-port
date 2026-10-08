@@ -376,6 +376,29 @@ sequenceDiagram
     - **Giải Pháp**: Siết chặt kiểm tra `hasValidAlphaMask`: Chỉ kích hoạt `uHasAlphaTexture = 1` khi texture mask thực sự có dữ liệu pixel hợp lệ và tải thành công lên GPU (`alphaTexId != 0`). Đồng thời tự động bỏ qua quad `w_full` khi mặt nạ alpha chưa sẵn sàng, giải phóng tầm nhìn để hoạt ảnh xuất hiện của Logo Title hiển thị mượt mà.
   - **Độ phức tạp**: $O(1)$ cho mỗi đỉnh sprite quad và mỗi chu kỳ kiểm tra texture bind.
 
+- **Khắc Phục Triệt Để Màn Trắng Hoạt Ảnh Chuyển Cảnh, Khôi Phục Chữ Cảnh Báo Attention & Hook An Toàn Chống Tràn Stack Cookie (`jni_bridge.cpp`, `d3d11_bridge.cpp`, `payload_loader.cpp` - Milestone M20)**:
+  - **Triệt Tiêu Hoàn Toàn Tấm Màn Trắng Che Khuất Hoạt Ảnh Nét Vẽ (`w_full` Unconditional Skip - `jni_bridge.cpp`)**:
+    - **Phân Tích**: Trong engine M2, hiệu ứng vẽ viền các nét chữ cái Steins;Gate (`AtlasQuad` kích thước nhỏ $0.1 \times 1.1$) được thiết kế kết hợp với quad trắng $2.0 \times 2.0$ (`w_full`) quét qua Stencil Test. Trên OpenGL ES chưa có Stencil Test và `alphaTextureHandle` được cấp phát bộ nhớ RAM thành công khiến `hasValidAlphaMask = true`, vô hiệu hoá bộ lọc cũ. Kết quả là mỗi frame vẽ nét chữ, một tấm trắng đặc lại phủ kín toàn màn hình, che khuất toàn bộ hoạt ảnh.
+    - **Giải Pháp**: Bỏ qua điều kiện `!hasValidAlphaMask`. Bất kỳ quad nào có `textureWidth == 3424 && quadSpanX >= 1.8f && quadSpanY >= 1.8f && cmd.uv[0][1] > 0.6f` đều bị bỏ qua vô điều kiện (`continue`). Giải phóng tầm nhìn, để lộ 100% hoạt ảnh nét vẽ vi mạch và chữ Title xuất hiện mượt mà.
+  - **Khôi Phục Văn Bản Cảnh Báo Attention (`d3d11_bridge.cpp`)**:
+    - **Phân Tích**: Game tạo Dynamic Font Texture $1024 \times 1024$ (Format 87) và cập nhật qua `UpdateSubresource` với `RowPitch = 7680`. Trước khi vẽ text glyphs, game unbind Slot 0 (`PSSetShaderResources(0, 4, [0, 0, 0, 0])`) và chuyển Topology sang 4 (TriangleList). Do Slot 0 bằng null, hệ thống fallback về texture cũ `1928x1040` (khung vi mạch), khiến chữ bị lấy mẫu sai toạ độ và vô hình.
+    - **Giải Pháp**:
+      1. Trong `mock_Context_UpdateSubresource`: Ghi nhận con trỏ texture vừa cập nhật `sLastUpdatedTextureResource = pDstResource`.
+      2. Trong `mock_Context_DrawIndexed`: Khi `sBoundTextureResources[0] == nullptr`, nếu `sCurrentPrimitiveTopology == 4` (TriangleList vẽ chữ) và có `sLastUpdatedTextureResource`, tự động ưu tiên gán texture font này làm `colorTex`.
+      3. Đảo thứ tự kiểm tra topology: Ưu tiên `sCurrentPrimitiveTopology == 4 && indexCount % 6 == 0` trước `(indexCount - 4) % 6 == 0` để nhận diện chính xác TriangleList font glyphs.
+      4. Triển khai `mock_Context_VSSetShaderResources` để đảm bảo không bỏ sót bất kỳ texture binding nào từ Vertex Shader stage.
+  - **Khắc Phục Crash SIGTRAP Khi Chạm Màn Hình Ở Press Any Button (`payload_loader.cpp`)**:
+    - **Phân Tích Gốc Rễ qua IDA Pro Decompile**:
+      - Khi người dùng chạm màn hình ở Press Any Button, game mở file video nền `windata/movie/sg_titlebg.webm` và đọc qua `ReadFile`.
+      - Engine gọi hàm `sub_14056C470` (địa chỉ ảo `0x14056C470`, RVA `0x56C470`) để phân tích EBML header. Hàm này là `std::string::find` / `memmem` của MSVC STL dùng lệnh SSE4.2 `pcmpestri`.
+      - Tại `0x14056C557`, lệnh `call memcpy` sao chép `(a2 - v7)` bytes vào biến cục bộ `v26` trên stack (`[rsp+20h]`, kích thước 16 bytes). Khi kích thước vượt quá 16 bytes, `memcpy` ghi đè qua `[rsp+30h]` phá hỏng `__security_cookie` (`var_48`).
+      - Cuối hàm tại `0x14056C5FB`, `call __security_check_cookie` phát hiện cookie bị ghi đè, kích hoạt `__report_securityfailure` / `__fastfail` khiến nhân Linux ném tín hiệu `SIGTRAP` làm app crash văng ra Launcher.
+    - **Giải Pháp**:
+      - Triển khai hàm `safe_memmem_search` an toàn chuẩn C với Microsoft x64 calling convention (`__attribute__((ms_abi))`), sử dụng `memmem` an toàn không giới hạn kích thước đệm stack.
+      - Trong `PayloadLoader::applyRelocations`, ghi đè 12 byte đầu của hàm `sub_14056C470` tại RVA `0x56C470` bằng lệnh nhảy 64-bit trực tiếp: `mov rax, safe_memmem_search; jmp rax;` (mã máy `48 B8 <addr> FF E0`).
+      - Loại bỏ vĩnh viễn nguy cơ tràn stack buffer cookie, cho phép engine đọc WebM video mượt mà và chuyển cảnh vào Menu chính không bị crash.
+  - **Độ phức tạp**: $O(1)$ cho kiểm tra quad và hook nhảy, $O(M \times N)$ cho thuật toán `memmem` an toàn.
+
 ### 2.3. Lớp Dịch Đồ Hoạ & CPU (Box64 + DXVK)
 - **Box64**: Thực thi các lệnh x86_64 của `sgre_steam.exe` trên CPU ARM64 của điện thoại với độ trễ tối thiểu (JIT Recompilation).
 - **DXVK**: Thay vì chạy D3D11 (chỉ có trên Windows), DXVK chặn toàn bộ lệnh D3D11 từ engine gốc và biên dịch on-the-fly sang mã gọi Vulkan gửi vào `ANativeWindow` của Android.

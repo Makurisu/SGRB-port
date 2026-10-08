@@ -314,12 +314,13 @@ static void renderLoop() {
                     }
                     glUniform1i(uHasAlphaTextureLoc, hasValidAlphaMask ? 1 : 0);
 
-                    // Bảo vệ chống vẽ đè màn hình trắng chuyển cảnh (title_font/w_full) khi thiếu Alpha Mask:
+                    // Bảo vệ chống vẽ đè màn hình trắng chuyển cảnh (title_font/w_full):
                     // Trong title.pure, w_full là quad toàn màn hình trên Atlas 3424x3424 (vùng UV.V > 0.6f).
-                    // Nếu mặt nạ alpha rỗng mà vẫn vẽ w_full, tấm trắng đặc sẽ che phủ toàn bộ hoạt ảnh của Logo Title.
+                    // Tấm trắng đặc này dùng D3D11 Stencil Test trên Windows để quét màu. Trên GLES chưa hỗ trợ Stencil Test,
+                    // việc vẽ w_full sẽ phủ trắng xoá toàn bộ màn hình, che mất toàn bộ hoạt ảnh nét vẽ vi mạch của Title Logo.
                     float quadSpanX = std::abs(cmd.pos[1][0] - cmd.pos[0][0]);
                     float quadSpanY = std::abs(cmd.pos[2][1] - cmd.pos[0][1]);
-                    if (cmd.textureWidth == 3424 && quadSpanX >= 1.8f && quadSpanY >= 1.8f && !hasValidAlphaMask && cmd.uv[0][1] > 0.6f) {
+                    if (cmd.textureWidth == 3424 && quadSpanX >= 1.8f && quadSpanY >= 1.8f && cmd.uv[0][1] > 0.6f) {
                         continue;
                     }
 

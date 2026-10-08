@@ -297,6 +297,30 @@ void* PayloadLoader::mapImageToMemory(const GamePayloadInfo& info) {
     return baseAddr;
 }
 
+#if defined(__x86_64__) || defined(_M_X64)
+// Hàm tìm kiếm chuỗi con an toàn thay thế cho sub_14056C470 (MSVC STL std::string::find SSE4.2)
+// calling convention: Microsoft x64 (RCX = begin, RDX = end, R8 = needle, R9 = needle_len)
+static const char* __attribute__((ms_abi)) safe_memmem_search(
+    const char* haystack_begin,
+    const char* haystack_end,
+    const char* needle,
+    size_t needle_len
+) {
+    if (needle_len == 0) {
+        return haystack_begin;
+    }
+    if (haystack_begin == nullptr || haystack_end == nullptr || haystack_begin >= haystack_end) {
+        return haystack_end;
+    }
+    size_t haystack_len = static_cast<size_t>(haystack_end - haystack_begin);
+    if (haystack_len < needle_len) {
+        return haystack_end;
+    }
+    const void* found = memmem(haystack_begin, haystack_len, needle, needle_len);
+    return found != nullptr ? static_cast<const char*>(found) : haystack_end;
+}
+#endif
+
 bool PayloadLoader::applyRelocations(void* baseAddress, const GamePayloadInfo& info) {
     if (baseAddress == nullptr || info.relocRva == 0 || info.relocSize == 0) {
         LOGI("Không có Base Relocation cần áp dụng");
@@ -356,6 +380,20 @@ bool PayloadLoader::applyRelocations(void* baseAddress, const GamePayloadInfo& i
     pFunc[4] = 0x00;
     pFunc[5] = 0xC3; // ret
     LOGI("Đã áp dụng hotfix CRT SEH section-check tại RVA 0x5AC240 (mov eax, 1; ret)");
+
+#if defined(__x86_64__) || defined(_M_X64)
+    // Hotfix hàm std::string::find SSE4.2 (RVA 0x56C470 / VA 0x14056C470):
+    // Hàm gốc của MSVC dùng pcmpestri và memcpy ghi đè stack cookie var_48 khi phân tích WebM/EBML header,
+    // dẫn đến ném SIGTRAP crash game khi người dùng chạm màn hình ở Press Any Button.
+    // Thay thế bằng safe_memmem_search an toàn 100% chuẩn C/C++.
+    uint8_t* pSearchFunc = basePtr + 0x56C470;
+    pSearchFunc[0] = 0x48;
+    pSearchFunc[1] = 0xB8;
+    *reinterpret_cast<uint64_t*>(pSearchFunc + 2) = reinterpret_cast<uint64_t>(&safe_memmem_search);
+    pSearchFunc[10] = 0xFF;
+    pSearchFunc[11] = 0xE0;
+    LOGI("Đã áp dụng hotfix safe_memmem_search tại RVA 0x56C470 để chống tràn Stack Cookie");
+#endif
 
     return true;
 }
