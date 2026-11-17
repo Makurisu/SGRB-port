@@ -1,0 +1,56 @@
+# Build outputs
+build/
+.gradle/
+**/build/
+*.apk
+*.aab
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+local.properties
+.DS_Store
+
+# Native build
+.cxx/
+**/bin/
+**/obj/
+*.o
+*.so
+*.a
+*.dll
+*.exe
+
+# Large game assets (mounted at runtime)
+data/
+*.mp4
+*.psb
+*.obb
+
+# Logs & temp
+*.log
+scratch/
+tmp/
+__pycache__/
+*.pyc
+
+# Internal docs (kept locally only)
+CODEBASE-DOCS/
+
+# Local build & verification artifacts
+apk_output/
+app_build_*/
+bin/
+build-artifact*/
+build_artifact*/
+build_output/
+downloaded_apk*/
+extracted_shaders/
+tests/automation/*
+!tests/automation/capture_fast_intro.py
+!tests/automation/ldplayer_controller.py
+!tests/automation/run_pipeline_test.py
+!tests/automation/test_ldplayer_controller.py
+!tests/automation/test_logo_transitions.py
+*.keystore
+*.jks

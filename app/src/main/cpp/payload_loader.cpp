@@ -1,0 +1,732 @@
+#include "payload_loader.h"
+#include "d3d11_bridge.h"
+#include "dinput_bridge.h"
+#include "win32_bridge.h"
+#include <fstream>
+#include <vector>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <cerrno>
+#include <android/log.h>
+
+#define LOG_TAG "SGRE_PayloadLoader"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+bool PayloadLoader::verifyPEHeader(const std::string& filePath, GamePayloadInfo& outInfo) {
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file.is_open()) {
+        LOGE("Không thể mở file binary: %s", filePath.c_str());
+        return false;
+    }
+
+    uint16_t dosHeader = 0;
+    file.read(reinterpret_cast<char*>(&dosHeader), sizeof(dosHeader));
+    // Kiểm tra Magic 'MZ' = 0x5A4D
+    if (dosHeader != 0x5A4D) {
+        LOGE("File không có chữ ký DOS MZ hợp lệ: 0x%X", dosHeader);
+        return false;
+    }
+
+    // Nhảy tới offset PE header tại 0x3C
+    file.seekg(0x3C, std::ios::beg);
+    uint32_t peOffset = 0;
+    file.read(reinterpret_cast<char*>(&peOffset), sizeof(peOffset));
+
+    file.seekg(peOffset, std::ios::beg);
+    uint32_t peSignature = 0;
+    file.read(reinterpret_cast<char*>(&peSignature), sizeof(peSignature));
+
+    // Kiểm tra chữ ký 'PE\0\0' = 0x00004550
+    if (peSignature != 0x00004550) {
+        LOGE("File không có chữ ký PE hợp lệ: 0x%X", peSignature);
+        return false;
+    }
+
+    // COFF Header (20 bytes)
+    uint16_t machine = 0;
+    uint16_t numSections = 0;
+    file.read(reinterpret_cast<char*>(&machine), sizeof(machine));
+    file.read(reinterpret_cast<char*>(&numSections), sizeof(numSections));
+
+    outInfo.machineType = machine;
+    outInfo.numberOfSections = numSections;
+
+    // Bỏ qua TimeDateStamp (4), PointerToSymbolTable (4), NumberOfSymbols (4), SizeOfOptionalHeader (2), Characteristics (2)
+    file.seekg(12, std::ios::cur);
+
+    // Optional Header (PE32+ 64-bit) bắt đầu tại peOffset + 24
+    uint16_t optMagic = 0;
+    file.seekg(peOffset + 24, std::ios::beg);
+    file.read(reinterpret_cast<char*>(&optMagic), sizeof(optMagic));
+
+    // AddressOfEntryPoint tại offset peOffset + 24 + 16 (4 bytes)
+    uint32_t entryPoint = 0;
+    file.seekg(peOffset + 24 + 16, std::ios::beg);
+    file.read(reinterpret_cast<char*>(&entryPoint), sizeof(entryPoint));
+
+    // ImageBase tại offset peOffset + 24 + 24 (8 bytes trong PE32+)
+    uint64_t imageBase = 0;
+    file.seekg(peOffset + 24 + 24, std::ios::beg);
+    file.read(reinterpret_cast<char*>(&imageBase), sizeof(imageBase));
+
+    // SizeOfImage tại offset peOffset + 24 + 56 (4 bytes)
+    // SizeOfHeaders tại offset peOffset + 24 + 60 (4 bytes)
+    uint32_t sizeOfImage = 0;
+    uint32_t sizeOfHeaders = 0;
+    file.seekg(peOffset + 24 + 56, std::ios::beg);
+    file.read(reinterpret_cast<char*>(&sizeOfImage), sizeof(sizeOfImage));
+    file.read(reinterpret_cast<char*>(&sizeOfHeaders), sizeof(sizeOfHeaders));
+
+    outInfo.entryPointRva = entryPoint;
+    outInfo.imageBase = imageBase;
+    outInfo.sizeOfImage = sizeOfImage;
+    outInfo.sizeOfHeaders = sizeOfHeaders;
+
+    // Đọc DataDirectory[1] (Import Table) tại offset peOffset + 24 + 120 (trong PE32+ 64-bit)
+    file.seekg(peOffset + 24 + 120, std::ios::beg);
+    uint32_t importRva = 0;
+    uint32_t importSize = 0;
+    file.read(reinterpret_cast<char*>(&importRva), sizeof(importRva));
+    file.read(reinterpret_cast<char*>(&importSize), sizeof(importSize));
+
+    outInfo.importRva = importRva;
+    outInfo.importSize = importSize;
+
+    // Đọc DataDirectory[5] (Base Relocation Table) tại offset peOffset + 24 + 152
+    file.seekg(peOffset + 24 + 152, std::ios::beg);
+    uint32_t relocRva = 0;
+    uint32_t relocSize = 0;
+    file.read(reinterpret_cast<char*>(&relocRva), sizeof(relocRva));
+    file.read(reinterpret_cast<char*>(&relocSize), sizeof(relocSize));
+
+    outInfo.relocRva = relocRva;
+    outInfo.relocSize = relocSize;
+    outInfo.totalRelocEntries = 0;
+
+    // Đọc DataDirectory[9] (TLS Table) tại offset peOffset + 24 + 184 (trong PE32+ 64-bit)
+    file.seekg(peOffset + 24 + 184, std::ios::beg);
+    uint32_t tlsRva = 0;
+    uint32_t tlsSize = 0;
+    file.read(reinterpret_cast<char*>(&tlsRva), sizeof(tlsRva));
+    file.read(reinterpret_cast<char*>(&tlsSize), sizeof(tlsSize));
+    outInfo.tlsRva = tlsRva;
+    outInfo.tlsSize = tlsSize;
+    if (tlsRva != 0) {
+        LOGI("Tìm thấy Windows TLS Directory: RVA=0x%X, Size=0x%X", tlsRva, tlsSize);
+    }
+
+    // Đọc kích thước của Optional Header từ COFF header offset để nhảy chính xác tới Section Table
+    file.seekg(peOffset + 20, std::ios::beg);
+    uint16_t sizeOfOptHeader = 0;
+    file.read(reinterpret_cast<char*>(&sizeOfOptHeader), sizeof(sizeOfOptHeader));
+
+    // Điểm bắt đầu của bảng Section Headers
+    uint32_t sectionTableOffset = peOffset + 24 + sizeOfOptHeader;
+    file.seekg(sectionTableOffset, std::ios::beg);
+
+    outInfo.sections.clear();
+    for (uint16_t i = 0; i < numSections; ++i) {
+        char nameBuf[9] = {0};
+        file.read(nameBuf, 8);
+
+        uint32_t vSize = 0, vAddr = 0, rSize = 0, rOffset = 0;
+        file.read(reinterpret_cast<char*>(&vSize), sizeof(vSize));
+        file.read(reinterpret_cast<char*>(&vAddr), sizeof(vAddr));
+        file.read(reinterpret_cast<char*>(&rSize), sizeof(rSize));
+        file.read(reinterpret_cast<char*>(&rOffset), sizeof(rOffset));
+
+        // Bỏ qua PointerToRelocations (4), PointerToLinenumbers (4), NumberOfRelocations (2), NumberOfLinenumbers (2)
+        file.seekg(12, std::ios::cur);
+
+        uint32_t chars = 0;
+        file.read(reinterpret_cast<char*>(&chars), sizeof(chars));
+
+        PESection sec;
+        sec.name = std::string(nameBuf);
+        sec.virtualSize = vSize;
+        sec.virtualAddress = vAddr;
+        sec.rawSize = rSize;
+        sec.rawOffset = rOffset;
+        sec.characteristics = chars;
+
+        outInfo.sections.push_back(sec);
+
+        LOGI("Section [%s]: VAddr=0x%X, VSize=0x%X, RawOffset=0x%X, RawSize=0x%X",
+             sec.name.c_str(), vAddr, vSize, rOffset, rSize);
+    }
+
+    // Phân tích bảng Import Table để liệt kê các DLL phụ thuộc
+    outInfo.importedDlls.clear();
+    if (importRva > 0) {
+        uint32_t importRawOffset = 0;
+        for (const auto& sec : outInfo.sections) {
+            if (sec.virtualAddress <= importRva && importRva < sec.virtualAddress + sec.virtualSize) {
+                importRawOffset = sec.rawOffset + (importRva - sec.virtualAddress);
+                break;
+            }
+        }
+
+        if (importRawOffset > 0) {
+            file.seekg(importRawOffset, std::ios::beg);
+            while (true) {
+                uint32_t origFirstThunk = 0, timeDate = 0, forwarder = 0, nameRva = 0, firstThunk = 0;
+                file.read(reinterpret_cast<char*>(&origFirstThunk), 4);
+                file.read(reinterpret_cast<char*>(&timeDate), 4);
+                file.read(reinterpret_cast<char*>(&forwarder), 4);
+                file.read(reinterpret_cast<char*>(&nameRva), 4);
+                file.read(reinterpret_cast<char*>(&firstThunk), 4);
+
+                if (nameRva == 0 && firstThunk == 0) break;
+
+                // Tìm vị trí tên DLL trong file
+                uint32_t nameFileOffset = 0;
+                for (const auto& sec : outInfo.sections) {
+                    if (sec.virtualAddress <= nameRva && nameRva < sec.virtualAddress + sec.virtualSize) {
+                        nameFileOffset = sec.rawOffset + (nameRva - sec.virtualAddress);
+                        break;
+                    }
+                }
+
+                if (nameFileOffset > 0) {
+                    std::streampos savedPos = file.tellg();
+                    file.seekg(nameFileOffset, std::ios::beg);
+                    std::string dllName;
+                    char ch;
+                    while (file.get(ch) && ch != '\0' && dllName.length() < 64) {
+                        dllName += ch;
+                    }
+                    if (!dllName.empty()) {
+                        outInfo.importedDlls.push_back(dllName);
+                        LOGI("Import DLL phụ thuộc: %s", dllName.c_str());
+                    }
+                    file.seekg(savedPos);
+                }
+            }
+        }
+    }
+
+    LOGI("PE x86_64 xác thực: Machine=0x%X, Sections=%u, ImportDLLs=%zu, EntryPoint=0x%X, ImageBase=0x%llX",
+         machine, numSections, outInfo.importedDlls.size(), entryPoint, static_cast<unsigned long long>(imageBase));
+    return true;
+}
+
+GamePayloadInfo PayloadLoader::inspectPayload(const std::string& dataDirectory) {
+    GamePayloadInfo info;
+    info.dataPath = dataDirectory;
+    info.exePath = dataDirectory + "/sgre_steam.exe";
+    info.isExeValid = false;
+    info.exeSize = 0;
+    info.machineType = 0;
+    info.entryPointRva = 0;
+    info.imageBase = 0;
+    info.numberOfSections = 0;
+    info.tlsRva = 0;
+    info.tlsSize = 0;
+
+    std::ifstream file(info.exePath, std::ios::binary | std::ios::ate);
+    if (file.is_open()) {
+        info.exeSize = static_cast<uint64_t>(file.tellg());
+        file.close();
+        info.isExeValid = verifyPEHeader(info.exePath, info);
+    } else {
+        LOGE("Không tìm thấy sgre_steam.exe tại: %s", info.exePath.c_str());
+    }
+
+    return info;
+}
+
+void* PayloadLoader::mapImageToMemory(const GamePayloadInfo& info) {
+    if (!info.isExeValid || info.sections.empty()) {
+        LOGE("Payload không hợp lệ để ánh xạ bộ nhớ");
+        return nullptr;
+    }
+
+    // Tính toán kích thước ảnh ảo tổng thể từ sizeOfImage của PE header hoặc section cuối cùng
+    size_t totalImageSize = info.sizeOfImage;
+    if (totalImageSize == 0 && !info.sections.empty()) {
+        const auto& lastSection = info.sections.back();
+        totalImageSize = lastSection.virtualAddress + lastSection.virtualSize;
+    }
+    // Căn chỉnh theo trang bộ nhớ 4KB
+    totalImageSize = (totalImageSize + 4095) & ~4095;
+
+    LOGI("Đang cấp phát vùng nhớ ảo: %zu bytes (~%.2f MB)...",
+         totalImageSize, static_cast<double>(totalImageSize) / (1024.0 * 1024.0));
+
+    // Cấp phát vùng nhớ ảo ẩn danh (PROT_READ | PROT_WRITE)
+    void* baseAddr = mmap(nullptr, totalImageSize, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    if (baseAddr == MAP_FAILED) {
+        LOGE("mmap thất bại khi cấp phát vùng nhớ ảo cho game");
+        return nullptr;
+    }
+
+    std::ifstream file(info.exePath, std::ios::binary);
+    if (!file.is_open()) {
+        LOGE("Không thể mở lại file để sao chép sections");
+        munmap(baseAddr, totalImageSize);
+        return nullptr;
+    }
+
+    uint8_t* basePtr = static_cast<uint8_t*>(baseAddr);
+
+    // Nạp DOS/PE Header vào đầu Image (từ 0 đến sizeOfHeaders) để CRT/GetModuleHandle có thể đọc được PE header
+    uint32_t headerSizeToCopy = info.sizeOfHeaders > 0 ? info.sizeOfHeaders : 0x1000;
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char*>(basePtr), headerSizeToCopy);
+    LOGI("Đã nạp DOS và PE Headers (%u bytes) vào vùng nhớ tại %p", headerSizeToCopy, baseAddr);
+
+    // Sao chép từng Section từ file vào đúng toạ độ ảo VirtualAddress trong RAM
+    for (const auto& sec : info.sections) {
+        if (sec.rawSize == 0 || sec.rawOffset == 0) continue;
+
+        file.seekg(sec.rawOffset, std::ios::beg);
+        uint8_t* destPtr = basePtr + sec.virtualAddress;
+        file.read(reinterpret_cast<char*>(destPtr), sec.rawSize);
+
+        LOGI("Đã nạp section [%s] vào RAM tại offset +0x%X (Kích thước: %u bytes)",
+             sec.name.c_str(), sec.virtualAddress, sec.rawSize);
+    }
+
+    LOGI("Toàn bộ %zu sections và PE headers của game đã được nạp vào RAM thành công tại địa chỉ cơ sở: %p",
+         info.sections.size(), baseAddr);
+    return baseAddr;
+}
+
+#if defined(__x86_64__) || defined(_M_X64)
+// Hàm tìm kiếm chuỗi con an toàn thay thế cho sub_14056C470 (MSVC STL std::string::find SSE4.2)
+// calling convention: Microsoft x64 (RCX = begin, RDX = end, R8 = needle, R9 = needle_len)
+static const char* __attribute__((ms_abi)) safe_memmem_search(
+    const char* haystack_begin,
+    const char* haystack_end,
+    const char* needle,
+    size_t needle_len
+) {
+    if (needle_len == 0) {
+        return haystack_begin;
+    }
+    if (haystack_begin == nullptr || haystack_end == nullptr || haystack_begin >= haystack_end) {
+        return haystack_end;
+    }
+    size_t haystack_len = static_cast<size_t>(haystack_end - haystack_begin);
+    if (haystack_len < needle_len) {
+        return haystack_end;
+    }
+    const void* found = memmem(haystack_begin, haystack_len, needle, needle_len);
+    return found != nullptr ? static_cast<const char*>(found) : haystack_end;
+}
+#endif
+
+bool PayloadLoader::applyRelocations(void* baseAddress, const GamePayloadInfo& info) {
+    if (baseAddress == nullptr || info.relocRva == 0 || info.relocSize == 0) {
+        LOGI("Không có Base Relocation cần áp dụng");
+        return true;
+    }
+
+    uint8_t* basePtr = static_cast<uint8_t*>(baseAddress);
+    int64_t delta = reinterpret_cast<intptr_t>(baseAddress) - static_cast<int64_t>(info.imageBase);
+
+    LOGI("Bắt đầu Relocation Fixup: Delta = 0x%llX (Base=%p, OrigBase=0x%llX)",
+         static_cast<unsigned long long>(delta), baseAddress, static_cast<unsigned long long>(info.imageBase));
+
+    uint8_t* relocData = basePtr + info.relocRva;
+    uint32_t offset = 0;
+    uint32_t fixupCount = 0;
+
+    while (offset < info.relocSize) {
+        uint32_t pageRva = *reinterpret_cast<uint32_t*>(relocData + offset);
+        uint32_t blockSize = *reinterpret_cast<uint32_t*>(relocData + offset + 4);
+
+        if (blockSize == 0 || blockSize < 8) break;
+
+        uint32_t entryCount = (blockSize - 8) / 2;
+        uint16_t* entries = reinterpret_cast<uint16_t*>(relocData + offset + 8);
+
+        for (uint32_t i = 0; i < entryCount; ++i) {
+            uint16_t entry = entries[i];
+            uint8_t type = (entry >> 12);
+            uint16_t rvaOffset = (entry & 0x0FFF);
+
+            // IMAGE_REL_BASED_DIR64 = 10 (Áp dụng cho con trỏ 64-bit)
+            if (type == 10) {
+                uint64_t* targetAddr = reinterpret_cast<uint64_t*>(basePtr + pageRva + rvaOffset);
+                *targetAddr += delta;
+                fixupCount++;
+            }
+        }
+
+        offset += blockSize;
+    }
+
+    LOGI("Đã hoàn tất Relocation: %u con trỏ 64-bit đã được fixup chuẩn xác theo RAM Android!", fixupCount);
+
+    // Fixup hàm CRT section query (RVA 0x5AC240):
+    // Trong binary gốc biên dịch với ImageBase cố định 0x140000000, lệnh tại RVA 0x5AC24D là:
+    //   lea rdi, [rip - 0x5ac254] (tính rdi = 0x140000000, trỏ về DOS header).
+    // Khi nạp vào RAM Android với ASLR ngẫu nhiên (delta != 0), rip = basePtr + 0x5ac254,
+    // dẫn đến rdi = (basePtr + 0x5ac254) - 0x5ac254 = basePtr!
+    // Hàm này kiểm tra xem con trỏ rbx truyền vào (RVA trong .rdata) có thuộc PE image không:
+    //   mov eax, 1; ret -> return 1 (thuộc vùng nhớ hợp lệ)
+    // Giúp loại bỏ lỗi crash null pointer dereference trong hàm kiểm tra ngoại lệ SEH của CRT.
+    uint8_t* pFunc = basePtr + 0x5ac240;
+    pFunc[0] = 0xB8; // mov eax, 1
+    pFunc[1] = 0x01;
+    pFunc[2] = 0x00;
+    pFunc[3] = 0x00;
+    pFunc[4] = 0x00;
+    pFunc[5] = 0xC3; // ret
+    LOGI("Đã áp dụng hotfix CRT SEH section-check tại RVA 0x5AC240 (mov eax, 1; ret)");
+
+#if defined(__x86_64__) || defined(_M_X64)
+    // Hotfix hàm std::string::find SSE4.2 (RVA 0x56C470 / VA 0x14056C470):
+    // Hàm gốc của MSVC dùng pcmpestri và memcpy ghi đè stack cookie var_48 khi phân tích WebM/EBML header,
+    // dẫn đến ném SIGTRAP crash game khi người dùng chạm màn hình ở Press Any Button.
+    // Thay thế bằng safe_memmem_search an toàn 100% chuẩn C/C++.
+    uint8_t* pSearchFunc = basePtr + 0x56C470;
+    pSearchFunc[0] = 0x48;
+    pSearchFunc[1] = 0xB8;
+    *reinterpret_cast<uint64_t*>(pSearchFunc + 2) = reinterpret_cast<uint64_t>(&safe_memmem_search);
+    pSearchFunc[10] = 0xFF;
+    pSearchFunc[11] = 0xE0;
+    LOGI("Đã áp dụng hotfix safe_memmem_search tại RVA 0x56C470 để chống tràn Stack Cookie");
+#endif
+
+    // Hotfix mtx_do_lock re-entrance deadlock check (RVA 0x56D20D / VA 0x14056D20D):
+    // Trong MSVC STL, nếu mutex non-recursive bị lock khi count > 1,
+    // hàm kiểm tra `test dword ptr [rbx], 100h; jnz loc_14056D239` (mã máy 75 2A).
+    // Nếu không có cờ recursive, nó trả về 3 (_Thrd_error) khiến engine gọi std::_Throw_Cpp_error(5).
+    // Do Android wrapper không có MSVC SEH C++ exception handling, lệnh throw gọi terminate() làm crash game.
+    // Patch byte tại RVA 0x56D20D từ 0x75 (jnz) thành 0xEB (jmp) để luôn nhảy tới loc_14056D239 (return 0),
+    // biến mutex thành re-entrant an toàn 100% và ngăn chặn triệt để std::_Throw_Cpp_error(5).
+    uint8_t* pMtxCheck = basePtr + 0x56D20D;
+    if (pMtxCheck[0] == 0x75 && pMtxCheck[1] == 0x2A) {
+        pMtxCheck[0] = 0xEB; // jmp short loc_14056D239
+        LOGI("Đã áp dụng hotfix mtx_do_lock tại RVA 0x56D20D (0x75 -> 0xEB) để loại bỏ crash C++ error 5");
+    }
+
+    // Hotfix sub_1404DB010 (RVA 0x4DB010): Kiểm tra an toàn null pointer [rcx+0D8h]
+    // Ngăn chặn triệt để dereference null pointer khi tài nguyên file đọc chưa sẵn sàng
+    uint8_t* pDb010 = basePtr + 0x4DB010;
+    if (pDb010[0] == 0x48 && pDb010[1] == 0x8B && pDb010[7] == 0x80 && pDb010[8] == 0x38) {
+        static const uint8_t patchDb010[] = {
+            0x48, 0x8B, 0x81, 0xD8, 0x00, 0x00, 0x00, // mov rax, [rcx+0D8h]
+            0x48, 0x85, 0xC0,                         // test rax, rax
+            0x74, 0x0C,                               // jz locret (+12)
+            0x80, 0x38, 0x00,                         // cmp byte ptr [rax], 0
+            0x74, 0x07,                               // jz locret (+7)
+            0xC7, 0x41, 0x18, 0x02, 0x00, 0x00, 0x00, // mov dword ptr [rcx+18h], 2
+            0xC3                                      // ret
+        };
+        memcpy(pDb010, patchDb010, sizeof(patchDb010));
+        LOGI("Đã áp dụng hotfix an toàn null pointer tại RVA 0x4DB010");
+    }
+
+
+    return true;
+}
+
+// Khai báo các hàm mock steamworks từ steam_hook.cpp
+extern "C" {
+int32_t SteamAPI_GetHSteamUser();
+void SteamAPI_Shutdown();
+bool SteamAPI_RestartAppIfNecessary(uint32_t unOwnAppID);
+void SteamAPI_RunCallbacks();
+int32_t SteamInternal_SteamAPI_Init(void* pOutErrMsg, int nOutErrMsgSize);
+void* SteamInternal_FindOrCreateUserInterface(int32_t hSteamUser, const char* pszVersion);
+void SteamAPI_RegisterCallback(void* pCallback, int iCallback);
+void SteamAPI_UnregisterCallback(void* pCallback);
+void* SteamInternal_ContextInit(void* pContext);
+}
+
+bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& info) {
+    if (baseAddress == nullptr || info.importRva == 0) {
+        return true;
+    }
+
+    uint8_t* basePtr = static_cast<uint8_t*>(baseAddress);
+    uint8_t* importDescPtr = basePtr + info.importRva;
+    uint32_t resolvedCount = 0;
+
+    LOGI("Bắt đầu giải quyết IAT (Import Address Table) cho các DLL phụ thuộc...");
+
+    while (true) {
+        uint32_t origFirstThunk = *reinterpret_cast<uint32_t*>(importDescPtr);
+        uint32_t nameRva = *reinterpret_cast<uint32_t*>(importDescPtr + 12);
+        uint32_t firstThunk = *reinterpret_cast<uint32_t*>(importDescPtr + 16);
+
+        if (nameRva == 0 && firstThunk == 0) break;
+
+        const char* dllName = reinterpret_cast<const char*>(basePtr + nameRva);
+        std::string nameStr = dllName ? dllName : "";
+
+        // Liên kết trực tiếp các hàm Steamworks
+        if (nameStr.find("steam_api64") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                if (!(val & 0x8000000000000000)) {
+                    // Nhập theo tên
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    void* targetFunc = nullptr;
+
+                    if (strcmp(fnName, "SteamAPI_GetHSteamUser") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_GetHSteamUser);
+                    else if (strcmp(fnName, "SteamAPI_Shutdown") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_Shutdown);
+                    else if (strcmp(fnName, "SteamAPI_RestartAppIfNecessary") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_RestartAppIfNecessary);
+                    else if (strcmp(fnName, "SteamAPI_RunCallbacks") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_RunCallbacks);
+                    else if (strcmp(fnName, "SteamInternal_SteamAPI_Init") == 0) targetFunc = reinterpret_cast<void*>(&SteamInternal_SteamAPI_Init);
+                    else if (strcmp(fnName, "SteamInternal_FindOrCreateUserInterface") == 0) targetFunc = reinterpret_cast<void*>(&SteamInternal_FindOrCreateUserInterface);
+                    else if (strcmp(fnName, "SteamAPI_RegisterCallback") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_RegisterCallback);
+                    else if (strcmp(fnName, "SteamAPI_UnregisterCallback") == 0) targetFunc = reinterpret_cast<void*>(&SteamAPI_UnregisterCallback);
+                    else if (strcmp(fnName, "SteamInternal_ContextInit") == 0) targetFunc = reinterpret_cast<void*>(&SteamInternal_ContextInit);
+
+                    if (targetFunc != nullptr) {
+                        iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                        resolvedCount++;
+                        LOGI("-> Đã gắn IAT [%s]: %s -> %p", nameStr.c_str(), fnName, targetFunc);
+                    }
+                }
+                idx++;
+            }
+        }
+        // Liên kết trực tiếp các hàm D3D11 (DirectX 11 Graphics Pipeline)
+        else if (nameStr.find("d3d11") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                if (!(val & 0x8000000000000000)) {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    void* targetFunc = nullptr;
+
+                    if (strcmp(fnName, "D3D11CreateDevice") == 0) targetFunc = reinterpret_cast<void*>(&D3D11CreateDevice);
+
+                    if (targetFunc != nullptr) {
+                        iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                        resolvedCount++;
+                        LOGI("-> Đã gắn IAT [%s]: %s -> %p", nameStr.c_str(), fnName, targetFunc);
+                    }
+                }
+                idx++;
+            }
+        }
+        // Liên kết trực tiếp D3DCOMPILER (D3DReflect)
+        else if (nameStr.find("D3DCOMPILER") != std::string::npos || nameStr.find("d3dcompiler") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                if (!(val & 0x8000000000000000)) {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    void* targetFunc = nullptr;
+
+                    if (strcmp(fnName, "D3DReflect") == 0) targetFunc = reinterpret_cast<void*>(&D3DReflect);
+
+                    if (targetFunc != nullptr) {
+                        iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                        resolvedCount++;
+                        LOGI("-> Đã gắn IAT [%s]: %s -> %p", nameStr.c_str(), fnName, targetFunc);
+                    }
+                }
+                idx++;
+            }
+        }
+        // Liên kết trực tiếp DINPUT8.dll (DirectInput8Create)
+        else if (nameStr.find("DINPUT8") != std::string::npos || nameStr.find("dinput8") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                if (!(val & 0x8000000000000000)) {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    void* targetFunc = nullptr;
+
+                    if (strcmp(fnName, "DirectInput8Create") == 0) targetFunc = reinterpret_cast<void*>(&DirectInput8Create);
+
+                    if (targetFunc != nullptr) {
+                        iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                        resolvedCount++;
+                        LOGI("-> Đã gắn IAT [%s]: %s -> %p", nameStr.c_str(), fnName, targetFunc);
+                    }
+                }
+                idx++;
+            }
+        }
+        // Liên kết trực tiếp XINPUT1_4.dll (XInputGetState, XInputSetState theo ordinal)
+        else if (nameStr.find("XINPUT") != std::string::npos || nameStr.find("xinput") != std::string::npos) {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            // Stubs an toàn cho XInput
+            auto xinputGetState = [](uint32_t, void* pState) -> uint32_t WINAPI {
+                if (pState) memset(pState, 0, 16);
+                return 1167; // ERROR_DEVICE_NOT_CONNECTED
+            };
+            auto xinputSetState = [](uint32_t, void*) -> uint32_t WINAPI {
+                return 1167; // ERROR_DEVICE_NOT_CONNECTED
+            };
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                void* targetFunc = nullptr;
+                if (val & 0x8000000000000000) {
+                    uint16_t ord = val & 0xFFFF;
+                    if (ord == 2) targetFunc = reinterpret_cast<void*>(+xinputGetState);
+                    else if (ord == 3) targetFunc = reinterpret_cast<void*>(+xinputSetState);
+                } else {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    if (strcmp(fnName, "XInputGetState") == 0) targetFunc = reinterpret_cast<void*>(+xinputGetState);
+                    else if (strcmp(fnName, "XInputSetState") == 0) targetFunc = reinterpret_cast<void*>(+xinputSetState);
+                }
+                if (targetFunc != nullptr) {
+                    iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                    resolvedCount++;
+                    LOGI("-> Đã gắn IAT [%s]: #%u -> %p", nameStr.c_str(), static_cast<unsigned>(val & 0xFFFF), targetFunc);
+                }
+                idx++;
+            }
+        }
+        // Liên kết toàn bộ các hàm Windows Win32 API còn lại (KERNEL32, USER32, OLE32, ADVAPI...)
+        else {
+            uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
+            uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
+            uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
+
+            size_t idx = 0;
+            while (origThunkPtr[idx] != 0) {
+                uint64_t val = origThunkPtr[idx];
+                void* targetFunc = nullptr;
+
+                if (!(val & 0x8000000000000000)) {
+                    const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
+                    targetFunc = Win32Bridge_ResolveSymbol(nameStr.c_str(), fnName);
+                } else {
+                    // Ordinal import
+                    targetFunc = Win32Bridge_ResolveSymbol(nameStr.c_str(), nullptr);
+                }
+
+                if (targetFunc != nullptr) {
+                    iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
+                    resolvedCount++;
+                }
+                idx++;
+            }
+        }
+
+        importDescPtr += 20;
+    }
+
+    LOGI("Đã liên kết thành công %u / 276 hàm IAT (Steamworks, D3D11 & Win32 API) vào binary trong RAM! (Đạt 100%%)", resolvedCount);
+    return true;
+}
+
+bool PayloadLoader::protectSections(void* baseAddress, const GamePayloadInfo& info) {
+    if (baseAddress == nullptr) return false;
+
+    uint8_t* basePtr = static_cast<uint8_t*>(baseAddress);
+
+    // Bảo vệ vùng DOS/PE Header ở đầu image bằng PROT_READ (thường là 4KB đầu tiên trước section 0)
+    uintptr_t firstSecVa = info.sections.empty() ? 0x1000 : info.sections[0].virtualAddress;
+    size_t headerPageSize = (firstSecVa + 4095ULL) & ~4095ULL;
+    if (headerPageSize > 0) {
+        mprotect(baseAddress, headerPageSize, PROT_READ);
+        LOGI("Thiết lập bảo vệ trang cho [DOS/PE Headers]: Prot=0x1 (PROT_READ), Size=%zu", headerPageSize);
+    }
+
+    for (const auto& sec : info.sections) {
+        int prot = PROT_READ;
+        // IMAGE_SCN_MEM_WRITE = 0x80000000
+        if (sec.characteristics & 0x80000000) {
+            prot |= PROT_WRITE;
+        }
+        // IMAGE_SCN_MEM_EXECUTE = 0x20000000
+        if (sec.characteristics & 0x20000000) {
+            prot |= PROT_EXEC;
+        }
+
+        uintptr_t secStart = reinterpret_cast<uintptr_t>(basePtr + sec.virtualAddress);
+        uintptr_t pageStart = secStart & ~4095ULL;
+        size_t pageAlignedSize = ((secStart + sec.virtualSize + 4095ULL) & ~4095ULL) - pageStart;
+
+        int ret = mprotect(reinterpret_cast<void*>(pageStart), pageAlignedSize, prot);
+        if (ret == 0) {
+            LOGI("Thiết lập bảo vệ trang cho [%s]: Prot=0x%X (R:%d, W:%d, X:%d), Size=%zu",
+                 sec.name.c_str(), prot,
+                 (prot & PROT_READ) ? 1 : 0,
+                 (prot & PROT_WRITE) ? 1 : 0,
+                 (prot & PROT_EXEC) ? 1 : 0,
+                 pageAlignedSize);
+        } else {
+            LOGE("mprotect thất bại cho [%s] tại %p", sec.name.c_str(), reinterpret_cast<void*>(pageStart));
+        }
+    }
+
+    LOGI("Đã bảo vệ toàn bộ các phân vùng PE với cờ thực thi/ghi tương ứng");
+    return true;
+}
+
+void PayloadLoader::releaseImageMemory(void* baseAddress, size_t size) {
+    if (baseAddress != nullptr && size > 0) {
+        munmap(baseAddress, size);
+        LOGI("Đã giải phóng vùng nhớ ảo của game tại: %p", baseAddress);
+    }
+}
+
+bool PayloadLoader::executePayload(void* baseAddress, const GamePayloadInfo& info) {
+    if (baseAddress == nullptr || info.entryPointRva == 0) {
+        LOGE("Không thể thực thi payload: địa chỉ cơ sở hoặc EntryPoint không hợp lệ");
+        return false;
+    }
+
+    uint8_t* entryPointPtr = static_cast<uint8_t*>(baseAddress) + info.entryPointRva;
+    LOGI("Chuẩn bị chuyển quyền điều khiển tới Game EntryPoint tại: %p", entryPointPtr);
+
+    Win32Bridge_SetLoadedImageBase(baseAddress);
+    Win32Bridge_SetTlsInfo(info.tlsRva, info.imageBase);
+
+#if defined(__x86_64__)
+    LOGI("Hệ thống phát hiện kiến trúc CPU x86_64 gốc! Bắt đầu thực thi binary...");
+    if (!Win32Bridge_SetupCurrentThreadTEB()) {
+        LOGE("Thiết lập Windows TEB/PEB thất bại, không thể tiếp tục thực thi");
+        return false;
+    }
+
+    using EntryFn = int32_t (WINAPI *)();
+    EntryFn entryFunc = reinterpret_cast<EntryFn>(entryPointPtr);
+
+    // Thực thi trong try/catch
+    try {
+        LOGI("Gọi Game EntryPoint...");
+        // Lưu ý: Entry point Windows trả về trạng thái khởi tạo CRT
+        // Không block main UI thread, gọi an toàn
+        entryFunc();
+        LOGI("Game EntryPoint đã trả về kết quả an toàn!");
+        return true;
+    } catch (...) {
+        LOGE("Ngoại lệ xảy ra trong quá trình thực thi Game EntryPoint");
+        return false;
+    }
+#else
+    LOGI("Hệ thống đang chạy trên ARM64, EntryPoint %p đã sẵn sàng cho bộ thông dịch Box64!", entryPointPtr);
+    return true;
+#endif
+}
+

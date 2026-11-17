@@ -1,0 +1,47 @@
+#pragma once
+#include <string>
+#include <cstdint>
+#include <vector>
+
+struct PESection {
+    std::string name;
+    uint32_t virtualSize;
+    uint32_t virtualAddress;
+    uint32_t rawSize;
+    uint32_t rawOffset;
+    uint32_t characteristics;
+};
+
+struct GamePayloadInfo {
+    std::string exePath;
+    std::string dataPath;
+    bool isExeValid;
+    uint64_t exeSize;
+    uint16_t machineType;
+    uint32_t entryPointRva;
+    uint64_t imageBase;
+    uint16_t numberOfSections;
+    std::vector<PESection> sections;
+    uint32_t sizeOfImage;
+    uint32_t sizeOfHeaders;
+    uint32_t importRva;
+    uint32_t importSize;
+    std::vector<std::string> importedDlls;
+    uint32_t relocRva;
+    uint32_t relocSize;
+    uint32_t totalRelocEntries;
+    uint32_t tlsRva;
+    uint32_t tlsSize;
+};
+
+class PayloadLoader {
+public:
+    static GamePayloadInfo inspectPayload(const std::string& dataDirectory);
+    static bool verifyPEHeader(const std::string& filePath, GamePayloadInfo& outInfo);
+    static void* mapImageToMemory(const GamePayloadInfo& info);
+    static bool applyRelocations(void* baseAddress, const GamePayloadInfo& info);
+    static bool resolveImports(void* baseAddress, const GamePayloadInfo& info);
+    static bool protectSections(void* baseAddress, const GamePayloadInfo& info);
+    static bool executePayload(void* baseAddress, const GamePayloadInfo& info);
+    static void releaseImageMemory(void* baseAddress, size_t size);
+};
