@@ -130,6 +130,10 @@ public:
     // Đánh dấu texture đã được Render Thread nạp lên OpenGL ES VRAM thành công
     void markUploadedToGpu(const void* handle);
 
+    // Bảo toàn dữ liệu RGBA8 đọc ngược từ FBO về RAM CPU trước khi hủy EGLContext và xóa cờ đã upload GPU
+    bool preserveGpuTextureToCpu(const void* handle, const uint8_t* rgbaData, size_t byteSize);
+    void resetAllUploadedFlags();
+
     // Quản lý trạng thái dữ liệu nằm trên GPU (sinh ra từ RenderTarget hoặc CopyResource GPU-to-GPU)
     bool isGpuOwned(const void* handle) const;
     bool setGpuOwned(const void* handle, bool gpuOwned);

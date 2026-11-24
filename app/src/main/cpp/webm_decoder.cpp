@@ -11,6 +11,11 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 #define LOG_TAG "SGRE_WebmDecoder"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -534,7 +539,7 @@ bool WebmDecoder::readNextAudioFrame(DecodedAudioFrame& outFrame) {
     return false;
 }
 
-// Chuyển đổi YUV420 sang Bottom-Up B8G8R8X8 căn lề 16
+// Chuyển đổi YUV420 (I420 / NV12) sang Bottom-Up B8G8R8X8 căn lề 16 với tăng tốc SIMD SSE2 / ARM NEON
 void WebmDecoder::convertYuvToBottomUpBgrx(
     const DecodedVideoFrame& srcFrame,
     uint8_t* dstBgrx,
@@ -548,64 +553,198 @@ void WebmDecoder::convertYuvToBottomUpBgrx(
     const uint32_t stride = srcFrame.stride > 0 ? srcFrame.stride : w;
     const uint32_t sliceH = srcFrame.sliceHeight > 0 ? srcFrame.sliceHeight : h;
 
+    const size_t yPlaneBytes = static_cast<size_t>(stride) * sliceH;
+    if (srcFrame.pixelData.size() < yPlaneBytes) return;
+
     const uint8_t* yPlane = srcFrame.pixelData.data();
-    const uint8_t* uvPlane = yPlane + static_cast<size_t>(stride) * sliceH;
+    const uint8_t* uvBase = yPlane + yPlaneBytes;
+    const bool isPlanarI420 = (srcFrame.colorFormat == 19 /* COLOR_FormatYUV420Planar */);
+    const uint32_t halfStride = stride / 2u;
+    const uint8_t* uPlaneI420 = uvBase;
+    const uint8_t* vPlaneI420 = uvBase + static_cast<size_t>(halfStride) * (sliceH / 2u);
 
-    const uint32_t dstRowPitch = alignedWidth * 4;
+    const uint32_t dstRowPitch = alignedWidth * 4u;
 
-    // Xóa đen toàn bộ các dòng padding từ h đến alignedHeight để loại bỏ hoàn toàn vạch màu rác
     for (uint32_t py = h; py < alignedHeight; ++py) {
         uint8_t* padRow = dstBgrx + static_cast<size_t>(py) * dstRowPitch;
-        memset(padRow, 0, dstRowPitch);
+        std::memset(padRow, 0, dstRowPitch);
     }
 
     for (uint32_t y = 0; y < h; ++y) {
-        // Hướng dòng ảnh Bottom-Up chuẩn Windows DIB: src dòng y (0..h-1) ánh xạ chính xác vào (h - 1 - y)
-        // để 1080 dòng ảnh khớp hoàn hảo từ dòng 0 đến dòng 1079 của texture D3D11, triệt tiêu 100% vạch xanh lá ở đáy!
-        uint32_t dstY = (h - 1 - y);
+        const uint32_t dstY = (h - 1u - y);
         uint8_t* dstRow = dstBgrx + static_cast<size_t>(dstY) * dstRowPitch;
         const uint8_t* yRow = yPlane + static_cast<size_t>(y) * stride;
-        const uint8_t* uvRow = uvPlane + static_cast<size_t>(y / 2) * stride;
+        const uint8_t* uvRowNv12 = uvBase + static_cast<size_t>(y / 2u) * stride;
+        const uint8_t* uRowI420 = uPlaneI420 + static_cast<size_t>(y / 2u) * halfStride;
+        const uint8_t* vRowI420 = vPlaneI420 + static_cast<size_t>(y / 2u) * halfStride;
 
-        for (uint32_t x = 0; x < w; ++x) {
-            int yVal = yRow[x];
+        uint32_t x = 0;
+
+#if defined(__SSE2__)
+        const __m128i zero = _mm_setzero_si128();
+        const __m128i c16 = _mm_set1_epi16(16);
+        const __m128i c128 = _mm_set1_epi16(128);
+        const __m128i k298 = _mm_set1_epi32(298);
+        const __m128i k409 = _mm_set1_epi32(409);
+        const __m128i km100 = _mm_set1_epi32(-100);
+        const __m128i km208 = _mm_set1_epi32(-208);
+        const __m128i k516 = _mm_set1_epi32(516);
+        const __m128i kRound = _mm_set1_epi32(128);
+        const __m128i alphaMask = _mm_set1_epi32(static_cast<int>(0xFF000000u));
+
+        for (; x + 8u <= w; x += 8u) {
+            __m128i y8 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(yRow + x));
+            __m128i y16 = _mm_sub_epi16(_mm_unpacklo_epi8(y8, zero), c16);
+
+            uint8_t uTmp[8], vTmp[8];
+            if (isPlanarI420) {
+                const uint32_t hx = x / 2u;
+                for (int i = 0; i < 4; ++i) {
+                    uTmp[i * 2] = uTmp[i * 2 + 1] = uRowI420[hx + i];
+                    vTmp[i * 2] = vTmp[i * 2 + 1] = vRowI420[hx + i];
+                }
+            } else {
+                const uint8_t* uvPtr = uvRowNv12 + x;
+                for (int i = 0; i < 4; ++i) {
+                    uTmp[i * 2] = uTmp[i * 2 + 1] = uvPtr[i * 2];
+                    vTmp[i * 2] = vTmp[i * 2 + 1] = uvPtr[i * 2 + 1];
+                }
+            }
+
+            __m128i u16 = _mm_sub_epi16(_mm_unpacklo_epi8(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(uTmp)), zero), c128);
+            __m128i v16 = _mm_sub_epi16(_mm_unpacklo_epi8(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(vTmp)), zero), c128);
+
+            // Mở rộng có dấu sang 32-bit cho 4 pixel thấp và 4 pixel cao
+            __m128i cLo = _mm_srai_epi32(_mm_unpacklo_epi16(zero, y16), 16);
+            __m128i cHi = _mm_srai_epi32(_mm_unpackhi_epi16(zero, y16), 16);
+            __m128i dLo = _mm_srai_epi32(_mm_unpacklo_epi16(zero, u16), 16);
+            __m128i dHi = _mm_srai_epi32(_mm_unpackhi_epi16(zero, u16), 16);
+            __m128i eLo = _mm_srai_epi32(_mm_unpacklo_epi16(zero, v16), 16);
+            __m128i eHi = _mm_srai_epi32(_mm_unpackhi_epi16(zero, v16), 16);
+
+            auto mul32 = [](const __m128i& a, const __m128i& b) -> __m128i {
+                __m128i a13 = _mm_shuffle_epi32(a, 0xF5);
+                __m128i b13 = _mm_shuffle_epi32(b, 0xF5);
+                __m128i p02 = _mm_mul_epu32(a, b);
+                __m128i p13 = _mm_mul_epu32(a13, b13);
+                return _mm_unpacklo_epi64(
+                    _mm_unpacklo_epi32(p02, p13),
+                    _mm_unpackhi_epi32(p02, p13)
+                );
+            };
+
+            __m128i yBaseLo = _mm_add_epi32(mul32(cLo, k298), kRound);
+            __m128i yBaseHi = _mm_add_epi32(mul32(cHi, k298), kRound);
+
+            __m128i rLo = _mm_srai_epi32(_mm_add_epi32(yBaseLo, mul32(eLo, k409)), 8);
+            __m128i rHi = _mm_srai_epi32(_mm_add_epi32(yBaseHi, mul32(eHi, k409)), 8);
+            __m128i gLo = _mm_srai_epi32(_mm_add_epi32(yBaseLo, _mm_add_epi32(mul32(dLo, km100), mul32(eLo, km208))), 8);
+            __m128i gHi = _mm_srai_epi32(_mm_add_epi32(yBaseHi, _mm_add_epi32(mul32(dHi, km100), mul32(eHi, km208))), 8);
+            __m128i bLo = _mm_srai_epi32(_mm_add_epi32(yBaseLo, mul32(dLo, k516)), 8);
+            __m128i bHi = _mm_srai_epi32(_mm_add_epi32(yBaseHi, mul32(dHi, k516)), 8);
+
+            __m128i r8 = _mm_packus_epi16(_mm_packs_epi32(rLo, rHi), zero);
+            __m128i g8 = _mm_packus_epi16(_mm_packs_epi32(gLo, gHi), zero);
+            __m128i b8 = _mm_packus_epi16(_mm_packs_epi32(bLo, bHi), zero);
+
+            __m128i bg16 = _mm_unpacklo_epi8(b8, g8);
+            __m128i rx16 = _mm_unpacklo_epi8(r8, zero);
+            __m128i bgrxLo = _mm_or_si128(_mm_unpacklo_epi16(bg16, rx16), alphaMask);
+            __m128i bgrxHi = _mm_or_si128(_mm_unpackhi_epi16(bg16, rx16), alphaMask);
+
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(dstRow + static_cast<size_t>(x) * 4u), bgrxLo);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(dstRow + static_cast<size_t>(x + 4u) * 4u), bgrxHi);
+        }
+#elif defined(__ARM_NEON)
+        const int16x8_t c16 = vdupq_n_s16(16);
+        const int16x8_t c128 = vdupq_n_s16(128);
+        const int32x4_t kRound = vdupq_n_s32(128);
+        const uint8x8_t alpha8 = vdup_n_u8(0xFF);
+
+        for (; x + 8u <= w; x += 8u) {
+            uint8x8_t y8 = vld1_u8(yRow + x);
+            int16x8_t c16v = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(y8)), c16);
+
+            uint8_t uTmp[8], vTmp[8];
+            if (isPlanarI420) {
+                const uint32_t hx = x / 2u;
+                for (int i = 0; i < 4; ++i) {
+                    uTmp[i * 2] = uTmp[i * 2 + 1] = uRowI420[hx + i];
+                    vTmp[i * 2] = vTmp[i * 2 + 1] = vRowI420[hx + i];
+                }
+            } else {
+                const uint8_t* uvPtr = uvRowNv12 + x;
+                for (int i = 0; i < 4; ++i) {
+                    uTmp[i * 2] = uTmp[i * 2 + 1] = uvPtr[i * 2];
+                    vTmp[i * 2] = vTmp[i * 2 + 1] = uvPtr[i * 2 + 1];
+                }
+            }
+
+            int16x8_t d16v = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vld1_u8(uTmp))), c128);
+            int16x8_t e16v = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vld1_u8(vTmp))), c128);
+
+            int32x4_t yLo = vmlal_n_s16(kRound, vget_low_s16(c16v), 298);
+            int32x4_t yHi = vmlal_n_s16(kRound, vget_high_s16(c16v), 298);
+
+            int32x4_t rLo = vmlal_n_s16(yLo, vget_low_s16(e16v), 409);
+            int32x4_t rHi = vmlal_n_s16(yHi, vget_high_s16(e16v), 409);
+
+            int32x4_t gLo = vmlsl_n_s16(vmlsl_n_s16(yLo, vget_low_s16(d16v), 100), vget_low_s16(e16v), 208);
+            int32x4_t gHi = vmlsl_n_s16(vmlsl_n_s16(yHi, vget_high_s16(d16v), 100), vget_high_s16(e16v), 208);
+
+            int32x4_t bLo = vmlal_n_s16(yLo, vget_low_s16(d16v), 516);
+            int32x4_t bHi = vmlal_n_s16(yHi, vget_high_s16(d16v), 516);
+
+            int16x8_t r16 = vcombine_s16(vshrn_n_s32(rLo, 8), vshrn_n_s32(rHi, 8));
+            int16x8_t g16 = vcombine_s16(vshrn_n_s32(gLo, 8), vshrn_n_s32(gHi, 8));
+            int16x8_t b16 = vcombine_s16(vshrn_n_s32(bLo, 8), vshrn_n_s32(bHi, 8));
+
+            uint8x8x4_t bgrx;
+            bgrx.val[0] = vqmovun_s16(b16);
+            bgrx.val[1] = vqmovun_s16(g16);
+            bgrx.val[2] = vqmovun_s16(r16);
+            bgrx.val[3] = alpha8;
+            vst4_u8(dstRow + static_cast<size_t>(x) * 4u, bgrx);
+        }
+#endif
+
+        // Nhánh vô hướng xử lý phần pixel lẻ ở cuối dòng (hoặc toàn bộ dòng nếu không có SIMD)
+        for (; x < w; ++x) {
+            const int yVal = yRow[x];
             int uVal = 128;
             int vVal = 128;
 
-            if (srcFrame.colorFormat == 19 /* COLOR_FormatYUV420Planar / I420 */) {
-                const uint8_t* uPlane = uvPlane;
-                const uint8_t* vPlane = uPlane + (stride / 2) * (sliceH / 2);
-                uVal = uPlane[(y / 2) * (stride / 2) + (x / 2)];
-                vVal = vPlane[(y / 2) * (stride / 2) + (x / 2)];
+            if (isPlanarI420) {
+                const uint32_t hx = x / 2u;
+                uVal = uRowI420[hx];
+                vVal = vRowI420[hx];
             } else {
-                // NV12 / COLOR_FormatYUV420SemiPlanar / Flexible: U, V xen kẽ
-                size_t uvIdx = static_cast<size_t>(x / 2) * 2;
-                uVal = uvRow[uvIdx];
-                vVal = uvRow[uvIdx + 1];
+                const size_t uvIdx = static_cast<size_t>(x / 2u) * 2u;
+                uVal = uvRowNv12[uvIdx];
+                vVal = uvRowNv12[uvIdx + 1u];
             }
 
-            int c = yVal - 16;
-            int d = uVal - 128;
-            int e = vVal - 128;
+            const int c = yVal - 16;
+            const int d = uVal - 128;
+            const int e = vVal - 128;
 
-            int r = std::clamp((298 * c + 409 * e + 128) >> 8, 0, 255);
-            int g = std::clamp((298 * c - 100 * d - 208 * e + 128) >> 8, 0, 255);
-            int b = std::clamp((298 * c + 516 * d + 128) >> 8, 0, 255);
+            const int r = std::clamp((298 * c + 409 * e + 128) >> 8, 0, 255);
+            const int g = std::clamp((298 * c - 100 * d - 208 * e + 128) >> 8, 0, 255);
+            const int b = std::clamp((298 * c + 516 * d + 128) >> 8, 0, 255);
 
-            size_t px = static_cast<size_t>(x) * 4;
-            dstRow[px + 0] = static_cast<uint8_t>(b);
-            dstRow[px + 1] = static_cast<uint8_t>(g);
-            dstRow[px + 2] = static_cast<uint8_t>(r);
-            dstRow[px + 3] = 0xFF; // Alpha cứng
+            const size_t px = static_cast<size_t>(x) * 4u;
+            dstRow[px + 0u] = static_cast<uint8_t>(b);
+            dstRow[px + 1u] = static_cast<uint8_t>(g);
+            dstRow[px + 2u] = static_cast<uint8_t>(r);
+            dstRow[px + 3u] = 0xFF;
         }
 
-        // Padding cho phần pixel căn lề từ w đến alignedWidth
-        for (uint32_t x = w; x < alignedWidth; ++x) {
-            size_t px = static_cast<size_t>(x) * 4;
-            dstRow[px + 0] = 0;
-            dstRow[px + 1] = 0;
-            dstRow[px + 2] = 0;
-            dstRow[px + 3] = 0xFF;
+        for (uint32_t padX = w; padX < alignedWidth; ++padX) {
+            const size_t px = static_cast<size_t>(padX) * 4u;
+            dstRow[px + 0u] = 0;
+            dstRow[px + 1u] = 0;
+            dstRow[px + 2u] = 0;
+            dstRow[px + 3u] = 0xFF;
         }
     }
 }

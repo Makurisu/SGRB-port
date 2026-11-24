@@ -2,15 +2,18 @@
 #include "wma_decoder.h"
 #include <aaudio/AAudio.h>
 #include <android/log.h>
-#include <cstring>
-#include <cstdint>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <queue>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstdint>
+#include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #define LOG_TAG "SGRE_XAudio2Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -19,6 +22,11 @@
 extern "C" bool Win32Bridge_SetupCurrentThreadTEB();
 
 namespace {
+
+constexpr uint32_t kMasterSampleRate = 48000u;
+constexpr uint32_t kMasterChannels = 2u;
+constexpr size_t kMixBlockFrames = 256u;
+constexpr size_t kMixBlockSamples = kMixBlockFrames * kMasterChannels;
 
 static int32_t WINAPI stub_XAudioSuccess() { return 0; }
 
@@ -39,7 +47,7 @@ struct XAUDIO2_BUFFER_64 {
     uint32_t LoopBegin;
     uint32_t LoopLength;
     uint32_t LoopCount;
-    uint32_t pad; // Đảm bảo căn chỉnh 8-byte cho con trỏ 64-bit pContext
+    uint32_t pad;
     void* pContext;
 };
 
@@ -50,9 +58,6 @@ struct XAUDIO2_VOICE_STATE_64 {
 };
 
 // Bố cục vtable của IXAudio2VoiceCallback trong game (IDA 0x14038E720, 0x14038E670)
-// Slot 0..2: IUnknown
-// Slot 3 (offset 24 = 0x18): OnBufferStart(void* pBufferContext)
-// Slot 4 (offset 32 = 0x20): OnBufferEnd(void* pBufferContext)
 using FnOnBufferStart = void (WINAPI *)(void* thisPtr, void* pBufferContext);
 using FnOnBufferEnd = void (WINAPI *)(void* thisPtr, void* pBufferContext);
 
@@ -67,7 +72,7 @@ static const int32_t MSADPCM_ADAPTATION_TABLE[16] = {
     768, 614, 512, 409, 307, 230, 230, 230
 };
 
-static inline int16_t msadpcm_clamp16(int32_t val) {
+static inline int16_t clampPcm16(int32_t val) {
     if (val > 32767) return 32767;
     if (val < -32768) return -32768;
     return static_cast<int16_t>(val);
@@ -82,7 +87,7 @@ static inline int16_t msadpcm_decode_nibble(
     int32_t signedNibble = (nibble & 0x08) ? (static_cast<int32_t>(nibble) - 16) : static_cast<int32_t>(nibble);
     int32_t pred = (samp1 * coef1 + samp2 * coef2) / 256;
     int32_t newSample = pred + signedNibble * delta;
-    int16_t clamped = msadpcm_clamp16(newSample);
+    int16_t clamped = clampPcm16(newSample);
 
     samp2 = samp1;
     samp1 = clamped;
@@ -122,10 +127,8 @@ static bool decodeMsAdpcm(
 
             int32_t delta0 = *reinterpret_cast<const int16_t*>(block + 2);
             int32_t delta1 = *reinterpret_cast<const int16_t*>(block + 4);
-
             int32_t samp1_0 = *reinterpret_cast<const int16_t*>(block + 6);
             int32_t samp1_1 = *reinterpret_cast<const int16_t*>(block + 8);
-
             int32_t samp2_0 = *reinterpret_cast<const int16_t*>(block + 10);
             int32_t samp2_1 = *reinterpret_cast<const int16_t*>(block + 12);
 
@@ -138,11 +141,8 @@ static bool decodeMsAdpcm(
                 uint8_t byteVal = block[b];
                 uint8_t nL = (byteVal >> 4) & 0x0F;
                 uint8_t nR = byteVal & 0x0F;
-
-                int16_t sL = msadpcm_decode_nibble(nL, c1_0, c2_0, delta0, samp1_0, samp2_0);
-                int16_t sR = msadpcm_decode_nibble(nR, c1_1, c2_1, delta1, samp1_1, samp2_1);
-                outPcm.push_back(sL);
-                outPcm.push_back(sR);
+                outPcm.push_back(msadpcm_decode_nibble(nL, c1_0, c2_0, delta0, samp1_0, samp2_0));
+                outPcm.push_back(msadpcm_decode_nibble(nR, c1_1, c2_1, delta1, samp1_1, samp2_1));
             }
         } else if (channels == 1) {
             if (blockAlign < 7) break;
@@ -161,7 +161,6 @@ static bool decodeMsAdpcm(
                 uint8_t byteVal = block[b];
                 uint8_t n0 = (byteVal >> 4) & 0x0F;
                 uint8_t n1 = byteVal & 0x0F;
-
                 outPcm.push_back(msadpcm_decode_nibble(n0, c1, c2, delta, samp1, samp2));
                 outPcm.push_back(msadpcm_decode_nibble(n1, c1, c2, delta, samp1, samp2));
             }
@@ -170,45 +169,184 @@ static bool decodeMsAdpcm(
     return !outPcm.empty();
 }
 
-static void resampleLinear(const int16_t* inSamples, size_t inFrames, uint32_t inRate,
-                           uint32_t outRate, uint32_t channels, std::vector<int16_t>& outSamples) {
-    if (!inSamples || inFrames == 0 || inRate == 0 || outRate == 0 || channels == 0) return;
+static void resampleLinearStereo(
+    const int16_t* inStereo, size_t inFrames, uint32_t inRate,
+    uint32_t outRate, std::vector<int16_t>& outStereo
+) {
+    if (!inStereo || inFrames == 0 || inRate == 0 || outRate == 0) return;
     if (inRate == outRate) {
-        outSamples.assign(inSamples, inSamples + inFrames * channels);
+        outStereo.assign(inStereo, inStereo + inFrames * 2u);
         return;
     }
-    size_t outFrames = (inFrames * outRate) / inRate;
-    outSamples.resize(outFrames * channels);
+    size_t outFrames = std::max<size_t>(1u, (inFrames * outRate) / inRate);
+    outStereo.resize(outFrames * 2u);
     double ratio = static_cast<double>(inRate) / static_cast<double>(outRate);
 
     for (size_t i = 0; i < outFrames; ++i) {
-        double srcPos = i * ratio;
+        double srcPos = static_cast<double>(i) * ratio;
         size_t idx0 = static_cast<size_t>(srcPos);
-        size_t idx1 = std::min(idx0 + 1, inFrames - 1);
+        size_t idx1 = std::min(idx0 + 1u, inFrames - 1u);
         double frac = srcPos - static_cast<double>(idx0);
 
-        for (uint32_t ch = 0; ch < channels; ++ch) {
-            double s0 = inSamples[idx0 * channels + ch];
-            double s1 = inSamples[idx1 * channels + ch];
+        for (uint32_t ch = 0; ch < 2u; ++ch) {
+            double s0 = inStereo[idx0 * 2u + ch];
+            double s1 = inStereo[idx1 * 2u + ch];
             double s = s0 + frac * (s1 - s0);
-            s = std::max(-32768.0, std::min(32767.0, s));
-            outSamples[i * channels + ch] = static_cast<int16_t>(s);
+            outStereo[i * 2u + ch] = clampPcm16(static_cast<int32_t>(std::lround(s)));
         }
     }
 }
 
-struct AudioBufferTask {
+struct PreparedAudioChunk {
     void* pContext = nullptr;
-    uint32_t audioBytes = 0;
-    std::vector<uint8_t> pcmData; // Bản copy sâu của dữ liệu âm thanh để an toàn bộ nhớ tuyệt đối
-    const uint8_t* pAudioData = nullptr;
-    std::chrono::microseconds durationUs{ 0 };
-    std::vector<int16_t> decodedPcm;
+    std::vector<int16_t> stereoSamples; // Luôn chuẩn hóa sẵn sang Stereo 2 kênh ở tần số mixer
+    size_t totalMixFrames = 0;
+    size_t cursorFrame = 0;
+    uint64_t sourceFrames = 0;
+    bool started = false;
+};
+
+class SourceVoiceInstance;
+
+struct PendingVoiceCallback {
+    SourceVoiceInstance* voice = nullptr;
+    void* callbackPtr = nullptr;
+    void* pContext = nullptr;
+    bool isBufferStart = false;
+};
+
+// ============================================================================
+// XAudio2MasterMixer: Bộ trộn âm thanh trung tâm duy nhất cho toàn tiến trình
+// Sử dụng 1 AAudioStream chia sẻ và 1 luồng trộn phần mềm thay vì mở 32+ luồng phần cứng.
+// ============================================================================
+class XAudio2MasterMixer {
+public:
+    static XAudio2MasterMixer& instance() {
+        static XAudio2MasterMixer sMixer;
+        return sMixer;
+    }
+
+    uint32_t outputSampleRate() const {
+        return actualSampleRate_.load(std::memory_order_relaxed);
+    }
+
+    void setMasterVolume(float vol) {
+        masterVolume_.store(std::clamp(vol, 0.0f, 4.0f), std::memory_order_relaxed);
+    }
+
+    float getMasterVolume() const {
+        return masterVolume_.load(std::memory_order_relaxed);
+    }
+
+    void setLifecyclePaused(bool paused) {
+        lifecyclePaused_.store(paused, std::memory_order_relaxed);
+        cv_.notify_all();
+    }
+
+    void registerVoice(SourceVoiceInstance* voice) {
+        ensureStarted();
+        {
+            std::lock_guard<std::mutex> lock(voicesMutex_);
+            voices_.push_back(voice);
+        }
+        cv_.notify_all();
+    }
+
+    void unregisterVoice(SourceVoiceInstance* voice) {
+        std::unique_lock<std::mutex> lock(voicesMutex_);
+        // Đợi nếu luồng mixer đang thực thi callback cho đúng voice này để tránh use-after-free
+        callbackDoneCv_.wait(lock, [&]() { return activeCallbackVoice_ != voice; });
+        voices_.erase(std::remove(voices_.begin(), voices_.end(), voice), voices_.end());
+    }
+
+    void notifyWorkAvailable() {
+        cv_.notify_one();
+    }
+
+private:
+    XAudio2MasterMixer() = default;
+
+    ~XAudio2MasterMixer() {
+        running_.store(false);
+        cv_.notify_all();
+        if (mixerThread_.joinable()) {
+            mixerThread_.join();
+        }
+        if (stream_) {
+            AAudioStream_requestStop(stream_);
+            AAudioStream_close(stream_);
+            stream_ = nullptr;
+        }
+    }
+
+    void ensureStarted() {
+        std::lock_guard<std::mutex> lock(initMutex_);
+        if (started_.load(std::memory_order_acquire)) return;
+
+        openSharedStream();
+        running_.store(true, std::memory_order_release);
+        mixerThread_ = std::thread(&XAudio2MasterMixer::mixerLoop, this);
+        started_.store(true, std::memory_order_release);
+    }
+
+    void openSharedStream() {
+        if (stream_) {
+            AAudioStream_close(stream_);
+            stream_ = nullptr;
+        }
+        AAudioStreamBuilder* builder = nullptr;
+        if (AAudio_createStreamBuilder(&builder) != AAUDIO_OK || !builder) {
+            return;
+        }
+        AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
+        AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
+        AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+        AAudioStreamBuilder_setSampleRate(builder, static_cast<int32_t>(kMasterSampleRate));
+        AAudioStreamBuilder_setChannelCount(builder, static_cast<int32_t>(kMasterChannels));
+        AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
+
+        aaudio_result_t res = AAudioStreamBuilder_openStream(builder, &stream_);
+        AAudioStreamBuilder_delete(builder);
+
+        if (res == AAUDIO_OK && stream_) {
+            int32_t bursts = AAudioStream_getFramesPerBurst(stream_);
+            int32_t cap = AAudioStream_getBufferCapacityInFrames(stream_);
+            if (bursts > 0 && cap > 0) {
+                int32_t targetBuf = std::min(cap, std::max(bursts * 4, static_cast<int32_t>(kMixBlockFrames * 4)));
+                AAudioStream_setBufferSizeInFrames(stream_, targetBuf);
+            }
+            uint32_t hwRate = static_cast<uint32_t>(AAudioStream_getSampleRate(stream_));
+            if (hwRate > 0) {
+                actualSampleRate_.store(hwRate, std::memory_order_relaxed);
+            }
+            LOGI("XAudio2MasterMixer: Đã mở AAudioStream trung tâm (%u Hz, 2 kênh, burst=%d, cap=%d)",
+                 actualSampleRate_.load(), bursts, cap);
+        } else {
+            LOGW("XAudio2MasterMixer: Không mở được AAudioStream (%d), chuyển sang đồng hồ ảo", res);
+            stream_ = nullptr;
+        }
+    }
+
+    void mixerLoop();
+
+    std::mutex initMutex_;
+    std::mutex voicesMutex_;
+    std::condition_variable cv_;
+    std::condition_variable callbackDoneCv_;
+    std::vector<SourceVoiceInstance*> voices_;
+    SourceVoiceInstance* activeCallbackVoice_ = nullptr;
+    AAudioStream* stream_ = nullptr;
+    std::thread mixerThread_;
+    std::atomic<bool> started_{false};
+    std::atomic<bool> running_{false};
+    std::atomic<bool> lifecyclePaused_{false};
+    std::atomic<uint32_t> actualSampleRate_{kMasterSampleRate};
+    std::atomic<float> masterVolume_{1.0f};
 };
 
 class SourceVoiceInstance {
 public:
-    void* lpVtbl = nullptr; // Offset 0x00: Bắt buộc để khớp COM interface ABI!
+    void* lpVtbl = nullptr; // Offset 0x00: Bắt buộc khớp COM interface ABI
 
     SourceVoiceInstance(
         void* pCallback, uint32_t avgBytesPerSec, uint32_t sampleRate = 48000,
@@ -222,14 +360,9 @@ public:
           bitsPerSample_(bitsPerSample > 0 ? bitsPerSample : 16),
           formatTag_(formatTag),
           blockAlign_(blockAlign > 0 ? blockAlign : 4) {
-        // Luôn mở AAudioStream với 2 kênh Stereo (nếu nguồn là Mono, ta upmix sang Stereo khi playback)
-        // để tương thích hoàn hảo 100% với Android HAL audio và LDPlayer/thiết bị thật không bao giờ bị rè hay vỡ tiếng
-        streamChannels_ = (channels_ == 1) ? 2 : channels_;
-        pcmBytesPerFrame_ = streamChannels_ * sizeof(int16_t);
         initVtable();
         lpVtbl = vtable_;
 
-        // Đọc hệ số tùy chỉnh của MS-ADPCM nếu có
         if (formatTag_ == 2 && pSourceFormat) {
             const auto* rawFmt = reinterpret_cast<const uint8_t*>(pSourceFormat);
             uint16_t cbSize = *reinterpret_cast<const uint16_t*>(rawFmt + 16);
@@ -246,7 +379,6 @@ public:
             }
         }
 
-        // Khởi tạo bộ giải mã WMA v2 (0x0161) cho voice nhân vật
         if (formatTag_ == 0x0161) {
             const uint8_t* extraData = nullptr;
             size_t extraDataSize = 0;
@@ -262,144 +394,238 @@ public:
             wmaDecoder_->init(sampleRate_, channels_, avgBytesPerSec_, blockAlign_, extraData, extraDataSize);
         }
 
-        // Khởi tạo luồng AAudio độc lập cho mỗi source voice trong chế độ chia sẻ SHARED
-        AAudioStreamBuilder* builder = nullptr;
-        aaudio_result_t res = AAudio_createStreamBuilder(&builder);
-        if (res == AAUDIO_OK && builder) {
-            AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
-            AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
-            AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-            // Luôn yêu cầu tần số phần cứng chuẩn 48000 Hz để tránh AudioFlinger tạo phần mềm resampler lỗi
-            AAudioStreamBuilder_setSampleRate(builder, 48000);
-            AAudioStreamBuilder_setChannelCount(builder, streamChannels_);
-            AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
-
-            res = AAudioStreamBuilder_openStream(builder, &stream_);
-            AAudioStreamBuilder_delete(builder);
-
-            if (res == AAUDIO_OK && stream_) {
-                int32_t cap = AAudioStream_getBufferCapacityInFrames(stream_);
-                if (cap > 0) {
-                    AAudioStream_setBufferSizeInFrames(stream_, cap);
-                }
-                actualSampleRate_ = static_cast<uint32_t>(AAudioStream_getSampleRate(stream_));
-                LOGI("SourceVoiceInstance: AAudio stream opened: Rate=%u (Req=%u), Channels=%d (SrcCh=%d), BufferSize=%d, FormatTag=0x%04X",
-                     actualSampleRate_, sampleRate_, AAudioStream_getChannelCount(stream_), channels_,
-                     AAudioStream_getBufferSizeInFrames(stream_), formatTag_);
-            } else {
-                LOGW("SourceVoiceInstance: openStream failed: %d (%s), will fallback to virtual clock",
-                     res, AAudio_convertResultToText(res));
-                stream_ = nullptr;
-            }
-        }
-
-        isRunning_ = true;
-        playbackThread_ = std::thread(&SourceVoiceInstance::playbackLoop, this);
+        XAudio2MasterMixer::instance().registerVoice(this);
     }
 
     ~SourceVoiceInstance() {
-        stopThread();
+        isDestroying_.store(true, std::memory_order_release);
+        isPlaying_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            callback_ = nullptr;
+        }
+        XAudio2MasterMixer::instance().unregisterVoice(this);
+        flush(false);
     }
 
-    void* getVtable() { return vtable_; }
     uint32_t getChannels() const { return channels_; }
     uint32_t getSampleRate() const { return sampleRate_; }
 
     void setVolume(float v) {
-        volume_ = v;
+        volume_.store(std::clamp(v, 0.0f, 4.0f), std::memory_order_relaxed);
     }
 
     float getVolume() const {
-        return volume_;
+        return volume_.load(std::memory_order_relaxed);
+    }
+
+    bool isDestroying() const {
+        return isDestroying_.load(std::memory_order_acquire);
+    }
+
+    bool hasActiveWork() const {
+        return isPlaying_.load(std::memory_order_relaxed) &&
+               buffersQueued_.load(std::memory_order_relaxed) > 0 &&
+               !isDestroying_.load(std::memory_order_relaxed);
     }
 
     void start() {
-        isPlaying_ = true;
-        // Bỏ AAudioStream_requestStart ở đây vì playbackLoop sẽ kích hoạt stream
-        // ngay khi buffer dữ liệu đầu tiên sẵn sàng, loại bỏ hoàn toàn race condition -895
-        cv_.notify_all();
+        isPlaying_.store(true, std::memory_order_release);
+        XAudio2MasterMixer::instance().notifyWorkAvailable();
     }
 
     void stop() {
-        isPlaying_ = false;
-        if (stream_) {
-            AAudioStream_requestPause(stream_);
-        }
+        isPlaying_.store(false, std::memory_order_release);
     }
 
     void submitBuffer(const XAUDIO2_BUFFER_64* buf) {
-        if (!buf) return;
-        AudioBufferTask task;
-        task.pContext = buf->pContext;
-        task.audioBytes = buf->AudioBytes;
-        if (buf->pAudioData && buf->AudioBytes > 0) {
-            task.pcmData.assign(buf->pAudioData, buf->pAudioData + buf->AudioBytes);
-            task.pAudioData = task.pcmData.data();
+        if (!buf || isDestroying_.load(std::memory_order_acquire)) return;
+
+        const uint32_t outRate = XAudio2MasterMixer::instance().outputSampleRate();
+        uint64_t estUs = (static_cast<uint64_t>(buf->AudioBytes) * 1000000ULL) / avgBytesPerSec_;
+        if (estUs == 0) estUs = 10000ULL;
+
+        std::vector<int16_t> decodedRaw;
+        uint64_t sourceFrames = 0;
+
+        {
+            std::lock_guard<std::mutex> decLock(decodeMutex_);
+            if (formatTag_ == 2 && buf->pAudioData && buf->AudioBytes > 0) {
+                decodeMsAdpcm(
+                    buf->pAudioData, buf->AudioBytes,
+                    channels_, blockAlign_,
+                    numCoefs_ > 0 ? coef1_ : nullptr,
+                    numCoefs_ > 0 ? coef2_ : nullptr,
+                    numCoefs_,
+                    decodedRaw
+                );
+                sourceFrames = decodedRaw.size() / std::max<uint32_t>(1u, channels_);
+            } else if (formatTag_ == 0x0161 && buf->pAudioData && buf->AudioBytes > 0) {
+                if (buffersQueued_.load(std::memory_order_relaxed) == 0 && wmaDecoder_) {
+                    wmaDecoder_->reset();
+                }
+                if (wmaDecoder_ && wmaDecoder_->isInitialized()) {
+                    wmaDecoder_->decode(buf->pAudioData, buf->AudioBytes, decodedRaw);
+                }
+                if (decodedRaw.empty()) {
+                    uint32_t fallbackFrames = static_cast<uint32_t>((sampleRate_ * estUs) / 1000000ULL);
+                    if (fallbackFrames == 0) fallbackFrames = 1024;
+                    decodedRaw.assign(static_cast<size_t>(fallbackFrames) * channels_, 0);
+                }
+                sourceFrames = decodedRaw.size() / std::max<uint32_t>(1u, channels_);
+            } else if (formatTag_ == 1 && buf->pAudioData && buf->AudioBytes >= sizeof(int16_t)) {
+                size_t totalInt16 = buf->AudioBytes / sizeof(int16_t);
+                const auto* rawSamples = reinterpret_cast<const int16_t*>(buf->pAudioData);
+                decodedRaw.assign(rawSamples, rawSamples + totalInt16);
+                sourceFrames = totalInt16 / std::max<uint32_t>(1u, channels_);
+            } else {
+                uint32_t fallbackFrames = static_cast<uint32_t>((sampleRate_ * estUs) / 1000000ULL);
+                if (fallbackFrames == 0) fallbackFrames = 256;
+                decodedRaw.assign(static_cast<size_t>(fallbackFrames) * channels_, 0);
+                sourceFrames = fallbackFrames;
+            }
+        }
+
+        // Chuẩn hóa kênh âm thanh về Stereo 2 kênh
+        std::vector<int16_t> stereoSrc;
+        if (channels_ == 1) {
+            stereoSrc.resize(decodedRaw.size() * 2u);
+            for (size_t i = 0; i < decodedRaw.size(); ++i) {
+                stereoSrc[i * 2u] = decodedRaw[i];
+                stereoSrc[i * 2u + 1u] = decodedRaw[i];
+            }
+        } else if (channels_ == 2) {
+            stereoSrc = std::move(decodedRaw);
         } else {
-            task.pAudioData = nullptr;
-        }
-        uint64_t us = (static_cast<uint64_t>(buf->AudioBytes) * 1000000ULL) / avgBytesPerSec_;
-        task.durationUs = std::chrono::microseconds(us > 0 ? us : 10000);
-
-        // Tự động giải mã định dạng MS-ADPCM nén sang Linear PCM 16-bit
-        if (formatTag_ == 2 && task.pAudioData && task.audioBytes > 0) {
-            decodeMsAdpcm(
-                task.pAudioData, task.audioBytes,
-                channels_, blockAlign_,
-                numCoefs_ > 0 ? coef1_ : nullptr,
-                numCoefs_ > 0 ? coef2_ : nullptr,
-                numCoefs_,
-                task.decodedPcm
-            );
-        } else if (formatTag_ == 0x0161 && task.pAudioData && task.audioBytes > 0) {
-            // Tự động giải mã định dạng WMA v2 nén sang Linear PCM 16-bit
-            if (buffersQueued_.load() == 0 && wmaDecoder_) {
-                wmaDecoder_->reset();
-            }
-            if (wmaDecoder_ && wmaDecoder_->isInitialized()) {
-                wmaDecoder_->decode(task.pAudioData, task.audioBytes, task.decodedPcm);
-            }
-            int16_t s0 = task.decodedPcm.size() > 0 ? task.decodedPcm[0] : 0;
-            int16_t s1 = task.decodedPcm.size() > 1 ? task.decodedPcm[1] : 0;
-            int16_t s2 = task.decodedPcm.size() > 2 ? task.decodedPcm[2] : 0;
-            LOGI("WmaDecoder: inBytes=%u -> outSamples=%zu, firstSamples=[%d, %d, %d]",
-                 task.audioBytes, task.decodedPcm.size(), s0, s1, s2);
-            // Dự phòng an toàn tuyệt đối: nếu WMA packet giải mã rỗng, tạo PCM silence để voice không bị kẹt hay crash
-            if (task.decodedPcm.empty()) {
-                uint32_t fallbackFrames = (sampleRate_ * static_cast<uint32_t>(task.durationUs.count())) / 1000000;
-                if (fallbackFrames == 0) fallbackFrames = 1024;
-                task.decodedPcm.assign(fallbackFrames * channels_, 0);
+            size_t frames = decodedRaw.size() / channels_;
+            stereoSrc.resize(frames * 2u);
+            for (size_t f = 0; f < frames; ++f) {
+                stereoSrc[f * 2u] = decodedRaw[f * channels_];
+                stereoSrc[f * 2u + 1u] = decodedRaw[f * channels_ + 1u];
             }
         }
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        taskQueue_.push(std::move(task));
-        buffersQueued_++;
-        cv_.notify_one();
+        PreparedAudioChunk chunk;
+        chunk.pContext = buf->pContext;
+        chunk.sourceFrames = sourceFrames > 0 ? sourceFrames : (stereoSrc.size() / 2u);
+        resampleLinearStereo(stereoSrc.data(), stereoSrc.size() / 2u, sampleRate_, outRate, chunk.stereoSamples);
+        chunk.totalMixFrames = chunk.stereoSamples.size() / 2u;
+
+        // Soft Ramp chống tiếng bụp đầu câu thoại WMA/PCM (không áp dụng cho SE MS-ADPCM formatTag == 2)
+        if (formatTag_ != 2 && needSoftRamp_.exchange(false) && chunk.totalMixFrames >= 16u) {
+            size_t rampFrames = std::min<size_t>(chunk.totalMixFrames, 256u);
+            for (size_t f = 0; f < rampFrames; ++f) {
+                float factor = static_cast<float>(f) / static_cast<float>(rampFrames);
+                chunk.stereoSamples[f * 2u] = static_cast<int16_t>(chunk.stereoSamples[f * 2u] * factor);
+                chunk.stereoSamples[f * 2u + 1u] = static_cast<int16_t>(chunk.stereoSamples[f * 2u + 1u] * factor);
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            chunkQueue_.push_back(std::move(chunk));
+            buffersQueued_.fetch_add(1, std::memory_order_relaxed);
+            if (currentContext_ == nullptr) {
+                currentContext_ = chunkQueue_.front().pContext;
+            }
+        }
+        XAudio2MasterMixer::instance().notifyWorkAvailable();
     }
 
     void flush(bool triggerCallbacks = true) {
-        needSoftRamp_ = true;
-        if (wmaDecoder_) {
-            wmaDecoder_->reset();
-        }
-        std::lock_guard<std::mutex> lock(mutex_);
-        while (!taskQueue_.empty()) {
-            auto task = taskQueue_.front();
-            taskQueue_.pop();
-            if (triggerCallbacks && !isDestroying_.load()) {
-                callOnBufferEnd(task.pContext);
+        needSoftRamp_.store(true, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> decLock(decodeMutex_);
+            if (wmaDecoder_) {
+                wmaDecoder_->reset();
             }
         }
-        buffersQueued_ = 0;
+        std::vector<void*> flushedContexts;
+        void* cbPtr = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cbPtr = callback_;
+            while (!chunkQueue_.empty()) {
+                flushedContexts.push_back(chunkQueue_.front().pContext);
+                chunkQueue_.pop_front();
+            }
+            buffersQueued_.store(0, std::memory_order_relaxed);
+            currentContext_ = nullptr;
+        }
+        if (triggerCallbacks && cbPtr && !isDestroying_.load(std::memory_order_acquire)) {
+            void** vtbl = *reinterpret_cast<void***>(cbPtr);
+            auto fnEnd = reinterpret_cast<FnOnBufferEnd>(vtbl[4]);
+            for (void* ctx : flushedContexts) {
+                fnEnd(cbPtr, ctx);
+            }
+        }
     }
 
     void getState(XAUDIO2_VOICE_STATE_64* state) {
         if (!state) return;
         std::lock_guard<std::mutex> lock(mutex_);
-        state->BuffersQueued = buffersQueued_.load();
-        state->SamplesPlayed = samplesPlayed_.load();
+        state->BuffersQueued = buffersQueued_.load(std::memory_order_relaxed);
+        state->SamplesPlayed = samplesPlayed_.load(std::memory_order_relaxed);
         state->pCurrentBufferContext = currentContext_;
+    }
+
+    // Trộn tối đa framesToMix khung mẫu vào bộ đệm tích lũy 32-bit của Mixer
+    bool mixInto(int32_t* accumStereo, size_t framesToMix, float masterVol, std::vector<PendingVoiceCallback>& outCallbacks) {
+        if (!isPlaying_.load(std::memory_order_acquire) || isDestroying_.load(std::memory_order_acquire)) {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (chunkQueue_.empty()) {
+            return false;
+        }
+
+        const float gain = volume_.load(std::memory_order_relaxed) * masterVol;
+        size_t mixedFrames = 0;
+
+        while (mixedFrames < framesToMix && !chunkQueue_.empty()) {
+            PreparedAudioChunk& front = chunkQueue_.front();
+            if (!front.started) {
+                front.started = true;
+                currentContext_ = front.pContext;
+                if (callback_ != nullptr) {
+                    outCallbacks.push_back({this, callback_, front.pContext, true});
+                }
+            }
+
+            const size_t avail = front.totalMixFrames - front.cursorFrame;
+            const size_t take = std::min(framesToMix - mixedFrames, avail);
+            const int16_t* srcPtr = front.stereoSamples.data() + front.cursorFrame * 2u;
+            int32_t* dstPtr = accumStereo + mixedFrames * 2u;
+
+            if (std::abs(gain - 1.0f) <= 0.001f) {
+                for (size_t i = 0; i < take * 2u; ++i) {
+                    dstPtr[i] += static_cast<int32_t>(srcPtr[i]);
+                }
+            } else if (gain > 0.0001f) {
+                for (size_t i = 0; i < take * 2u; ++i) {
+                    dstPtr[i] += static_cast<int32_t>(std::lround(static_cast<float>(srcPtr[i]) * gain));
+                }
+            }
+
+            front.cursorFrame += take;
+            mixedFrames += take;
+
+            if (front.cursorFrame >= front.totalMixFrames) {
+                void* doneCtx = front.pContext;
+                samplesPlayed_.fetch_add(front.sourceFrames, std::memory_order_relaxed);
+                if (buffersQueued_.load(std::memory_order_relaxed) > 0) {
+                    buffersQueued_.fetch_sub(1, std::memory_order_relaxed);
+                }
+                chunkQueue_.pop_front();
+                currentContext_ = chunkQueue_.empty() ? nullptr : chunkQueue_.front().pContext;
+                if (callback_ != nullptr) {
+                    outCallbacks.push_back({this, callback_, doneCtx, false});
+                }
+            }
+        }
+
+        return mixedFrames > 0;
     }
 
 private:
@@ -407,241 +633,26 @@ private:
     void* callback_ = nullptr;
     uint32_t avgBytesPerSec_ = 192000;
     uint32_t sampleRate_ = 48000;
-    uint32_t actualSampleRate_ = 48000;
     uint32_t channels_ = 2;
-    uint32_t streamChannels_ = 2;
     uint32_t bitsPerSample_ = 16;
-    uint32_t bytesPerFrame_ = 4;
     uint16_t formatTag_ = 1;
     uint16_t blockAlign_ = 4;
     uint16_t samplesPerBlock_ = 0;
     uint16_t numCoefs_ = 0;
     int32_t coef1_[32]{ 0 };
     int32_t coef2_[32]{ 0 };
-    uint32_t pcmBytesPerFrame_ = 4;
-    float volume_ = 1.0f;
+    std::atomic<float> volume_{ 1.0f };
     std::unique_ptr<sgre::WmaDecoder> wmaDecoder_;
 
-    AAudioStream* stream_ = nullptr;
-    std::thread playbackThread_;
     std::mutex mutex_;
-    std::condition_variable cv_;
-    std::queue<AudioBufferTask> taskQueue_;
-    std::atomic<bool> isRunning_{ false };
+    std::mutex decodeMutex_;
+    std::deque<PreparedAudioChunk> chunkQueue_;
     std::atomic<bool> isPlaying_{ false };
     std::atomic<bool> isDestroying_{ false };
     std::atomic<bool> needSoftRamp_{ true };
     std::atomic<uint32_t> buffersQueued_{ 0 };
     std::atomic<uint64_t> samplesPlayed_{ 0 };
     void* currentContext_ = nullptr;
-
-    void stopThread() {
-        if (!isDestroying_.exchange(true)) {
-            isRunning_ = false;
-            callback_ = nullptr; // Ngắt callback ngay lập tức để tránh deadlock với Game Thread
-            cv_.notify_all();
-            if (stream_) {
-                AAudioStream_requestStop(stream_);
-                AAudioStream_close(stream_);
-                stream_ = nullptr;
-            }
-            if (playbackThread_.joinable()) {
-                playbackThread_.join();
-            }
-            flush(false); // Dọn sạch buffer mà không kích hoạt callback khi voice đang hủy
-        }
-    }
-
-    void callOnBufferStart(void* pContext) {
-        if (callback_ && !isDestroying_.load()) {
-            void** vtbl = *reinterpret_cast<void***>(callback_);
-            auto fn = reinterpret_cast<FnOnBufferStart>(vtbl[3]);
-            fn(callback_, pContext);
-        }
-    }
-
-    void callOnBufferEnd(void* pContext) {
-        if (callback_ && !isDestroying_.load()) {
-            void** vtbl = *reinterpret_cast<void***>(callback_);
-            auto fn = reinterpret_cast<FnOnBufferEnd>(vtbl[4]);
-            fn(callback_, pContext);
-        }
-    }
-
-    void playbackLoop() {
-        Win32Bridge_SetupCurrentThreadTEB();
-        static uint32_t sBufferCount = 0;
-
-        while (isRunning_.load() && !isDestroying_.load()) {
-            AudioBufferTask task;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [this] {
-                    return !isRunning_.load() || isDestroying_.load() || (isPlaying_.load() && !taskQueue_.empty());
-                });
-
-                if (!isRunning_.load() || isDestroying_.load()) break;
-                if (!isPlaying_.load() || taskQueue_.empty()) continue;
-
-                task = taskQueue_.front();
-                taskQueue_.pop();
-                currentContext_ = task.pContext;
-            }
-
-            if (!isRunning_.load() || isDestroying_.load()) break;
-
-            // Gọi OnBufferStart để cập nhật QPC timestamp
-            callOnBufferStart(task.pContext);
-
-            // Ghi âm thanh ra phần cứng qua AAudio (hỗ trợ cả Linear PCM 16-bit, MS-ADPCM và WMA v2 đã giải mã)
-            std::vector<int16_t> stereoPcm;
-            const uint8_t* pcm = nullptr;
-            int32_t framesRemaining = 0;
-            int32_t initialFrames = 0;
-
-            if ((formatTag_ == 2 || formatTag_ == 0x0161) && !task.decodedPcm.empty()) {
-                if (channels_ == 1 && streamChannels_ == 2) {
-                    // Upmix Mono sang Stereo chuẩn để âm thanh không bị rè hoặc lệch stride trên Android HAL
-                    stereoPcm.resize(task.decodedPcm.size() * 2);
-                    for (size_t i = 0; i < task.decodedPcm.size(); ++i) {
-                        stereoPcm[i * 2] = task.decodedPcm[i];
-                        stereoPcm[i * 2 + 1] = task.decodedPcm[i];
-                    }
-                    pcm = reinterpret_cast<const uint8_t*>(stereoPcm.data());
-                    framesRemaining = static_cast<int32_t>(task.decodedPcm.size());
-                } else {
-                    pcm = reinterpret_cast<const uint8_t*>(task.decodedPcm.data());
-                    framesRemaining = static_cast<int32_t>(task.decodedPcm.size() / channels_);
-                }
-                initialFrames = framesRemaining;
-            } else if (task.pAudioData && task.audioBytes > 0 && formatTag_ == 1) {
-                if (channels_ == 1 && streamChannels_ == 2) {
-                    const auto* monoSamples = reinterpret_cast<const int16_t*>(task.pAudioData);
-                    size_t count = task.audioBytes / sizeof(int16_t);
-                    stereoPcm.resize(count * 2);
-                    for (size_t i = 0; i < count; ++i) {
-                        stereoPcm[i * 2] = monoSamples[i];
-                        stereoPcm[i * 2 + 1] = monoSamples[i];
-                    }
-                    pcm = reinterpret_cast<const uint8_t*>(stereoPcm.data());
-                    framesRemaining = static_cast<int32_t>(count);
-                } else {
-                    pcm = task.pAudioData;
-                    framesRemaining = static_cast<int32_t>(task.audioBytes / pcmBytesPerFrame_);
-                }
-                initialFrames = framesRemaining;
-            }
-
-            // Tự động resample tuyến tính nếu tần số phần cứng AAudio khác với tần số nguồn (vd: 44.1kHz -> 48kHz)
-            // triệt tiêu hoàn toàn hiện tượng méo tiếng / rè tiếng trên Android HAL
-            std::vector<int16_t> resampledPcm;
-            if (actualSampleRate_ > 0 && actualSampleRate_ != sampleRate_ && framesRemaining > 0 && pcm != nullptr) {
-                resampleLinear(
-                    reinterpret_cast<const int16_t*>(pcm),
-                    static_cast<size_t>(framesRemaining),
-                    sampleRate_,
-                    actualSampleRate_,
-                    streamChannels_,
-                    resampledPcm
-                );
-                pcm = reinterpret_cast<const uint8_t*>(resampledPcm.data());
-                framesRemaining = static_cast<int32_t>(resampledPcm.size() / streamChannels_);
-            }
-
-            if (pcm && framesRemaining > 0 && stream_ && pcmBytesPerFrame_ > 0) {
-                // Áp dụng Soft Ramp (Linear Fade-In) cho voice thoại WMA v2 để triệt tiêu tiếng pop/crackle/rè.
-                // TUYỆT ĐỐI KHÔNG áp dụng cho Sound Effect MS-ADPCM (formatTag_ == 2) để bảo toàn
-                // trọn vẹn xung lực đỉnh (transient attack) của tiếng va chạm kim loại và tiếng nổ!
-                if (formatTag_ != 2 && needSoftRamp_.exchange(false) && framesRemaining >= 16) {
-                    if (pcm != reinterpret_cast<const uint8_t*>(stereoPcm.data()) &&
-                        pcm != reinterpret_cast<const uint8_t*>(resampledPcm.data())) {
-                        stereoPcm.assign(reinterpret_cast<const int16_t*>(pcm),
-                                         reinterpret_cast<const int16_t*>(pcm) + framesRemaining * streamChannels_);
-                        pcm = reinterpret_cast<const uint8_t*>(stereoPcm.data());
-                    }
-                    auto* rampBuf = reinterpret_cast<int16_t*>(const_cast<uint8_t*>(pcm));
-                    size_t rampCount = std::min(static_cast<size_t>(framesRemaining), static_cast<size_t>(256));
-                    for (size_t f = 0; f < rampCount; ++f) {
-                        float factor = static_cast<float>(f) / static_cast<float>(rampCount);
-                        for (uint32_t ch = 0; ch < streamChannels_; ++ch) {
-                            rampBuf[f * streamChannels_ + ch] = static_cast<int16_t>(rampBuf[f * streamChannels_ + ch] * factor);
-                        }
-                    }
-                }
-
-                // Áp dụng âm lượng (Volume scaling) nếu volume khác 1.0f
-                float curVol = volume_;
-                if (curVol < 0.999f || curVol > 1.001f) {
-                    if (pcm != reinterpret_cast<const uint8_t*>(stereoPcm.data()) &&
-                        pcm != reinterpret_cast<const uint8_t*>(resampledPcm.data())) {
-                        stereoPcm.assign(reinterpret_cast<const int16_t*>(pcm),
-                                         reinterpret_cast<const int16_t*>(pcm) + framesRemaining * streamChannels_);
-                        pcm = reinterpret_cast<const uint8_t*>(stereoPcm.data());
-                    }
-                    auto* volBuf = reinterpret_cast<int16_t*>(const_cast<uint8_t*>(pcm));
-                    size_t sampleCount = static_cast<size_t>(framesRemaining) * streamChannels_;
-                    for (size_t s = 0; s < sampleCount; ++s) {
-                        int32_t scaled = static_cast<int32_t>(volBuf[s] * curVol);
-                        volBuf[s] = static_cast<int16_t>(std::max(-32768, std::min(32767, scaled)));
-                    }
-                }
-
-                // Đảm bảo AAudioStream đã thực sự bắt đầu phát khi có buffer đầu tiên sẵn sàng
-                aaudio_stream_state_t st = AAudioStream_getState(stream_);
-                if (st != AAUDIO_STREAM_STATE_STARTED && st != AAUDIO_STREAM_STATE_STARTING) {
-                    AAudioStream_requestStart(stream_);
-                }
-
-                while (framesRemaining > 0 && isRunning_.load() && !isDestroying_.load() && isPlaying_.load()) {
-                    int64_t timeoutNs = 50000000LL; // 50ms
-                    aaudio_result_t written = AAudioStream_write(stream_, pcm, framesRemaining, timeoutNs);
-                    if (written > 0) {
-                        framesRemaining -= written;
-                        pcm += written * pcmBytesPerFrame_;
-                    } else if (written == AAUDIO_ERROR_TIMEOUT) {
-                        continue;
-                    } else {
-                        LOGW("SourceVoiceInstance: AAudioStream_write error: %d (%s)", written, AAudio_convertResultToText(written));
-                        break;
-                    }
-                }
-            } else {
-                std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait_for(lock, task.durationUs, [this] {
-                    return !isRunning_.load() || isDestroying_.load();
-                });
-            }
-
-            if (!isRunning_.load() || isDestroying_.load()) break;
-
-            // Gọi OnBufferEnd để cộng dồn master byte count và kích hoạt SetEvent
-            callOnBufferEnd(task.pContext);
-
-            samplesPlayed_ += (initialFrames > 0) ? initialFrames : (task.audioBytes / 4);
-            if (buffersQueued_ > 0) buffersQueued_--;
-            currentContext_ = nullptr;
-
-            int16_t maxSample = 0;
-            if ((formatTag_ == 2 || formatTag_ == 0x0161) && !task.decodedPcm.empty()) {
-                for (int16_t s : task.decodedPcm) {
-                    int16_t absVal = std::abs(s);
-                    if (absVal > maxSample) maxSample = absVal;
-                }
-            } else if (task.pAudioData && task.audioBytes >= 2) {
-                const auto* samples = reinterpret_cast<const int16_t*>(task.pAudioData);
-                size_t numSamples = task.audioBytes / 2;
-                for (size_t i = 0; i < numSamples; ++i) {
-                    int16_t absVal = std::abs(samples[i]);
-                    if (absVal > maxSample) maxSample = absVal;
-                }
-            }
-
-            if (++sBufferCount % 500 == 1) {
-                LOGI("SourceVoiceInstance: played %u buffers (bytes=%u, maxSample=%d, formatTag=0x%04X)",
-                     sBufferCount, task.audioBytes, maxSample, formatTag_);
-            }
-        }
-    }
 
     void initVtable() {
         for (size_t i = 0; i < 32; ++i) vtable_[i] = reinterpret_cast<void*>(&stub_XAudioSuccess);
@@ -668,15 +679,13 @@ private:
     }
 
     static int32_t WINAPI SourceVoice_SetVolume(void* thisPtr, float volume, uint32_t) {
-        auto* inst = reinterpret_cast<SourceVoiceInstance*>(thisPtr);
-        inst->setVolume(volume);
-        return 0; // S_OK
+        reinterpret_cast<SourceVoiceInstance*>(thisPtr)->setVolume(volume);
+        return 0;
     }
 
     static void WINAPI SourceVoice_GetVolume(void* thisPtr, float* pVolume) {
         if (pVolume) {
-            auto* inst = reinterpret_cast<SourceVoiceInstance*>(thisPtr);
-            *pVolume = inst->getVolume();
+            *pVolume = reinterpret_cast<SourceVoiceInstance*>(thisPtr)->getVolume();
         }
     }
 
@@ -686,30 +695,29 @@ private:
     }
 
     static int32_t WINAPI SourceVoice_Start(void* thisPtr, uint32_t flags, uint32_t opSet) {
-        LOGI("IXAudio2SourceVoice::Start called: %p (flags=0x%X, opSet=%u)", thisPtr, flags, opSet);
+        (void)flags;
+        (void)opSet;
         reinterpret_cast<SourceVoiceInstance*>(thisPtr)->start();
-        return 0; // S_OK
+        return 0;
     }
 
     static int32_t WINAPI SourceVoice_Stop(void* thisPtr, uint32_t flags, uint32_t opSet) {
-        LOGI("IXAudio2SourceVoice::Stop called: %p (flags=0x%X, opSet=%u)", thisPtr, flags, opSet);
+        (void)flags;
+        (void)opSet;
         reinterpret_cast<SourceVoiceInstance*>(thisPtr)->stop();
-        return 0; // S_OK
+        return 0;
     }
 
-    static int32_t WINAPI SourceVoice_SubmitSourceBuffer(void* thisPtr, const void* pBuffer, const void* pBufferWMA) {
+    static int32_t WINAPI SourceVoice_SubmitSourceBuffer(void* thisPtr, const void* pBuffer, const void* /* pBufferWMA */) {
         auto* inst = reinterpret_cast<SourceVoiceInstance*>(thisPtr);
         auto* buf = reinterpret_cast<const XAUDIO2_BUFFER_64*>(pBuffer);
-        LOGI("IXAudio2SourceVoice::SubmitSourceBuffer called: %p (bytes=%u, context=%p, pData=%p, pWma=%p)",
-             thisPtr, buf ? buf->AudioBytes : 0, buf ? buf->pContext : nullptr, buf ? buf->pAudioData : nullptr, pBufferWMA);
         inst->submitBuffer(buf);
-        return 0; // S_OK
+        return 0;
     }
 
     static int32_t WINAPI SourceVoice_FlushSourceBuffers(void* thisPtr) {
-        LOGI("IXAudio2SourceVoice::FlushSourceBuffers called: %p", thisPtr);
         reinterpret_cast<SourceVoiceInstance*>(thisPtr)->flush();
-        return 0; // S_OK
+        return 0;
     }
 
     static void WINAPI SourceVoice_GetState(void* thisPtr, void* pVoiceState, uint32_t) {
@@ -717,6 +725,132 @@ private:
         reinterpret_cast<SourceVoiceInstance*>(thisPtr)->getState(state);
     }
 };
+
+void XAudio2MasterMixer::mixerLoop() {
+    Win32Bridge_SetupCurrentThreadTEB();
+
+    int32_t accumBuf[kMixBlockSamples];
+    int16_t outBuf[kMixBlockSamples];
+    std::vector<PendingVoiceCallback> pendingCallbacks;
+    pendingCallbacks.reserve(16);
+
+    while (running_.load(std::memory_order_acquire)) {
+        if (lifecyclePaused_.load(std::memory_order_relaxed)) {
+            if (stream_) {
+                aaudio_stream_state_t st = AAudioStream_getState(stream_);
+                if (st == AAUDIO_STREAM_STATE_STARTED || st == AAUDIO_STREAM_STATE_STARTING) {
+                    AAudioStream_requestPause(stream_);
+                }
+            }
+            std::unique_lock<std::mutex> lock(voicesMutex_);
+            cv_.wait_for(lock, std::chrono::milliseconds(50), [&]() {
+                return !running_.load(std::memory_order_relaxed) || !lifecyclePaused_.load(std::memory_order_relaxed);
+            });
+            continue;
+        }
+
+        bool anyVoiceReady = false;
+        {
+            std::unique_lock<std::mutex> lock(voicesMutex_);
+            for (const auto* v : voices_) {
+                if (v && v->hasActiveWork()) {
+                    anyVoiceReady = true;
+                    break;
+                }
+            }
+            if (!anyVoiceReady) {
+                cv_.wait_for(lock, std::chrono::milliseconds(15), [&]() {
+                    if (!running_.load(std::memory_order_relaxed) || lifecyclePaused_.load(std::memory_order_relaxed)) {
+                        return true;
+                    }
+                    for (const auto* v : voices_) {
+                        if (v && v->hasActiveWork()) return true;
+                    }
+                    return false;
+                });
+                continue;
+            }
+        }
+
+        std::memset(accumBuf, 0, sizeof(accumBuf));
+        pendingCallbacks.clear();
+        bool mixedAny = false;
+        const float masterVol = masterVolume_.load(std::memory_order_relaxed);
+
+        {
+            std::lock_guard<std::mutex> lock(voicesMutex_);
+            for (SourceVoiceInstance* v : voices_) {
+                if (v && v->mixInto(accumBuf, kMixBlockFrames, masterVol, pendingCallbacks)) {
+                    mixedAny = true;
+                }
+            }
+        }
+
+        if (mixedAny) {
+            for (size_t i = 0; i < kMixBlockSamples; ++i) {
+                outBuf[i] = clampPcm16(accumBuf[i]);
+            }
+
+            if (stream_) {
+                aaudio_stream_state_t st = AAudioStream_getState(stream_);
+                if (st == AAUDIO_STREAM_STATE_DISCONNECTED) {
+                    LOGW("XAudio2MasterMixer: Thiết bị âm thanh thay đổi (tai nghe/Bluetooth), mở lại AAudioStream...");
+                    openSharedStream();
+                    st = stream_ ? AAudioStream_getState(stream_) : AAUDIO_STREAM_STATE_UNINITIALIZED;
+                }
+                if (stream_ && st != AAUDIO_STREAM_STATE_STARTED && st != AAUDIO_STREAM_STATE_STARTING) {
+                    AAudioStream_requestStart(stream_);
+                }
+                if (stream_) {
+                    int32_t remaining = static_cast<int32_t>(kMixBlockFrames);
+                    const int16_t* writePtr = outBuf;
+                    while (remaining > 0 && running_.load(std::memory_order_relaxed) && !lifecyclePaused_.load(std::memory_order_relaxed)) {
+                        aaudio_result_t wr = AAudioStream_write(stream_, writePtr, remaining, 50000000LL);
+                        if (wr > 0) {
+                            remaining -= wr;
+                            writePtr += wr * kMasterChannels;
+                        } else if (wr == AAUDIO_ERROR_DISCONNECTED) {
+                            openSharedStream();
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                const uint32_t rate = std::max<uint32_t>(8000u, actualSampleRate_.load(std::memory_order_relaxed));
+                const uint64_t sleepUs = (static_cast<uint64_t>(kMixBlockFrames) * 1000000ULL) / rate;
+                std::this_thread::sleep_for(std::chrono::microseconds(sleepUs));
+            }
+        }
+
+        // Gọi OnBufferStart / OnBufferEnd bên ngoài khóa của voice để tránh hoàn toàn deadlock tái nhập
+        for (const auto& cb : pendingCallbacks) {
+            {
+                std::lock_guard<std::mutex> lock(voicesMutex_);
+                if (std::find(voices_.begin(), voices_.end(), cb.voice) == voices_.end() || cb.voice->isDestroying()) {
+                    continue;
+                }
+                activeCallbackVoice_ = cb.voice;
+            }
+
+            if (cb.callbackPtr && !cb.voice->isDestroying()) {
+                void** vtbl = *reinterpret_cast<void***>(cb.callbackPtr);
+                if (cb.isBufferStart) {
+                    reinterpret_cast<FnOnBufferStart>(vtbl[3])(cb.callbackPtr, cb.pContext);
+                } else {
+                    reinterpret_cast<FnOnBufferEnd>(vtbl[4])(cb.callbackPtr, cb.pContext);
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(voicesMutex_);
+                activeCallbackVoice_ = nullptr;
+            }
+            callbackDoneCv_.notify_all();
+        }
+    }
+}
 
 // --- Mock Mastering Voice ---
 static void* gMasteringVoiceVtable[32];
@@ -727,19 +861,21 @@ static void WINAPI MasteringVoice_GetVoiceDetails(void*, void* pDetails) {
         auto* details = reinterpret_cast<XAUDIO2_VOICE_DETAILS*>(pDetails);
         details->CreationFlags = 0;
         details->ActiveFlags = 0;
-        details->InputChannels = 2;
-        details->InputSampleRate = 48000;
-        LOGI("IXAudio2MasteringVoice::GetVoiceDetails called -> ch=%u, rate=%u", details->InputChannels, details->InputSampleRate);
+        details->InputChannels = kMasterChannels;
+        details->InputSampleRate = XAudio2MasterMixer::instance().outputSampleRate();
     }
 }
 
 static int32_t WINAPI MasteringVoice_SetVolume(void*, float volume, uint32_t) {
-    LOGI("IXAudio2MasteringVoice::SetVolume -> %f", volume);
-    return 0; // S_OK
+    XAudio2MasterMixer::instance().setMasterVolume(volume);
+    LOGI("IXAudio2MasteringVoice::SetVolume -> %.3f", volume);
+    return 0;
 }
 
 static void WINAPI MasteringVoice_GetVolume(void*, float* pVolume) {
-    if (pVolume) *pVolume = 1.0f;
+    if (pVolume) {
+        *pVolume = XAudio2MasterMixer::instance().getMasterVolume();
+    }
 }
 
 static void initMasteringVoiceVtable() {
@@ -771,12 +907,11 @@ static void* gMockXAudio2 = nullptr;
 
 static int32_t WINAPI xaudio_QueryInterface(void*, const void*, void** ppvObject) {
     if (ppvObject) *ppvObject = &gMockXAudio2;
-    return 0; // S_OK
+    return 0;
 }
 static uint32_t WINAPI xaudio_AddRef(void*) { return 1; }
 static uint32_t WINAPI xaudio_Release(void*) { return 1; }
 
-// Slot 5 (Offset 0x28): CreateSourceVoice
 static int32_t WINAPI xaudio_CreateSourceVoice(
     void*, void** ppSourceVoice, const void* pSourceFormat, uint32_t, float,
     void* pCallback, const void*, const void*
@@ -797,32 +932,36 @@ static int32_t WINAPI xaudio_CreateSourceVoice(
         avgBytesPerSec = *reinterpret_cast<const uint32_t*>(rawFmt + 8);
         blockAlign = *reinterpret_cast<const uint16_t*>(rawFmt + 12);
         bitsPerSample = *reinterpret_cast<const uint16_t*>(rawFmt + 14);
-        if (formatTag != 1) { // Định dạng không phải PCM thô
+        if (formatTag != 1) {
             cbSize = *reinterpret_cast<const uint16_t*>(rawFmt + 16);
         }
     }
-    LOGI("IXAudio2::CreateSourceVoice -> Format: tag=0x%04X (%u), ch=%u, rate=%u, avgBps=%u, align=%u, bits=%u, cbSize=%u",
-         formatTag, formatTag, channels, sampleRate, avgBytesPerSec, blockAlign, bitsPerSample, cbSize);
+    LOGI("IXAudio2::CreateSourceVoice -> tag=0x%04X, ch=%u, rate=%u, avgBps=%u, align=%u, bits=%u, cbSize=%u",
+         formatTag, channels, sampleRate, avgBytesPerSec, blockAlign, bitsPerSample, cbSize);
 
-    auto* voiceInst = new SourceVoiceInstance(pCallback, avgBytesPerSec, sampleRate, channels, bitsPerSample, formatTag, blockAlign, pSourceFormat);
+    auto* voiceInst = new SourceVoiceInstance(
+        pCallback, avgBytesPerSec, sampleRate, channels, bitsPerSample, formatTag, blockAlign, pSourceFormat
+    );
     if (ppSourceVoice) {
         *ppSourceVoice = voiceInst;
     }
-    return 0; // S_OK
+    return 0;
 }
 
-// Slot 6 (Offset 0x30): CreateSubmixVoice
-static int32_t WINAPI xaudio_CreateSubmixVoice(void*, void** ppSubmixVoice, uint32_t, uint32_t, uint32_t, uint32_t, const void*, const void*) {
+static int32_t WINAPI xaudio_CreateSubmixVoice(
+    void*, void** ppSubmixVoice, uint32_t, uint32_t, uint32_t, uint32_t, const void*, const void*
+) {
     initSubmixVoiceVtable();
     if (ppSubmixVoice) *ppSubmixVoice = &gMockSubmixVoice;
-    return 0; // S_OK
+    return 0;
 }
 
-// Slot 7 (Offset 0x38): CreateMasteringVoice
-static int32_t WINAPI xaudio_CreateMasteringVoice(void*, void** ppMasteringVoice, uint32_t, uint32_t, uint32_t, const void*, const void*, uint32_t) {
+static int32_t WINAPI xaudio_CreateMasteringVoice(
+    void*, void** ppMasteringVoice, uint32_t, uint32_t, uint32_t, const void*, const void*, uint32_t
+) {
     initMasteringVoiceVtable();
     if (ppMasteringVoice) *ppMasteringVoice = &gMockMasteringVoice;
-    return 0; // S_OK
+    return 0;
 }
 
 static void initXAudio2Vtable() {
@@ -849,7 +988,11 @@ int32_t WINAPI XAudio2Create(void** ppXAudio2, uint32_t Flags, uint32_t XAudio2P
     if (!ppXAudio2) return 0x80070057; // E_INVALIDARG
     initXAudio2Vtable();
     *ppXAudio2 = &gMockXAudio2;
-    return 0; // S_OK
+    return 0;
+}
+
+void XAudio2Bridge_SetLifecyclePaused(bool paused) {
+    XAudio2MasterMixer::instance().setLifecyclePaused(paused);
 }
 
 } // extern "C"

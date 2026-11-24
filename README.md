@@ -20,8 +20,11 @@ It loads the Windows x86-64 game binary directly into memory and bridges its sub
 
 ### Current Status & Requirements
 
-- **Supported Runtime**: Verified on Android `x86_64` environments (e.g., LDPlayer 9) with OpenGL ES 3.0+.
-- **ABI Packaging**: Builds `x86_64` and `arm64-v8a` native libraries (`arm64-v8a` PE execution requires an external x86-64 translation layer, not yet bundled).
+- **Supported Runtime**:
+  - `x86_64Only` flavor: Runs natively on `x86_64` Android devices/emulators AND on `arm64-v8a` devices equipped with system binary translation (`libndk_translation` / `houdini`).
+  - `arm64Box64` / `universal` flavors: Includes the dynamic `Arm64Box64Bridge` (`ms_abi` <-> `AAPCS64` thunking) ready to load `libbox64.so` from `<dataDir>/box64/libbox64.so`.
+- **Graphics, Audio & Mobile UX**:
+  - 16:9 Letterbox/Pillarbox aspect-ratio preservation (with runtime Full-Screen Stretch toggle), 30/60 FPS limiter, specialized GLSL binary shader cache, SIMD SSE2/NEON WebM video decoding, central single-stream `XAudio2MasterMixer`, full XInput/DirectInput Bluetooth/USB controller support, collapsible Quick Overlay HUD (Phone Trigger, Auto, Skip, Quick Save, System Menu, FPS/RAM monitor), and ZIP Save Backup/Restore.
 - **Android Version**: Android 8.0+ (API 26 minimum, target SDK 34).
 - **Game Files Required**: You must provide files from your own legitimate PC copy of *STEINS;GATE REBOOT*.
 
@@ -56,12 +59,12 @@ It loads the Windows x86-64 game binary directly into memory and bridges its sub
 Prerequisites: **JDK 17**, **Android SDK (API 34)**, **Android NDK (r26b+)**, **CMake 3.22.1+**, **Python 3**.
 
 ```bash
-# Run unit tests
+# Run Python & JVM unit tests
 python -m unittest discover -s tests -t tests
-./gradlew testDebugUnitTest
+./gradlew testX86_64OnlyDebugUnitTest
 
-# Build APK
-./gradlew assembleDebug
+# Build ABI-specific or Universal APKs
+./gradlew assembleX86_64OnlyDebug assembleArm64Box64Debug assembleUniversalDebug
 ```
 
 ### License & Third-Party Notices
@@ -87,8 +90,11 @@ This repository contains **only** the open-source compatibility wrapper code. It
 
 ### Yêu Cầu & Trạng Thái Hỗ Trợ
 
-- **Môi trường chạy**: Đã kiểm thử ổn định trên Android `x86_64` (như LDPlayer 9) hỗ trợ OpenGL ES 3.0+.
-- **Kiến trúc đóng gói**: APK đóng gói sẵn `x86_64` và `arm64-v8a` (nhánh `arm64-v8a` chưa tích hợp sẵn bộ dịch mã x86-64 nên hiện nhắm mục tiêu chạy trực tiếp trên thiết bị/giả lập `x86_64`).
+- **Các gói cài đặt (Product Flavors)**:
+  - Bản `x86_64Only`: Chạy trực tiếp tốc độ gốc trên thiết bị/giả lập `x86_64`, đồng thời tự động kích hoạt trình dịch nhị phân hệ thống (`libndk_translation` / `houdini`) trên nhiều điện thoại `arm64-v8a` Android 11+.
+  - Bản `arm64Box64` / `universal`: Tích hợp cầu nối động `Arm64Box64Bridge` chuyển tiếp thanh ghi `ms_abi` <-> `AAPCS64`, hỗ trợ nạp `libbox64.so` từ `<thư_mục_game>/box64/libbox64.so`.
+- **Tính năng & Tối ưu di động**:
+  - Giữ chuẩn khung hình 16:9 (kèm tùy chọn kéo giãn toàn màn hình), khóa 30/60 FPS tiết kiệm pin, bộ nhớ đệm nhị phân cho 4 họ shader GLSL, giải mã video WebM tăng tốc SIMD SSE2/NEON, bộ trộn âm thanh trung tâm `XAudio2MasterMixer`, hỗ trợ đầy đủ tay cầm XInput/Bluetooth, thanh phím tắt nổi thu gọn (Mở điện thoại, Tự động, Tua nhanh, Lưu nhanh, Menu, đo FPS/RAM) và Sao lưu/Khôi phục Save `.zip` an toàn.
 - **Hệ điều hành**: Android 8.0 trở lên (Min SDK 26, Target SDK 34).
 - **Dữ liệu game**: Không đi kèm trong APK; người dùng cần tự sao chép từ bản PC hợp pháp của mình.
 
@@ -123,12 +129,12 @@ This repository contains **only** the open-source compatibility wrapper code. It
 Yêu cầu: **JDK 17**, **Android SDK (API 34)**, **Android NDK (r26b+)**, **CMake 3.22.1+**, **Python 3**.
 
 ```bash
-# Chạy unit test
+# Chạy toàn bộ unit test Python & JUnit
 python -m unittest discover -s tests -t tests
-./gradlew testDebugUnitTest
+./gradlew testX86_64OnlyDebugUnitTest
 
-# Build APK
-./gradlew assembleDebug
+# Biên dịch các gói APK theo kiến trúc
+./gradlew assembleX86_64OnlyDebug assembleArm64Box64Debug assembleUniversalDebug
 ```
 
 ### Giấy Phép & Mã Nguồn Bên Thứ Ba

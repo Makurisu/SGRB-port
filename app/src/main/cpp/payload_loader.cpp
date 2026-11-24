@@ -1,6 +1,8 @@
 #include "payload_loader.h"
 #include "d3d11_bridge.h"
 #include "dinput_bridge.h"
+#include "xinput_bridge.h"
+#include "arm64_box64_bridge.h"
 #include "win32_bridge.h"
 #include <fstream>
 #include <vector>
@@ -568,20 +570,11 @@ bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& inf
                 idx++;
             }
         }
-        // Liên kết trực tiếp XINPUT1_4.dll (XInputGetState, XInputSetState theo ordinal)
+        // Liên kết trực tiếp XINPUT1_4.dll (XInputGetState, XInputSetState theo ordinal hoặc tên)
         else if (nameStr.find("XINPUT") != std::string::npos || nameStr.find("xinput") != std::string::npos) {
             uint32_t thunkRva = origFirstThunk != 0 ? origFirstThunk : firstThunk;
             uint64_t* origThunkPtr = reinterpret_cast<uint64_t*>(basePtr + thunkRva);
             uint64_t* iatPtr = reinterpret_cast<uint64_t*>(basePtr + firstThunk);
-
-            // Stubs an toàn cho XInput
-            auto xinputGetState = [](uint32_t, void* pState) -> uint32_t WINAPI {
-                if (pState) memset(pState, 0, 16);
-                return 1167; // ERROR_DEVICE_NOT_CONNECTED
-            };
-            auto xinputSetState = [](uint32_t, void*) -> uint32_t WINAPI {
-                return 1167; // ERROR_DEVICE_NOT_CONNECTED
-            };
 
             size_t idx = 0;
             while (origThunkPtr[idx] != 0) {
@@ -589,12 +582,12 @@ bool PayloadLoader::resolveImports(void* baseAddress, const GamePayloadInfo& inf
                 void* targetFunc = nullptr;
                 if (val & 0x8000000000000000) {
                     uint16_t ord = val & 0xFFFF;
-                    if (ord == 2) targetFunc = reinterpret_cast<void*>(+xinputGetState);
-                    else if (ord == 3) targetFunc = reinterpret_cast<void*>(+xinputSetState);
+                    if (ord == 2) targetFunc = reinterpret_cast<void*>(&XInputBridge_GetState);
+                    else if (ord == 3) targetFunc = reinterpret_cast<void*>(&XInputBridge_SetState);
                 } else {
                     const char* fnName = reinterpret_cast<const char*>(basePtr + val + 2);
-                    if (strcmp(fnName, "XInputGetState") == 0) targetFunc = reinterpret_cast<void*>(+xinputGetState);
-                    else if (strcmp(fnName, "XInputSetState") == 0) targetFunc = reinterpret_cast<void*>(+xinputSetState);
+                    if (strcmp(fnName, "XInputGetState") == 0) targetFunc = reinterpret_cast<void*>(&XInputBridge_GetState);
+                    else if (strcmp(fnName, "XInputSetState") == 0) targetFunc = reinterpret_cast<void*>(&XInputBridge_SetState);
                 }
                 if (targetFunc != nullptr) {
                     iatPtr[idx] = reinterpret_cast<uint64_t>(targetFunc);
@@ -725,8 +718,15 @@ bool PayloadLoader::executePayload(void* baseAddress, const GamePayloadInfo& inf
         return false;
     }
 #else
-    LOGI("Hệ thống đang chạy trên ARM64, EntryPoint %p đã sẵn sàng cho bộ thông dịch Box64!", entryPointPtr);
-    return true;
+    std::string dataDir = info.exePath;
+    const size_t slashPos = dataDir.find_last_of("/\\");
+    if (slashPos != std::string::npos) {
+        dataDir = dataDir.substr(0, slashPos);
+    } else {
+        dataDir.clear();
+    }
+    LOGI("Hệ thống đang chạy trên ARM64, kích hoạt cầu nối động Arm64Box64Bridge tại EntryPoint %p...", entryPointPtr);
+    return sgre::Arm64Box64Bridge::executePeEntryPoint(baseAddress, info.entryPointRva, dataDir);
 #endif
 }
 

@@ -158,6 +158,9 @@ bool D3D11Bridge_WaitAndConsumePreuploadRequests(std::vector<TextureUploadReques
 void D3D11Bridge_ConsumePreuploadRequests(std::vector<TextureUploadRequest>& out);
 void D3D11Bridge_WakePreuploadThread();
 void D3D11Bridge_MarkTextureUploaded(const void* handle);
+bool D3D11Bridge_PreserveGpuTextureToCpu(const void* handle, const uint8_t* rgbaData, size_t byteSize);
+void D3D11Bridge_ResetGpuUploadState();
+uint64_t D3D11Bridge_GetCpuMemoryBytes();
 void D3D11Bridge_SetSupportsBptcCompression(bool supported);
 bool D3D11Bridge_SupportsBptcCompression();
 bool D3D11Bridge_EnsureTextureDecompressed(const void* handle);

@@ -1,8 +1,11 @@
+#include "steam_hook.h"
 #include <cstdint>
 #include <android/log.h>
 #include <cstring>
 #include <cstdio>
 #include <strings.h>
+#include <mutex>
+#include <string>
 
 #define LOG_TAG "SGRE_SteamHook"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -39,55 +42,85 @@ static void initSteamVtable() {
 }
 
 // ISteamApps implementation
-static const char* WINAPI stub_SteamApps_GetCurrentGameLanguage(void* /* thisPtr */) {
-    static char sGameLanguage[64] = "english";
-    static bool sLoaded = false;
-    if (!sLoaded) {
-        sLoaded = true;
-        const char* iniPaths[] = {
-            "/sdcard/sgrb_game_data/configs.user.ini",
-            "/sdcard/sgrb_game_data/wind3d11data/steam_settings/configs.user.ini",
-            "/sdcard/sgrb_game_data/steam_settings/configs.user.ini",
-            "/sdcard/sgrb_game_data/language.txt"
-        };
-        for (const char* path : iniPaths) {
-            FILE* fp = fopen(path, "r");
-            if (fp) {
-                char line[256];
-                while (fgets(line, sizeof(line), fp)) {
-                    char* nl = strpbrk(line, "\r\n");
-                    if (nl) *nl = '\0';
-                    char* eq = strchr(line, '=');
-                    if (eq) {
-                        *eq = '\0';
-                        char* key = line;
-                        char* val = eq + 1;
-                        while (*key == ' ' || *key == '\t') key++;
-                        while (*val == ' ' || *val == '\t') val++;
-                        if (strcasecmp(key, "Language") == 0 || strcasecmp(key, "language") == 0) {
-                            if (val[0] != '\0') {
-                                strncpy(sGameLanguage, val, sizeof(sGameLanguage) - 1);
-                                sGameLanguage[sizeof(sGameLanguage) - 1] = '\0';
-                                LOGI("ISteamApps::GetCurrentGameLanguage: Doc tu %s -> %s", path, sGameLanguage);
-                                break;
-                            }
-                        }
-                    } else if (strstr(path, "language.txt")) {
-                        char* val = line;
-                        while (*val == ' ' || *val == '\t') val++;
-                        if (val[0] != '\0') {
-                            strncpy(sGameLanguage, val, sizeof(sGameLanguage) - 1);
-                            sGameLanguage[sizeof(sGameLanguage) - 1] = '\0';
-                            LOGI("ISteamApps::GetCurrentGameLanguage: Doc tu language.txt -> %s", sGameLanguage);
-                            break;
-                        }
+static std::mutex gSteamLangMutex;
+static std::string gSteamDataDirectory;
+static std::string gLanguageOverride;
+static char sGameLanguage[64] = "english";
+static bool sLoaded = false;
+
+static void reloadGameLanguageLocked() {
+    std::strncpy(sGameLanguage, "english", sizeof(sGameLanguage) - 1);
+    sGameLanguage[sizeof(sGameLanguage) - 1] = '\0';
+
+    if (!gLanguageOverride.empty()) {
+        std::strncpy(sGameLanguage, gLanguageOverride.c_str(), sizeof(sGameLanguage) - 1);
+        sGameLanguage[sizeof(sGameLanguage) - 1] = '\0';
+        LOGI("ISteamApps::GetCurrentGameLanguage: Dung override -> %s", sGameLanguage);
+        return;
+    }
+
+    constexpr const char* kDefaultSharedDataDir = "/sdcard/sgrb_game_data";
+    const std::string activeBaseDir = gSteamDataDirectory.empty()
+        ? std::string(kDefaultSharedDataDir)
+        : gSteamDataDirectory;
+
+    std::string candidatePaths[4] = {
+        activeBaseDir + "/configs.user.ini",
+        activeBaseDir + "/wind3d11data/steam_settings/configs.user.ini",
+        activeBaseDir + "/steam_settings/configs.user.ini",
+        activeBaseDir + "/language.txt"
+    };
+    constexpr size_t pathCount = 4;
+
+    for (size_t i = 0; i < pathCount; ++i) {
+        const char* path = candidatePaths[i].c_str();
+        FILE* fp = fopen(path, "r");
+        if (!fp) continue;
+
+        char line[256];
+        bool matched = false;
+        while (fgets(line, sizeof(line), fp)) {
+            char* nl = strpbrk(line, "\r\n");
+            if (nl) *nl = '\0';
+            char* eq = strchr(line, '=');
+            if (eq) {
+                *eq = '\0';
+                char* key = line;
+                char* val = eq + 1;
+                while (*key == ' ' || *key == '\t') key++;
+                while (*val == ' ' || *val == '\t') val++;
+                if (strcasecmp(key, "Language") == 0) {
+                    if (val[0] != '\0') {
+                        strncpy(sGameLanguage, val, sizeof(sGameLanguage) - 1);
+                        sGameLanguage[sizeof(sGameLanguage) - 1] = '\0';
+                        LOGI("ISteamApps::GetCurrentGameLanguage: Doc tu %s -> %s", path, sGameLanguage);
+                        matched = true;
+                        break;
                     }
                 }
-                fclose(fp);
-                break;
+            } else if (strstr(path, "language.txt")) {
+                char* val = line;
+                while (*val == ' ' || *val == '\t') val++;
+                if (val[0] != '\0') {
+                    strncpy(sGameLanguage, val, sizeof(sGameLanguage) - 1);
+                    sGameLanguage[sizeof(sGameLanguage) - 1] = '\0';
+                    LOGI("ISteamApps::GetCurrentGameLanguage: Doc tu language.txt -> %s", sGameLanguage);
+                    matched = true;
+                    break;
+                }
             }
         }
-        LOGI("ISteamApps::GetCurrentGameLanguage tra ve: '%s'", sGameLanguage);
+        fclose(fp);
+        if (matched) break;
+    }
+    LOGI("ISteamApps::GetCurrentGameLanguage tra ve: '%s'", sGameLanguage);
+}
+
+static const char* WINAPI stub_SteamApps_GetCurrentGameLanguage(void* /* thisPtr */) {
+    std::lock_guard<std::mutex> lock(gSteamLangMutex);
+    if (!sLoaded) {
+        sLoaded = true;
+        reloadGameLanguageLocked();
     }
     return sGameLanguage;
 }
@@ -194,6 +227,19 @@ void* WINAPI SteamInternal_ContextInit(void* pContextInitData) {
     }
 
     return &pData->pInterface;
+}
+
+void SteamHook_SetDataDirectory(const char* dataDir) {
+    std::lock_guard<std::mutex> lock(gSteamLangMutex);
+    gSteamDataDirectory = dataDir ? dataDir : "";
+    sLoaded = false;
+}
+
+void SteamHook_SetLanguageOverride(const char* language) {
+    std::lock_guard<std::mutex> lock(gSteamLangMutex);
+    gLanguageOverride = language ? language : "";
+    sLoaded = true;
+    reloadGameLanguageLocked();
 }
 
 const char* SteamHook_GetCurrentGameLanguage() {

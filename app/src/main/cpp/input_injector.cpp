@@ -1,6 +1,7 @@
 #include "input_injector.h"
 #include "win32_bridge.h"
 #include "dinput_bridge.h"
+#include "xinput_bridge.h"
 #include <android/log.h>
 #include <algorithm>
 
@@ -54,7 +55,13 @@ void InputInjector::sendWin32Key(uint32_t virtualKey, bool isDown) {
     Win32Bridge_PostMessage(msg, virtualKey, 0);
 }
 
+void InputInjector::injectQuickPulseKey(uint32_t virtualKey) {
+    sendWin32Key(virtualKey, true);
+    sendWin32Key(virtualKey, false);
+}
+
 void InputInjector::injectKeyEvent(int32_t keyCode, bool isDown) {
+    XInputBridge_UpdateButton(keyCode, isDown);
     uint32_t vk = 0;
     switch (keyCode) {
         case 66:  // KEYCODE_ENTER
@@ -115,9 +122,25 @@ void InputInjector::injectKeyEvent(int32_t keyCode, bool isDown) {
         case 114: // KEYCODE_CTRL_RIGHT
             vk = 0x11; // VK_CONTROL
             break;
+        case 131: // KEYCODE_F1
+        case 132: // KEYCODE_F2
+        case 133: // KEYCODE_F3
+        case 134: // KEYCODE_F4
+        case 135: // KEYCODE_F5
+        case 136: // KEYCODE_F6
+        case 137: // KEYCODE_F7
+        case 138: // KEYCODE_F8
+        case 139: // KEYCODE_F9
+        case 140: // KEYCODE_F10
+        case 141: // KEYCODE_F11
+        case 142: // KEYCODE_F12
+            vk = static_cast<uint32_t>(0x70 + (keyCode - 131)); // VK_F1 .. VK_F12
+            break;
         default:
             if (keyCode >= 29 && keyCode <= 54) { // A-Z
                 vk = static_cast<uint32_t>(0x41 + (keyCode - 29));
+            } else if (keyCode >= 7 && keyCode <= 16) { // 0-9
+                vk = static_cast<uint32_t>(0x30 + (keyCode - 7));
             }
             break;
     }

@@ -155,4 +155,21 @@ public class TouchInputHandlerTest {
         assertFalse(handled);
         assertTrue(recordedEvents.isEmpty());
     }
+
+    @Test
+    public void testUltrawide20By9PillarboxTouchMappingAndStretchToggle() {
+        // Màn hình 2400x1080: ở chế độ chuẩn 16:9 mặc định, x=240 là mép trái (0.0) và x=1200 là giữa (0.5)
+        assertTrue(handler.isMaintainAspectRatio16x9());
+        handler.handleTouchEvent(0, 240f, 540f, 2400, 1080, 1000L);
+        handler.handleTouchEvent(1, 1200f, 540f, 2400, 1080, 1040L);
+        assertEquals(0.0f, recordedEvents.get(0).x, 0.001f);
+        assertEquals(0.5f, recordedEvents.get(1).x, 0.001f);
+
+        // Chuyển sang chế độ kéo giãn toàn màn hình: x=600 trên 2400 ánh xạ thành 0.25
+        recordedEvents.clear();
+        handler.setMaintainAspectRatio16x9(false);
+        assertFalse(handler.isMaintainAspectRatio16x9());
+        handler.handleTouchEvent(0, 600f, 540f, 2400, 1080, 2000L);
+        assertEquals(0.25f, recordedEvents.get(0).x, 0.001f);
+    }
 }
