@@ -233,6 +233,18 @@ public:
         return WINMM_MMSYSERR_NOERROR;
     }
 
+    void setLifecyclePaused(bool paused) {
+        std::lock_guard<std::mutex> lock(lifeMutex_);
+        lifecyclePaused_ = paused;
+        if (!isOpen_ || !stream_) return;
+        if (paused) {
+            AAudioStream_requestPause(stream_);
+        } else if (!isPaused_.load()) {
+            AAudioStream_requestStart(stream_);
+            cv_.notify_all();
+        }
+    }
+
     uint32_t getPosition(void* pmmt, uint32_t cbmmt) {
         if (!pmmt || cbmmt < sizeof(uint32_t)) return WINMM_MMSYSERR_INVALPARAM;
         auto* t = reinterpret_cast<WinMmTime*>(pmmt);
@@ -261,6 +273,7 @@ private:
     std::atomic<bool> isOpen_{ false };
     std::atomic<bool> isRunning_{ false };
     std::atomic<bool> isPaused_{ false };
+    std::atomic<bool> lifecyclePaused_{ false };
     std::atomic<bool> isResetting_{ false };
     std::atomic<uint64_t> totalFramesPlayed_{ 0 };
 
@@ -296,7 +309,8 @@ private:
             {
                 std::unique_lock<std::mutex> lock(queueMutex_);
                 cv_.wait(lock, [this] {
-                    return !isRunning_.load() || isResetting_.load() || (!isPaused_.load() && !bufferQueue_.empty());
+                    return !isRunning_.load() || isResetting_.load() ||
+                           (!isPaused_.load() && !lifecyclePaused_.load() && !bufferQueue_.empty());
                 });
 
                 if (!isRunning_.load()) break;
@@ -312,7 +326,7 @@ private:
                     continue;
                 }
 
-                if (isPaused_.load() || bufferQueue_.empty()) continue;
+                if (isPaused_.load() || lifecyclePaused_.load() || bufferQueue_.empty()) continue;
 
                 hdr = bufferQueue_.front();
                 bufferQueue_.pop();
@@ -341,7 +355,8 @@ private:
 
             if (stream_ && frameCount > 0) {
                 int32_t framesRemaining = static_cast<int32_t>(frameCount);
-                while (framesRemaining > 0 && isRunning_.load() && !isResetting_.load() && !isPaused_.load()) {
+                while (framesRemaining > 0 && isRunning_.load() && !isResetting_.load() &&
+                       !isPaused_.load() && !lifecyclePaused_.load()) {
                     // Ghi buffer vào phần cứng AAudio với timeout 50ms
                     int64_t timeoutNs = 50000000LL;
                     aaudio_result_t written = AAudioStream_write(stream_, pcmData, framesRemaining, timeoutNs);
@@ -435,7 +450,7 @@ public:
         int32_t framesRemaining = static_cast<int32_t>(bytes / bytesPerFrame_);
         const uint8_t* pcm = reinterpret_cast<const uint8_t*>(data);
 
-        while (framesRemaining > 0 && isOpen_) {
+        while (framesRemaining > 0 && isOpen_ && !lifecyclePaused_.load()) {
             int64_t timeoutNs = 50000000LL; // 50ms
             aaudio_result_t written = AAudioStream_write(stream_, pcm, framesRemaining, timeoutNs);
             if (written > 0) {
@@ -473,10 +488,22 @@ public:
         return isOpen_.load();
     }
 
+    void setLifecyclePaused(bool paused) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lifecyclePaused_ = paused;
+        if (!isOpen_ || !stream_) return;
+        if (paused) {
+            AAudioStream_requestPause(stream_);
+        } else {
+            AAudioStream_requestStart(stream_);
+        }
+    }
+
 private:
     std::mutex mutex_;
     AAudioStream* stream_ = nullptr;
     std::atomic<bool> isOpen_{ false };
+    std::atomic<bool> lifecyclePaused_{ false };
     uint32_t sampleRate_ = 48000;
     uint32_t channels_ = 2;
     uint32_t bitsPerSample_ = 16;
@@ -562,6 +589,11 @@ void AudioSink_XAudio2Close() {
 
 bool AudioSink_XAudio2IsOpen() {
     return gXAudio2Sink.isOpen();
+}
+
+void AudioSink_SetLifecyclePaused(bool paused) {
+    gWaveOutSink.setLifecyclePaused(paused);
+    gXAudio2Sink.setLifecyclePaused(paused);
 }
 
 } // extern "C"

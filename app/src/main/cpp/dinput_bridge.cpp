@@ -183,8 +183,22 @@ static int64_t WINAPI mock_DIKeyboard_GetDeviceState(void*, uint32_t cbData, voi
         if (checkAndAdvanceKey(0x51)) { p[0x10] = 0x80; }                 // 'Q'       -> DIK_Q (L1/LB Page Prev)
         if (checkAndAdvanceKey(0x45)) { p[0x12] = 0x80; }                 // 'E'       -> DIK_E (R1/RB Page Next)
         if (checkAndAdvanceKey(0x31)) { p[0x02] = 0x80; }                 // '1'       -> DIK_1 (START button)
+        if (checkAndAdvanceKey(0x41)) { p[0x1E] = 0x80; }                 // 'A'       -> DIK_A
+        if (checkAndAdvanceKey(0x53)) { p[0x1F] = 0x80; }                 // 'S'       -> DIK_S
+        if (checkAndAdvanceKey(0x44)) { p[0x20] = 0x80; }                 // 'D'       -> DIK_D
+        if (checkAndAdvanceKey(0xBC)) { p[0x33] = 0x80; }                 // ','       -> DIK_COMMA
+        if (checkAndAdvanceKey(0xBE)) { p[0x34] = 0x80; }                 // '.'       -> DIK_PERIOD
+        if (checkAndAdvanceKey(0xDB)) { p[0x1A] = 0x80; }                 // '['       -> DIK_LBRACKET (R_UP)
+        if (checkAndAdvanceKey(0xDD)) { p[0x1B] = 0x80; }                 // ']'       -> DIK_RBRACKET (R_DOWN)
         if (checkAndAdvanceKey(0x2D)) { p[0xD2] = 0x80; }                 // VK_INSERT -> DIK_INSERT (Y button / Default)
         if (checkAndAdvanceKey(0x2E)) { p[0xD3] = 0x80; }                 // VK_DELETE -> DIK_DELETE (X button)
+        for (uint32_t fIdx = 0; fIdx < 10; ++fIdx) {
+            if (checkAndAdvanceKey(0x70 + fIdx)) {
+                p[0x3B + fIdx] = 0x80;                                    // VK_F1..F10 -> DIK_F1..F10
+            }
+        }
+        if (checkAndAdvanceKey(0x7A)) { p[0x57] = 0x80; }                 // VK_F11    -> DIK_F11
+        if (checkAndAdvanceKey(0x7B)) { p[0x58] = 0x80; }                 // VK_F12    -> DIK_F12
     }
     return 0; // DI_OK
 }

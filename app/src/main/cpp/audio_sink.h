@@ -116,6 +116,9 @@ void AudioSink_XAudio2Flush();
 void AudioSink_XAudio2Close();
 bool AudioSink_XAudio2IsOpen();
 
+// --- Điều khiển tạm dừng / khôi phục toàn cục theo vòng đời Activity Android ---
+void AudioSink_SetLifecyclePaused(bool paused);
+
 #ifdef __cplusplus
 }
 #endif

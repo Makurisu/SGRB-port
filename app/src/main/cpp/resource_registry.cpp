@@ -804,6 +804,45 @@ void ResourceRegistry::markUploadedToGpu(const void* handle) {
     }
 }
 
+bool ResourceRegistry::preserveGpuTextureToCpu(const void* handle, const uint8_t* rgbaData, size_t byteSize) {
+    if (handle == nullptr || rgbaData == nullptr || byteSize == 0) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = entries_.find(handle);
+    if (it == entries_.end() || it->second.kind != ResourceKind::Texture2D) return false;
+
+    Entry& entry = it->second;
+    const size_t expectedBytes = static_cast<size_t>(entry.texture.width) * entry.texture.height * 4ull;
+    if (expectedBytes == 0 || byteSize < expectedBytes) return false;
+
+    auto preserved = std::make_shared<std::vector<uint8_t>>(rgbaData, rgbaData + expectedBytes);
+    const size_t oldBytes = (entry.hasData && entry.data) ? entry.data->size() : 0;
+    if (expectedBytes > oldBytes) {
+        reserveBytes(expectedBytes - oldBytes);
+    } else if (oldBytes > expectedBytes) {
+        cpuBytes_ -= (oldBytes - expectedBytes);
+    }
+
+    entry.data = std::move(preserved);
+    entry.rowPitch = entry.texture.width * 4u;
+    entry.bytesPerPixel = 4u;
+    entry.hasData = true;
+    entry.isUploadedToGpu = false;
+    entry.hasGpuContents = false;
+    entry.texture.isCompressedBc7 = false;
+    entry.texture.revision++;
+    entry.lastUsedSeq = ++accessSeq_;
+    return true;
+}
+
+void ResourceRegistry::resetAllUploadedFlags() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& kv : entries_) {
+        if (kv.second.kind == ResourceKind::Texture2D) {
+            kv.second.isUploadedToGpu = false;
+        }
+    }
+}
+
 bool ResourceRegistry::isGpuOwned(const void* handle) const {
     if (handle == nullptr) return false;
     std::lock_guard<std::mutex> lock(mutex_);

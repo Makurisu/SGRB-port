@@ -1148,26 +1148,20 @@ static int64_t WINAPI mock_Device_CreateDepthStencilView(void*, void* pResource,
 static void dumpShaderBytecode(const char* prefix, uint32_t index, const void* pBytecode, size_t bytecodeLength) {
     if (!pBytecode || bytecodeLength == 0) return;
 
+    // Chỉ ghi bytecode ra đĩa khi biến môi trường SGRB_SHADER_DUMP_DIR được cấu hình chủ động
+    // để tránh 8.356 lời gọi fopen() FUSE thất bại khi khởi động trên thiết bị thực tế.
     const char* customDir = getenv("SGRB_SHADER_DUMP_DIR");
-    const char* dumpDirs[] = {
-        customDir,
-        "d:\\Code\\STEINS.GATE.REBOOT\\STEINS.GATE.REBOOT\\SGRB-port\\extracted_shaders",
-        "/sdcard/extracted_shaders",
-        "/sdcard/sgrb_game_data/extracted_shaders",
-        "./extracted_shaders"
-    };
+    if (!customDir || customDir[0] == '\0') {
+        return;
+    }
 
-    for (const char* dir : dumpDirs) {
-        if (!dir || !dir[0]) continue;
-        char filePath[512];
-        snprintf(filePath, sizeof(filePath), "%s/%s_%04u.bin", dir, prefix, index);
-        FILE* fp = fopen(filePath, "wb");
-        if (fp) {
-            fwrite(pBytecode, 1, bytecodeLength, fp);
-            fclose(fp);
-            LOGI("Dumped %s shader #%u bytecode to %s (%zu bytes)", prefix, index, filePath, bytecodeLength);
-            break;
-        }
+    char filePath[512];
+    snprintf(filePath, sizeof(filePath), "%s/%s_%04u.bin", customDir, prefix, index);
+    FILE* fp = fopen(filePath, "wb");
+    if (fp) {
+        fwrite(pBytecode, 1, bytecodeLength, fp);
+        fclose(fp);
+        LOGI("Dumped %s shader #%u bytecode to %s (%zu bytes)", prefix, index, filePath, bytecodeLength);
     }
 }
 
@@ -1192,7 +1186,9 @@ static int64_t WINAPI mock_Device_CreateVertexShader(void*, const void* pBytecod
 static int64_t WINAPI mock_Device_CreatePixelShader(void*, const void* pBytecode, size_t bytecodeLength, void*, void** ppShader) {
     uint32_t idx = sTotalPixelShadersCreated++;
     sTotalShadersCreated++;
-    LOGI("ID3D11Device::CreatePixelShader #%u: BytecodeLength=%zu, Bytecode=%p", idx, bytecodeLength, pBytecode);
+    if (idx < 8 || idx == 2076 || idx % 500 == 0) {
+        LOGI("ID3D11Device::CreatePixelShader #%u: BytecodeLength=%zu, Bytecode=%p", idx, bytecodeLength, pBytecode);
+    }
     dumpShaderBytecode("ps", idx, pBytecode, bytecodeLength);
     if (ppShader) {
         if (idx < 2080) {
@@ -2566,6 +2562,19 @@ void D3D11Bridge_MarkTextureUploaded(const void* handle) {
     if (handle) {
         sRegistry.markUploadedToGpu(handle);
     }
+}
+
+bool D3D11Bridge_PreserveGpuTextureToCpu(const void* handle, const uint8_t* rgbaData, size_t byteSize) {
+    if (!handle || !rgbaData || byteSize == 0) return false;
+    return sRegistry.preserveGpuTextureToCpu(handle, rgbaData, byteSize);
+}
+
+void D3D11Bridge_ResetGpuUploadState() {
+    sRegistry.resetAllUploadedFlags();
+}
+
+uint64_t D3D11Bridge_GetCpuMemoryBytes() {
+    return sRegistry.stats().cpuBytes;
 }
 
 void D3D11Bridge_SetSupportsBptcCompression(bool supported) {

@@ -19,6 +19,12 @@
 #include "payload_loader.h"
 #include "win32_bridge.h"
 #include "d3d11_bridge.h"
+#include "shader_cache.h"
+#include "steam_hook.h"
+#include "audio_sink.h"
+#include "xaudio2_bridge.h"
+#include "xinput_bridge.h"
+#include "arm64_box64_bridge.h"
 
 #define LOG_TAG "SGRE_JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -29,7 +35,52 @@ static ANativeWindow* gNativeWindow = nullptr;
 static std::string gDataDirectory = "";
 
 static std::atomic<bool> gIsRunning{false};
+static std::atomic<bool> gEngineLaunched{false};
+static std::atomic<bool> gMaintainAspectRatio16x9{true};
+static std::atomic<int32_t> gTargetFps{60};
+static std::atomic<float> gCurrentFps{0.0f};
+static std::mutex gLifecycleMutex;
 static std::thread gRenderThread;
+
+static void computeActiveSurfaceRect(
+    EGLint surfW, EGLint surfH, bool maintain16x9,
+    GLint& outX, GLint& outY, GLsizei& outW, GLsizei& outH
+) {
+    if (surfW <= 0 || surfH <= 0) {
+        outX = 0;
+        outY = 0;
+        outW = 1920;
+        outH = 1080;
+        return;
+    }
+    if (!maintain16x9) {
+        outX = 0;
+        outY = 0;
+        outW = surfW;
+        outH = surfH;
+        return;
+    }
+    const int64_t lhs = static_cast<int64_t>(surfW) * 9ll;
+    const int64_t rhs = static_cast<int64_t>(surfH) * 16ll;
+    if (lhs > rhs) {
+        // Màn hình dài hơn 16:9 (VD: 20:9, 21:9) -> Pillarbox hai cạnh trái/phải
+        outH = surfH;
+        outW = std::max<GLsizei>(1, static_cast<GLsizei>((rhs + 4ll) / 9ll));
+        outX = (surfW - outW) / 2;
+        outY = 0;
+    } else if (lhs < rhs) {
+        // Màn hình vuông hơn 16:9 (VD: 4:3, màn gập) -> Letterbox cạnh trên/dưới
+        outW = surfW;
+        outH = std::max<GLsizei>(1, static_cast<GLsizei>((lhs + 8ll) / 16ll));
+        outX = 0;
+        outY = (surfH - outH) / 2;
+    } else {
+        outX = 0;
+        outY = 0;
+        outW = surfW;
+        outH = surfH;
+    }
+}
 
 // Bảng ánh xạ RenderTarget / Texture GPU handle sang Framebuffer Object (FBO) OpenGL ES
 static std::unordered_map<const void*, GLuint> sFboCache;
@@ -241,8 +292,9 @@ static void renderLoop() {
         return;
     }
 
-    // Bật đồng bộ VSync 1:1 cho EGL SwapBuffers
-    eglSwapInterval(display, 1);
+    // Thiết lập khoảng đồng bộ VSync theo mục tiêu FPS người dùng cấu hình (60 FPS -> 1, 30 FPS -> 2)
+    int32_t appliedTargetFps = gTargetFps.load(std::memory_order_relaxed);
+    eglSwapInterval(display, appliedTargetFps <= 30 ? 2 : 1);
 
     EGLint glClientVersion = 2;
     eglQueryContext(display, context, EGL_CONTEXT_CLIENT_VERSION, &glClientVersion);
@@ -573,72 +625,34 @@ static void renderLoop() {
         "    }\n"
         "}\n";
 
-    auto compileShader = [](GLenum type, const char* source) -> GLuint {
-        GLuint shader = glCreateShader(type);
-        glShaderSource(shader, 1, &source, nullptr);
-        glCompileShader(shader);
-        GLint compiled = 0;
-        glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
-        if (!compiled) {
-            GLint infoLen = 0;
-            glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &infoLen);
-            if (infoLen > 0) {
-                std::string infoLog(infoLen, '\0');
-                glGetShaderInfoLog(shader, infoLen, nullptr, &infoLog[0]);
-                LOGE("Lỗi biên dịch shader (%u): %s", type, infoLog.c_str());
-            }
-            glDeleteShader(shader);
-            return 0;
-        }
-        return shader;
-    };
-
-    GLuint vertShader = compileShader(GL_VERTEX_SHADER, vertexShaderSource);
-    GLuint fragShader = compileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
-    GLuint program = glCreateProgram();
-    glAttachShader(program, vertShader);
-    glAttachShader(program, fragShader);
-    glLinkProgram(program);
-
-    GLint linked = 0;
-    glGetProgramiv(program, GL_LINK_STATUS, &linked);
-    if (!linked) {
-        LOGE("glLinkProgram thất bại");
-    }
-
-    GLint aPositionLoc = glGetAttribLocation(program, "aPosition");
-    GLint aTexCoord0Loc = glGetAttribLocation(program, "aTexCoord0");
-    GLint aTexCoord1Loc = glGetAttribLocation(program, "aTexCoord1");
-    GLint aColorLoc = glGetAttribLocation(program, "aColor");
-    GLint uTextureLoc = glGetUniformLocation(program, "uTexture");
-    GLint uAlphaTextureLoc = glGetUniformLocation(program, "uAlphaTexture");
-    GLint uHasAlphaTextureLoc = glGetUniformLocation(program, "uHasAlphaTexture");
-    GLint uDestTextureLoc = glGetUniformLocation(program, "uDestTexture");
-    GLint uHasDestTextureLoc = glGetUniformLocation(program, "uHasDestTexture");
-    GLint uVsShaderIdLoc = glGetUniformLocation(program, "uVsShaderId");
-    GLint uVsCb0Loc = glGetUniformLocation(program, "uVsCb0[0]");
-    if (uVsCb0Loc < 0) {
-        uVsCb0Loc = glGetUniformLocation(program, "uVsCb0");
-    }
-    GLint uShaderIdLoc = glGetUniformLocation(program, "uShaderId");
-    GLint uPsCb0Loc = glGetUniformLocation(program, "uPsCb0[0]");
-    if (uPsCb0Loc < 0) {
-        uPsCb0Loc = glGetUniformLocation(program, "uPsCb0");
-    }
-    GLint uUvScaleLoc = glGetUniformLocation(program, "uUvScale");
-    GLint uFlipYLoc = glGetUniformLocation(program, "uFlipY");
-    GLint uD3dViewportLoc = glGetUniformLocation(program, "uD3dViewport");
-    GLint uGlViewportLoc = glGetUniformLocation(program, "uGlViewport");
+    sgre::ShaderProgramSet programSet = sgre::ShaderCache::buildProgramSet(
+        gDataDirectory, vertexShaderSource, fragmentShaderSource, isGles3Context
+    );
+    const sgre::GlProgramBinding& uberBinding =
+        programSet.families[static_cast<size_t>(sgre::ShaderFamily::UberFallback)];
+    GLuint program = uberBinding.program;
+    GLint aPositionLoc = uberBinding.aPositionLoc;
+    GLint aTexCoord0Loc = uberBinding.aTexCoord0Loc;
+    GLint aTexCoord1Loc = uberBinding.aTexCoord1Loc;
+    GLint aColorLoc = uberBinding.aColorLoc;
+    GLint uTextureLoc = uberBinding.uTextureLoc;
+    GLint uAlphaTextureLoc = uberBinding.uAlphaTextureLoc;
+    GLint uHasAlphaTextureLoc = uberBinding.uHasAlphaTextureLoc;
+    GLint uDestTextureLoc = uberBinding.uDestTextureLoc;
+    GLint uHasDestTextureLoc = uberBinding.uHasDestTextureLoc;
+    GLint uVsShaderIdLoc = uberBinding.uVsShaderIdLoc;
+    GLint uVsCb0Loc = uberBinding.uVsCb0Loc;
+    GLint uShaderIdLoc = uberBinding.uShaderIdLoc;
+    GLint uPsCb0Loc = uberBinding.uPsCb0Loc;
+    GLint uUvScaleLoc = uberBinding.uUvScaleLoc;
+    GLint uFlipYLoc = uberBinding.uFlipYLoc;
+    GLint uD3dViewportLoc = uberBinding.uD3dViewportLoc;
+    GLint uGlViewportLoc = uberBinding.uGlViewportLoc;
 
     LOGI("Shader Locations: aPos=%d, aTex0=%d, aTex1=%d, aCol=%d, uTex=%d, uVsId=%d, uVsCb0=%d, uUvScale=%d, uFlipY=%d, uShaderId=%d, uPsCb0=%d",
          aPositionLoc, aTexCoord0Loc, aTexCoord1Loc, aColorLoc, uTextureLoc, uVsShaderIdLoc, uVsCb0Loc, uUvScaleLoc, uFlipYLoc, uShaderIdLoc, uPsCb0Loc);
 
-    // Thiết lập các sampler & scale bất biến một lần thay vì gửi lại mỗi draw call
     glUseProgram(program);
-    glUniform1i(uTextureLoc, 0);
-    glUniform1i(uAlphaTextureLoc, 1);
-    glUniform1i(uDestTextureLoc, 2);
-    glUniform2f(uUvScaleLoc, 1.0f, 1.0f);
 
     GLuint streamVbo = 0;
     GLuint streamIbo = 0;
@@ -1115,6 +1129,7 @@ static void renderLoop() {
 
     auto executeMeshCommandBatch = [&](const std::vector<MeshDrawCommand>& batchMeshes,
                                        EGLint effSurfW, EGLint effSurfH,
+                                       GLint actX, GLint actY, GLsizei actW, GLsizei actH,
                                        float logicalW, float logicalH) -> bool {
         if (batchMeshes.empty()) return false;
 
@@ -1158,7 +1173,8 @@ static void renderLoop() {
                          sBatchIndices.data(), GL_STREAM_DRAW);
         }
 
-        glUseProgram(program);
+        const sgre::GlProgramBinding* curBinding = &uberBinding;
+        glUseProgram(curBinding->program);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -1175,18 +1191,23 @@ static void renderLoop() {
         int cachedHasAlpha = -1;
         int cachedHasDest = -1;
         float cachedFlipY = 0.0f;
+        float cachedD3dVp[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        float cachedGlVp[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        bool hasCachedVp = false;
         uint8_t cachedColorMask = 0xFF;
         int cachedStencilEnable = -1;
         int cachedBlendEnable = 1;
         int cachedScissorEnable = -1;
 
         auto resetStateCache = [&]() {
+            curBinding = &uberBinding;
             buffersBound = false;
             cachedVsId = -1;
             cachedPsId = -1;
             cachedHasAlpha = -1;
             cachedHasDest = -1;
             cachedFlipY = 0.0f;
+            hasCachedVp = false;
             cachedColorMask = 0xFF;
             cachedStencilEnable = -1;
             cachedBlendEnable = -1;
@@ -1222,14 +1243,22 @@ static void renderLoop() {
                     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
                     glViewport(0, 0, cmd.renderTargetWidth, cmd.renderTargetHeight);
                     currentFboHandle = cmd.renderTargetHandle;
+                    if (cachedScissorEnable != 0) {
+                        glDisable(GL_SCISSOR_TEST);
+                        cachedScissorEnable = 0;
+                    }
                 } else {
                     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                    glViewport(0, 0, effSurfW, effSurfH);
+                    glViewport(actX, actY, actW, actH);
                     currentFboHandle = nullptr;
-                }
-                if (cachedScissorEnable != 0) {
-                    glDisable(GL_SCISSOR_TEST);
-                    cachedScissorEnable = 0;
+                    if (actX != 0 || actY != 0 || actW != effSurfW || actH != effSurfH) {
+                        glEnable(GL_SCISSOR_TEST);
+                        glScissor(actX, actY, actW, actH);
+                        cachedScissorEnable = 1;
+                    } else if (cachedScissorEnable != 0) {
+                        glDisable(GL_SCISSOR_TEST);
+                        cachedScissorEnable = 0;
+                    }
                 }
                 if (cmd.isClearCommand == 1) {
                     clearedRtsInFrame.insert(cmd.renderTargetHandle);
@@ -1294,19 +1323,19 @@ static void renderLoop() {
 
                 if (dstTex != 0 && copyW > 0 && copyH > 0) {
                     if (cmd.renderTargetHandle == nullptr) {
-                        // Nguồn là Backbuffer (Bottom-Up): ưu tiên 1-pass glBlitFramebuffer trên GLES 3, tự fallback 2-step nếu không hỗ trợ
+                        // Nguồn là vùng khung hình hoạt động 16:9 trên Backbuffer (Bottom-Up):
                         bool didHardwareBlit = false;
                         if (isGles3Context && sSupportsBackbufferBlit && reqW == copyW && reqH == copyH) {
                             GLuint dstFbo = getOrCreateCopyFbo(cmd.textureHandle, dW, dH);
                             if (dstFbo != 0) {
                                 float srcLogicalW = logicalW > 0.0f ? logicalW : 1920.0f;
                                 float srcLogicalH = logicalH > 0.0f ? logicalH : 1080.0f;
-                                float scaleX = static_cast<float>(effSurfW) / srcLogicalW;
-                                float scaleY = static_cast<float>(effSurfH) / srcLogicalH;
-                                GLint sx0 = std::max<GLint>(0, std::min<GLint>(effSurfW, static_cast<GLint>(std::lround(srcX * scaleX))));
-                                GLint sx1 = std::max<GLint>(0, std::min<GLint>(effSurfW, static_cast<GLint>(std::lround((srcX + reqW) * scaleX))));
-                                GLint syTop = std::max<GLint>(0, std::min<GLint>(effSurfH, static_cast<GLint>(std::lround(static_cast<float>(effSurfH) - srcY * scaleY))));
-                                GLint syBot = std::max<GLint>(0, std::min<GLint>(effSurfH, static_cast<GLint>(std::lround(static_cast<float>(effSurfH) - (srcY + reqH) * scaleY))));
+                                float scaleX = static_cast<float>(actW) / srcLogicalW;
+                                float scaleY = static_cast<float>(actH) / srcLogicalH;
+                                GLint sx0 = actX + std::max<GLint>(0, std::min<GLint>(actW, static_cast<GLint>(std::lround(srcX * scaleX))));
+                                GLint sx1 = actX + std::max<GLint>(0, std::min<GLint>(actW, static_cast<GLint>(std::lround((srcX + reqW) * scaleX))));
+                                GLint syTop = actY + std::max<GLint>(0, std::min<GLint>(actH, static_cast<GLint>(std::lround(static_cast<float>(actH) - srcY * scaleY))));
+                                GLint syBot = actY + std::max<GLint>(0, std::min<GLint>(actH, static_cast<GLint>(std::lround(static_cast<float>(actH) - (srcY + reqH) * scaleY))));
 
                                 if (!sTestedBackbufferBlit) {
                                     while (glGetError() != GL_NO_ERROR) {}
@@ -1333,8 +1362,8 @@ static void renderLoop() {
 
                         if (!didHardwareBlit) {
                             if (sBackbufferFlipTempTex == 0 ||
-                                sBackbufferFlipTempW != static_cast<uint32_t>(effSurfW) ||
-                                sBackbufferFlipTempH != static_cast<uint32_t>(effSurfH)) {
+                                sBackbufferFlipTempW != static_cast<uint32_t>(actW) ||
+                                sBackbufferFlipTempH != static_cast<uint32_t>(actH)) {
                                 if (sBackbufferFlipTempTex == 0) {
                                     glGenTextures(1, &sBackbufferFlipTempTex);
                                 }
@@ -1343,13 +1372,13 @@ static void renderLoop() {
                                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, effSurfW, effSurfH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-                                sBackbufferFlipTempW = static_cast<uint32_t>(effSurfW);
-                                sBackbufferFlipTempH = static_cast<uint32_t>(effSurfH);
+                                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, actW, actH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+                                sBackbufferFlipTempW = static_cast<uint32_t>(actW);
+                                sBackbufferFlipTempH = static_cast<uint32_t>(actH);
                             }
                             glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
                             glBindTexture(GL_TEXTURE_2D, sBackbufferFlipTempTex);
-                            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, effSurfW, effSurfH);
+                            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actX, actY, actW, actH);
 
                             GLuint dstFbo = getOrCreateCopyFbo(cmd.textureHandle, dW, dH);
                             float srcLogicalW = logicalW > 0.0f ? logicalW : 1920.0f;
@@ -1413,6 +1442,33 @@ static void renderLoop() {
             if (cmd.indexData.empty() || cmd.vertexData.empty()) continue;
             if (cmd.shaderId == 1302) continue;
 
+            // Chọn chương trình GLSL chuyên biệt theo họ shader (tránh thực thi nhánh blur nặng trên sprite thường)
+            const sgre::GlProgramBinding& desiredBinding = programSet.selectForShaderId(cmd.shaderId);
+            if (desiredBinding.program != curBinding->program) {
+                if (buffersBound) {
+                    if (curBinding->aPositionLoc >= 0) glDisableVertexAttribArray(curBinding->aPositionLoc);
+                    if (curBinding->aTexCoord0Loc >= 0) glDisableVertexAttribArray(curBinding->aTexCoord0Loc);
+                    if (curBinding->aTexCoord1Loc >= 0) glDisableVertexAttribArray(curBinding->aTexCoord1Loc);
+                    if (curBinding->aColorLoc >= 0) glDisableVertexAttribArray(curBinding->aColorLoc);
+                    buffersBound = false;
+                }
+                curBinding = &desiredBinding;
+                glUseProgram(curBinding->program);
+                cachedVsId = -1;
+                cachedPsId = -1;
+                cachedHasAlpha = -1;
+                cachedHasDest = -1;
+                cachedFlipY = 0.0f;
+                if (hasCachedVp) {
+                    if (curBinding->uD3dViewportLoc >= 0) {
+                        glUniform4f(curBinding->uD3dViewportLoc, cachedD3dVp[0], cachedD3dVp[1], cachedD3dVp[2], cachedD3dVp[3]);
+                    }
+                    if (curBinding->uGlViewportLoc >= 0) {
+                        glUniform4f(curBinding->uGlViewportLoc, cachedGlVp[0], cachedGlVp[1], cachedGlVp[2], cachedGlVp[3]);
+                    }
+                }
+            }
+
             const void* targetHandle = cmd.renderTargetHandle;
             if (targetHandle != nullptr) {
                 if (lastBoundHandle == targetHandle) {
@@ -1450,11 +1506,14 @@ static void renderLoop() {
                     std::max<GLsizei>(1, static_cast<GLsizei>(vpH + 0.5f))
                 );
                 if (cachedFlipY != -1.0f) {
-                    glUniform1f(uFlipYLoc, -1.0f);
+                    if (curBinding->uFlipYLoc >= 0) glUniform1f(curBinding->uFlipYLoc, -1.0f);
                     cachedFlipY = -1.0f;
                 }
-                glUniform4f(uD3dViewportLoc, vpX, vpY, vpW, vpH);
-                glUniform4f(uGlViewportLoc, vpX, vpY, std::max(1.0f, vpW), std::max(1.0f, vpH));
+                cachedD3dVp[0] = vpX; cachedD3dVp[1] = vpY; cachedD3dVp[2] = vpW; cachedD3dVp[3] = vpH;
+                cachedGlVp[0] = vpX; cachedGlVp[1] = vpY; cachedGlVp[2] = std::max(1.0f, vpW); cachedGlVp[3] = std::max(1.0f, vpH);
+                hasCachedVp = true;
+                if (curBinding->uD3dViewportLoc >= 0) glUniform4f(curBinding->uD3dViewportLoc, vpX, vpY, vpW, vpH);
+                if (curBinding->uGlViewportLoc >= 0) glUniform4f(curBinding->uGlViewportLoc, vpX, vpY, std::max(1.0f, vpW), std::max(1.0f, vpH));
             } else {
                 if (currentFboHandle != nullptr) {
                     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1464,12 +1523,12 @@ static void renderLoop() {
                 float vpY = cmd.viewportY;
                 float vpW = cmd.viewportW > 0.0f ? cmd.viewportW : logicalW;
                 float vpH = cmd.viewportH > 0.0f ? cmd.viewportH : logicalH;
-                float scaleX = static_cast<float>(effSurfW) / logicalW;
-                float scaleY = static_cast<float>(effSurfH) / logicalH;
-                float glVpX = vpX * scaleX;
+                float scaleX = static_cast<float>(actW) / logicalW;
+                float scaleY = static_cast<float>(actH) / logicalH;
+                float glVpX = static_cast<float>(actX) + vpX * scaleX;
                 float glVpW = vpW * scaleX;
                 float glVpH = vpH * scaleY;
-                float glVpY = static_cast<float>(effSurfH) - (vpY + vpH) * scaleY;
+                float glVpY = static_cast<float>(actY + actH) - (vpY + vpH) * scaleY;
                 glViewport(
                     static_cast<GLint>(glVpX + 0.5f),
                     static_cast<GLint>(glVpY + 0.5f),
@@ -1477,11 +1536,14 @@ static void renderLoop() {
                     std::max<GLsizei>(1, static_cast<GLsizei>(glVpH + 0.5f))
                 );
                 if (cachedFlipY != 1.0f) {
-                    glUniform1f(uFlipYLoc, 1.0f);
+                    if (curBinding->uFlipYLoc >= 0) glUniform1f(curBinding->uFlipYLoc, 1.0f);
                     cachedFlipY = 1.0f;
                 }
-                glUniform4f(uD3dViewportLoc, vpX, vpY, vpW, vpH);
-                glUniform4f(uGlViewportLoc, glVpX, glVpY, std::max(1.0f, glVpW), std::max(1.0f, glVpH));
+                cachedD3dVp[0] = vpX; cachedD3dVp[1] = vpY; cachedD3dVp[2] = vpW; cachedD3dVp[3] = vpH;
+                cachedGlVp[0] = glVpX; cachedGlVp[1] = glVpY; cachedGlVp[2] = std::max(1.0f, glVpW); cachedGlVp[3] = std::max(1.0f, glVpH);
+                hasCachedVp = true;
+                if (curBinding->uD3dViewportLoc >= 0) glUniform4f(curBinding->uD3dViewportLoc, vpX, vpY, vpW, vpH);
+                if (curBinding->uGlViewportLoc >= 0) glUniform4f(curBinding->uGlViewportLoc, glVpX, glVpY, std::max(1.0f, glVpW), std::max(1.0f, glVpH));
             }
 
             glActiveTexture(GL_TEXTURE0);
@@ -1535,12 +1597,12 @@ static void renderLoop() {
             }
             const int hasAlphaInt = hasValidAlphaMask ? 1 : 0;
             if (cachedHasAlpha != hasAlphaInt) {
-                glUniform1i(uHasAlphaTextureLoc, hasAlphaInt);
+                if (curBinding->uHasAlphaTextureLoc >= 0) glUniform1i(curBinding->uHasAlphaTextureLoc, hasAlphaInt);
                 cachedHasAlpha = hasAlphaInt;
             }
 
             bool hasValidDestTex = false;
-            if (cmd.destTextureHandle != nullptr && cmd.destTextureHandle != targetHandle) {
+            if (curBinding->uHasDestTextureLoc >= 0 && cmd.destTextureHandle != nullptr && cmd.destTextureHandle != targetHandle) {
                 TextureCpuSnapshot destSnap{};
                 D3D11Bridge_AcquireTextureSnapshot(cmd.destTextureHandle, destSnap);
                 const uint8_t* dTexPixels = destSnap.pixels ? destSnap.pixels->data() : nullptr;
@@ -1568,23 +1630,23 @@ static void renderLoop() {
             }
             const int hasDestInt = hasValidDestTex ? 1 : 0;
             if (cachedHasDest != hasDestInt) {
-                glUniform1i(uHasDestTextureLoc, hasDestInt);
+                if (curBinding->uHasDestTextureLoc >= 0) glUniform1i(curBinding->uHasDestTextureLoc, hasDestInt);
                 cachedHasDest = hasDestInt;
             }
 
             const int vsIdInt = static_cast<int>(cmd.vsShaderId);
             if (cachedVsId != vsIdInt) {
-                glUniform1i(uVsShaderIdLoc, vsIdInt);
+                if (curBinding->uVsShaderIdLoc >= 0) glUniform1i(curBinding->uVsShaderIdLoc, vsIdInt);
                 cachedVsId = vsIdInt;
             }
-            glUniform4fv(uVsCb0Loc, 16, cmd.vsCb0);
+            if (curBinding->uVsCb0Loc >= 0) glUniform4fv(curBinding->uVsCb0Loc, 16, cmd.vsCb0);
 
             const int psIdInt = static_cast<int>(cmd.shaderId);
             if (cachedPsId != psIdInt) {
-                glUniform1i(uShaderIdLoc, psIdInt);
+                if (curBinding->uShaderIdLoc >= 0) glUniform1i(curBinding->uShaderIdLoc, psIdInt);
                 cachedPsId = psIdInt;
             }
-            glUniform4fv(uPsCb0Loc, 8, cmd.cb0);
+            if (curBinding->uPsCb0Loc >= 0) glUniform4fv(curBinding->uPsCb0Loc, 8, cmd.cb0);
 
             if (cmd.stencilEnable) {
                 if (cachedStencilEnable != 1) {
@@ -1644,14 +1706,21 @@ static void renderLoop() {
                 if (targetHandle != nullptr) {
                     glScissor(cmd.scissorX, cmd.scissorY, std::max(0, cmd.scissorW), std::max(0, cmd.scissorH));
                 } else {
-                    float scaleX = static_cast<float>(effSurfW) / logicalW;
-                    float scaleY = static_cast<float>(effSurfH) / logicalH;
-                    GLint scX = static_cast<GLint>(cmd.scissorX * scaleX + 0.5f);
+                    float scaleX = static_cast<float>(actW) / logicalW;
+                    float scaleY = static_cast<float>(actH) / logicalH;
+                    GLint scX = actX + static_cast<GLint>(cmd.scissorX * scaleX + 0.5f);
                     GLsizei scW = std::max<GLsizei>(0, static_cast<GLsizei>(cmd.scissorW * scaleX + 0.5f));
                     GLsizei scH = std::max<GLsizei>(0, static_cast<GLsizei>(cmd.scissorH * scaleY + 0.5f));
-                    GLint scY = std::max<GLint>(0, effSurfH - static_cast<GLint>((cmd.scissorY + cmd.scissorH) * scaleY + 0.5f));
+                    GLint scY = actY + std::max<GLint>(0, actH - static_cast<GLint>((cmd.scissorY + cmd.scissorH) * scaleY + 0.5f));
                     glScissor(scX, scY, scW, scH);
                 }
+            } else if (targetHandle == nullptr && (actX != 0 || actY != 0 || actW != effSurfW || actH != effSurfH)) {
+                // Giữ vùng cắt nằm gọn trong khung 16:9 để tránh tràn đồ họa sang viền đen Pillarbox/Letterbox
+                if (cachedScissorEnable != 1) {
+                    glEnable(GL_SCISSOR_TEST);
+                    cachedScissorEnable = 1;
+                }
+                glScissor(actX, actY, actW, actH);
             } else if (cachedScissorEnable != 0) {
                 glDisable(GL_SCISSOR_TEST);
                 cachedScissorEnable = 0;
@@ -1660,25 +1729,25 @@ static void renderLoop() {
             if (!buffersBound) {
                 glBindBuffer(GL_ARRAY_BUFFER, streamVbo);
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, streamIbo);
-                if (aPositionLoc >= 0) glEnableVertexAttribArray(aPositionLoc);
-                if (aTexCoord0Loc >= 0) glEnableVertexAttribArray(aTexCoord0Loc);
-                if (aTexCoord1Loc >= 0) glEnableVertexAttribArray(aTexCoord1Loc);
-                if (aColorLoc >= 0) glEnableVertexAttribArray(aColorLoc);
+                if (curBinding->aPositionLoc >= 0) glEnableVertexAttribArray(curBinding->aPositionLoc);
+                if (curBinding->aTexCoord0Loc >= 0) glEnableVertexAttribArray(curBinding->aTexCoord0Loc);
+                if (curBinding->aTexCoord1Loc >= 0) glEnableVertexAttribArray(curBinding->aTexCoord1Loc);
+                if (curBinding->aColorLoc >= 0) glEnableVertexAttribArray(curBinding->aColorLoc);
                 buffersBound = true;
             }
 
             const uintptr_t baseByte = sBatchOffsets[m].vertexByteOffset;
-            if (aPositionLoc >= 0) {
-                glVertexAttribPointer(aPositionLoc, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float), reinterpret_cast<const void*>(baseByte));
+            if (curBinding->aPositionLoc >= 0) {
+                glVertexAttribPointer(curBinding->aPositionLoc, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float), reinterpret_cast<const void*>(baseByte));
             }
-            if (aTexCoord0Loc >= 0) {
-                glVertexAttribPointer(aTexCoord0Loc, 2, GL_FLOAT, GL_FALSE, 11 * sizeof(float), reinterpret_cast<const void*>(baseByte + 3 * sizeof(float)));
+            if (curBinding->aTexCoord0Loc >= 0) {
+                glVertexAttribPointer(curBinding->aTexCoord0Loc, 2, GL_FLOAT, GL_FALSE, 11 * sizeof(float), reinterpret_cast<const void*>(baseByte + 3 * sizeof(float)));
             }
-            if (aTexCoord1Loc >= 0) {
-                glVertexAttribPointer(aTexCoord1Loc, 2, GL_FLOAT, GL_FALSE, 11 * sizeof(float), reinterpret_cast<const void*>(baseByte + 5 * sizeof(float)));
+            if (curBinding->aTexCoord1Loc >= 0) {
+                glVertexAttribPointer(curBinding->aTexCoord1Loc, 2, GL_FLOAT, GL_FALSE, 11 * sizeof(float), reinterpret_cast<const void*>(baseByte + 5 * sizeof(float)));
             }
-            if (aColorLoc >= 0) {
-                glVertexAttribPointer(aColorLoc, 4, GL_FLOAT, GL_FALSE, 11 * sizeof(float), reinterpret_cast<const void*>(baseByte + 7 * sizeof(float)));
+            if (curBinding->aColorLoc >= 0) {
+                glVertexAttribPointer(curBinding->aColorLoc, 4, GL_FLOAT, GL_FALSE, 11 * sizeof(float), reinterpret_cast<const void*>(baseByte + 7 * sizeof(float)));
             }
 
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(cmd.indexData.size()), GL_UNSIGNED_SHORT,
@@ -1689,10 +1758,10 @@ static void renderLoop() {
         }
 
         if (buffersBound) {
-            if (aPositionLoc >= 0) glDisableVertexAttribArray(aPositionLoc);
-            if (aTexCoord0Loc >= 0) glDisableVertexAttribArray(aTexCoord0Loc);
-            if (aTexCoord1Loc >= 0) glDisableVertexAttribArray(aTexCoord1Loc);
-            if (aColorLoc >= 0) glDisableVertexAttribArray(aColorLoc);
+            if (curBinding->aPositionLoc >= 0) glDisableVertexAttribArray(curBinding->aPositionLoc);
+            if (curBinding->aTexCoord0Loc >= 0) glDisableVertexAttribArray(curBinding->aTexCoord0Loc);
+            if (curBinding->aTexCoord1Loc >= 0) glDisableVertexAttribArray(curBinding->aTexCoord1Loc);
+            if (curBinding->aColorLoc >= 0) glDisableVertexAttribArray(curBinding->aColorLoc);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         }
@@ -1708,11 +1777,13 @@ static void renderLoop() {
         return drewBackbuffer;
     };
 
-    auto processPendingFlushRequests = [&](EGLint effSurfW, EGLint effSurfH, float logicalW, float logicalH) {
+    auto processPendingFlushRequests = [&](EGLint effSurfW, EGLint effSurfH,
+                                           GLint actX, GLint actY, GLsizei actW, GLsizei actH,
+                                           float logicalW, float logicalH) {
         GpuFlushRequest flushReq;
         while (D3D11Bridge_ConsumeFlushRequest(flushReq)) {
             if (!flushReq.commands.empty()) {
-                executeMeshCommandBatch(flushReq.commands, effSurfW, effSurfH, logicalW, logicalH);
+                executeMeshCommandBatch(flushReq.commands, effSurfW, effSurfH, actX, actY, actW, actH, logicalW, logicalH);
             }
             bool readOk = false;
             if (flushReq.targetHandle != nullptr && flushReq.dstPtr != nullptr &&
@@ -1885,22 +1956,42 @@ static void renderLoop() {
 
     RenderFrameState frameState = {};
     bool hasReceivedFirstFrame = false;
+    auto fpsWindowStart = std::chrono::steady_clock::now();
+    uint32_t fpsFrameCount = 0;
+
     while (gIsRunning.load()) {
+        const int32_t desiredFps = gTargetFps.load(std::memory_order_relaxed);
+        if (desiredFps != appliedTargetFps) {
+            appliedTargetFps = desiredFps;
+            eglSwapInterval(display, appliedTargetFps <= 30 ? 2 : 1);
+            LOGI("Đã cập nhật giới hạn nhịp khung hình EGL: %d FPS (swapInterval=%d)",
+                 appliedTargetFps, appliedTargetFps <= 30 ? 2 : 1);
+        }
+
         EGLint surfaceWidth = 0, surfaceHeight = 0;
         eglQuerySurface(display, surface, EGL_WIDTH, &surfaceWidth);
         eglQuerySurface(display, surface, EGL_HEIGHT, &surfaceHeight);
         const EGLint effSurfW = surfaceWidth > 0 ? surfaceWidth : 1920;
         const EGLint effSurfH = surfaceHeight > 0 ? surfaceHeight : 1080;
 
+        GLint actX = 0, actY = 0;
+        GLsizei actW = effSurfW, actH = effSurfH;
+        computeActiveSurfaceRect(
+            effSurfW, effSurfH,
+            gMaintainAspectRatio16x9.load(std::memory_order_relaxed),
+            actX, actY, actW, actH
+        );
+
         bool hasFrame = D3D11Bridge_WaitForNextFrame(&frameState, 33);
         drainReadyPreuploads();
         if (!hasFrame) {
             const float logicalW = frameState.width > 0 ? static_cast<float>(frameState.width) : 1920.0f;
             const float logicalH = frameState.height > 0 ? static_cast<float>(frameState.height) : 1080.0f;
-            processPendingFlushRequests(effSurfW, effSurfH, logicalW, logicalH);
+            processPendingFlushRequests(effSurfW, effSurfH, actX, actY, actW, actH, logicalW, logicalH);
             processFallbackPreuploads(5.0f);
 
             if (!hasReceivedFirstFrame) {
+                glDisable(GL_SCISSOR_TEST);
                 glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
                 eglSwapBuffers(display, surface);
@@ -1910,7 +2001,7 @@ static void renderLoop() {
 
         hasReceivedFirstFrame = true;
         processFallbackPreuploads(2.0f);
-        glViewport(0, 0, effSurfW, effSurfH);
+        glViewport(actX, actY, actW, actH);
 
         uint32_t activeW = 0, activeH = 0, activeRevision = 0;
         const uint8_t* activePixels = nullptr;
@@ -1933,23 +2024,33 @@ static void renderLoop() {
 
         if (hasBackbufferDraw) {
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glClearColor(
-                frameState.clearColor[0],
-                frameState.clearColor[1],
-                frameState.clearColor[2],
-                frameState.clearColor[3]
-            );
+            glDisable(GL_SCISSOR_TEST);
             glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
             glStencilMask(0xFF);
+            // Luôn xóa toàn bộ bề mặt sang màu đen thuần để viền Pillarbox/Letterbox 16:9 sắc nét
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+            if (frameState.clearColor[0] > 0.0f || frameState.clearColor[1] > 0.0f || frameState.clearColor[2] > 0.0f) {
+                glEnable(GL_SCISSOR_TEST);
+                glScissor(actX, actY, actW, actH);
+                glClearColor(
+                    frameState.clearColor[0],
+                    frameState.clearColor[1],
+                    frameState.clearColor[2],
+                    frameState.clearColor[3]
+                );
+                glClear(GL_COLOR_BUFFER_BIT);
+                glDisable(GL_SCISSOR_TEST);
+            }
         }
 
         const float logicalW = frameState.width > 0 ? static_cast<float>(frameState.width) : 1920.0f;
         const float logicalH = frameState.height > 0 ? static_cast<float>(frameState.height) : 1080.0f;
 
         if (meshCount > 0) {
-            executeMeshCommandBatch(frameMeshes, effSurfW, effSurfH, logicalW, logicalH);
+            executeMeshCommandBatch(frameMeshes, effSurfW, effSurfH, actX, actY, actW, actH, logicalW, logicalH);
         } else if (hasActiveTexture && activePixels != nullptr && activeW == 1920 && activeH == 1080) {
+            glViewport(actX, actY, actW, actH);
             glUseProgram(program);
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1966,9 +2067,11 @@ static void renderLoop() {
             glUniform2f(uUvScaleLoc, 1.0f, 1.0f);
             glUniform1f(uFlipYLoc, 1.0f);
             glUniform4f(uD3dViewportLoc, 0.0f, 0.0f, 1920.0f, 1080.0f);
-            glUniform4f(uGlViewportLoc, 0.0f, 0.0f,
-                        static_cast<float>(effSurfW),
-                        static_cast<float>(effSurfH));
+            glUniform4f(uGlViewportLoc,
+                        static_cast<float>(actX),
+                        static_cast<float>(actY),
+                        static_cast<float>(actW),
+                        static_cast<float>(actH));
             glUniform1i(uShaderIdLoc, 180);
 
             glActiveTexture(GL_TEXTURE0);
@@ -2017,6 +2120,7 @@ static void renderLoop() {
 
         if (hasBackbufferDraw) {
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDisable(GL_SCISSOR_TEST);
             glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
@@ -2026,6 +2130,14 @@ static void renderLoop() {
             eglSwapBuffers(display, surface);
             auto tSwapEnd = std::chrono::steady_clock::now();
             float swapMs = std::chrono::duration<float, std::milli>(tSwapEnd - tSwapStart).count();
+
+            ++fpsFrameCount;
+            float fpsWindowSec = std::chrono::duration<float>(tSwapEnd - fpsWindowStart).count();
+            if (fpsWindowSec >= 0.5f) {
+                gCurrentFps.store(static_cast<float>(fpsFrameCount) / fpsWindowSec, std::memory_order_relaxed);
+                fpsFrameCount = 0;
+                fpsWindowStart = tSwapEnd;
+            }
 
             if (hasFrame) {
                 D3D11Bridge_NotifyFramePresented();
@@ -2060,9 +2172,10 @@ static void renderLoop() {
         }
 
         // Kiểm tra ngay nếu Game Thread đã gửi yêu cầu readback ngay sau Present
-        processPendingFlushRequests(effSurfW, effSurfH, logicalW, logicalH);
+        processPendingFlushRequests(effSurfW, effSurfH, actX, actY, actW, actH, logicalW, logicalH);
     }
 
+    gCurrentFps.store(0.0f, std::memory_order_relaxed);
     D3D11Bridge_SetRenderLoopActive(false);
     preuploadRunning.store(false);
     D3D11Bridge_WakePreuploadThread();
@@ -2076,6 +2189,40 @@ static void renderLoop() {
             if (item.texId != 0) glDeleteTextures(1, &item.texId);
         }
         readyPreuploads.clear();
+    }
+
+    // Bảo toàn các texture GPU-owned (MCapture / RenderTarget đang sống) về RAM CPU trước khi hủy EGLContext
+    // giúp hình nền Pause Menu và Save Thumbnail không bị đen khi người dùng khóa màn hình hoặc thoát ra Home.
+    {
+        std::unordered_set<const void*> gpuHandlesToPreserve = sGpuCopiedHandles;
+        gpuHandlesToPreserve.insert(sRenderTargetHandles.begin(), sRenderTargetHandles.end());
+        uint32_t preservedCount = 0;
+        for (const void* gpuHandle : gpuHandlesToPreserve) {
+            auto itCached = sGlesTextureCache.find(gpuHandle);
+            if (itCached == sGlesTextureCache.end() || itCached->second.texId == 0) continue;
+            const uint32_t w = itCached->second.width;
+            const uint32_t h = itCached->second.height;
+            if (w == 0 || h == 0 || static_cast<uint64_t>(w) * h * 4ull > 32ull * 1024 * 1024) continue;
+
+            GLuint readFbo = getOrCreateCopyFbo(gpuHandle, w, h);
+            if (readFbo == 0) continue;
+
+            std::vector<uint8_t> readBuf(static_cast<size_t>(w) * h * 4u);
+            while (glGetError() != GL_NO_ERROR) {}
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, readFbo);
+            glReadPixels(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h), GL_RGBA, GL_UNSIGNED_BYTE, readBuf.data());
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            if (glGetError() == GL_NO_ERROR) {
+                if (D3D11Bridge_PreserveGpuTextureToCpu(gpuHandle, readBuf.data(), readBuf.size())) {
+                    ++preservedCount;
+                }
+            }
+        }
+        D3D11Bridge_ResetGpuUploadState();
+        if (preservedCount > 0) {
+            LOGI("Đã bảo toàn %u texture GPU-owned về RAM CPU trước khi hủy EGLContext", preservedCount);
+        }
     }
 
     for (auto& pair : sGlesTextureCache) {
@@ -2115,15 +2262,7 @@ static void renderLoop() {
     if (fallbackQuadTexture != 0) {
         glDeleteTextures(1, &fallbackQuadTexture);
     }
-    if (program != 0) {
-        glDeleteProgram(program);
-    }
-    if (vertShader != 0) {
-        glDeleteShader(vertShader);
-    }
-    if (fragShader != 0) {
-        glDeleteShader(fragShader);
-    }
+    sgre::ShaderCache::destroyProgramSet(programSet);
 
     LOGI("Dừng vòng lặp render, giải phóng EGL...");
     eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -2145,8 +2284,11 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
     jobject surface,
     jstring dataPath) {
 
+    std::lock_guard<std::mutex> lifecycleLock(gLifecycleMutex);
+
     if (gIsRunning.load()) {
         gIsRunning.store(false);
+        D3D11Bridge_WakeRenderThread();
         if (gRenderThread.joinable()) {
             gRenderThread.join();
         }
@@ -2157,47 +2299,59 @@ Java_com_makurisu_sgrb_MainActivity_nativeInit(
         gNativeWindow = nullptr;
     }
 
-    gNativeWindow = ANativeWindow_fromSurface(env, surface);
+    if (surface != nullptr) {
+        gNativeWindow = ANativeWindow_fromSurface(env, surface);
+    }
 
-    const char* pathStr = env->GetStringUTFChars(dataPath, nullptr);
-    if (pathStr != nullptr) {
-        gDataDirectory = pathStr;
-        env->ReleaseStringUTFChars(dataPath, pathStr);
+    if (dataPath != nullptr) {
+        const char* pathStr = env->GetStringUTFChars(dataPath, nullptr);
+        if (pathStr != nullptr) {
+            gDataDirectory = pathStr;
+            env->ReleaseStringUTFChars(dataPath, pathStr);
+        }
     }
 
     LOGI("Native Init hoàn tất, data dir: %s", gDataDirectory.c_str());
     Win32Bridge_SetDataDirectory(gDataDirectory.c_str());
+    SteamHook_SetDataDirectory(gDataDirectory.c_str());
 
-    GamePayloadInfo payloadInfo = PayloadLoader::inspectPayload(gDataDirectory);
-    if (payloadInfo.isExeValid) {
-        LOGI("Game Executable hợp lệ! Size: %llu bytes, Machine: 0x%X, Sections: %u, EntryPoint: 0x%X, ImageBase: 0x%llX",
-             static_cast<unsigned long long>(payloadInfo.exeSize),
-             payloadInfo.machineType,
-             payloadInfo.numberOfSections,
-             payloadInfo.entryPointRva,
-             static_cast<unsigned long long>(payloadInfo.imageBase));
+    // Chỉ nạp PE binary và khởi chạy luồng thực thi game duy nhất một lần trong suốt vòng đời tiến trình!
+    if (!gEngineLaunched.exchange(true)) {
+        GamePayloadInfo payloadInfo = PayloadLoader::inspectPayload(gDataDirectory);
+        if (payloadInfo.isExeValid) {
+            LOGI("Game Executable hợp lệ! Size: %llu bytes, Machine: 0x%X, Sections: %u, EntryPoint: 0x%X, ImageBase: 0x%llX",
+                 static_cast<unsigned long long>(payloadInfo.exeSize),
+                 payloadInfo.machineType,
+                 payloadInfo.numberOfSections,
+                 payloadInfo.entryPointRva,
+                 static_cast<unsigned long long>(payloadInfo.imageBase));
 
-        void* loadedBase = PayloadLoader::mapImageToMemory(payloadInfo);
-        if (loadedBase != nullptr) {
-            Win32Bridge_SetLoadedImageBase(loadedBase);
-            bool relocSuccess = PayloadLoader::applyRelocations(loadedBase, payloadInfo);
-            bool importSuccess = PayloadLoader::resolveImports(loadedBase, payloadInfo);
-            bool protectSuccess = PayloadLoader::protectSections(loadedBase, payloadInfo);
-            LOGI("Ảo hoá bộ nhớ, Reloc (%s), IAT (%s), PageProt (%s) thành công! EntryPoint: %p, Tổng DLL: %zu",
-                 relocSuccess ? "PASS" : "FAIL",
-                 importSuccess ? "PASS" : "FAIL",
-                 protectSuccess ? "PASS" : "FAIL",
-                 static_cast<uint8_t*>(loadedBase) + payloadInfo.entryPointRva,
-                 payloadInfo.importedDlls.size());
+            void* loadedBase = PayloadLoader::mapImageToMemory(payloadInfo);
+            if (loadedBase != nullptr) {
+                Win32Bridge_SetLoadedImageBase(loadedBase);
+                bool relocSuccess = PayloadLoader::applyRelocations(loadedBase, payloadInfo);
+                bool importSuccess = PayloadLoader::resolveImports(loadedBase, payloadInfo);
+                bool protectSuccess = PayloadLoader::protectSections(loadedBase, payloadInfo);
+                LOGI("Ảo hoá bộ nhớ, Reloc (%s), IAT (%s), PageProt (%s) thành công! EntryPoint: %p, Tổng DLL: %zu",
+                     relocSuccess ? "PASS" : "FAIL",
+                     importSuccess ? "PASS" : "FAIL",
+                     protectSuccess ? "PASS" : "FAIL",
+                     static_cast<uint8_t*>(loadedBase) + payloadInfo.entryPointRva,
+                     payloadInfo.importedDlls.size());
 
-            // Chạy Game EntryPoint trên một luồng Worker riêng biệt để không block giao diện
-            std::thread gameThread([loadedBase, payloadInfo]() {
-                PayloadLoader::executePayload(loadedBase, payloadInfo);
-            });
-            gameThread.detach();
+                std::thread gameThread([loadedBase, payloadInfo]() {
+                    PayloadLoader::executePayload(loadedBase, payloadInfo);
+                });
+                gameThread.detach();
+            } else {
+                gEngineLaunched.store(false);
+            }
+        } else {
+            gEngineLaunched.store(false);
+            LOGE("Chưa tìm thấy hoặc binary sgre_steam.exe không hợp lệ");
         }
     } else {
-        LOGE("Chưa tìm thấy hoặc binary sgre_steam.exe không hợp lệ");
+        LOGI("Engine đã đang chạy nền, tái kết nối bề mặt ANativeWindow mới vào luồng Render...");
     }
 
     if (gNativeWindow != nullptr) {
@@ -2227,17 +2381,105 @@ Java_com_makurisu_sgrb_MainActivity_nativeSendKeyEvent(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_makurisu_sgrb_MainActivity_nativeSendGamepadAxes(
+    JNIEnv* /* env */,
+    jclass /* clazz */,
+    jfloat leftX,
+    jfloat leftY,
+    jfloat rightX,
+    jfloat rightY,
+    jfloat triggerL,
+    jfloat triggerR,
+    jfloat hatX,
+    jfloat hatY) {
+    XInputBridge_UpdateAxes(leftX, leftY, rightX, rightY, triggerL, triggerR, hatX, hatY);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_makurisu_sgrb_MainActivity_nativeSetAspectRatio16x9(
+    JNIEnv* /* env */,
+    jclass /* clazz */,
+    jboolean maintain16x9) {
+    gMaintainAspectRatio16x9.store(maintain16x9 == JNI_TRUE, std::memory_order_relaxed);
+    D3D11Bridge_WakeRenderThread();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_makurisu_sgrb_MainActivity_nativeSetTargetFps(
+    JNIEnv* /* env */,
+    jclass /* clazz */,
+    jint targetFps) {
+    const int32_t clamped = (targetFps <= 30) ? 30 : 60;
+    gTargetFps.store(clamped, std::memory_order_relaxed);
+    D3D11Bridge_WakeRenderThread();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_makurisu_sgrb_MainActivity_nativeSetLanguageOverride(
+    JNIEnv* env,
+    jclass /* clazz */,
+    jstring langCode) {
+    if (langCode == nullptr) {
+        SteamHook_SetLanguageOverride("");
+        return;
+    }
+    const char* raw = env->GetStringUTFChars(langCode, nullptr);
+    if (raw != nullptr) {
+        SteamHook_SetLanguageOverride(raw);
+        env->ReleaseStringUTFChars(langCode, raw);
+    }
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_makurisu_sgrb_MainActivity_nativeGetCurrentFps(
+    JNIEnv* /* env */,
+    jclass /* clazz */) {
+    return static_cast<jfloat>(gCurrentFps.load(std::memory_order_relaxed));
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_makurisu_sgrb_MainActivity_nativeGetCpuMemoryMb(
+    JNIEnv* /* env */,
+    jclass /* clazz */) {
+    const double bytes = static_cast<double>(D3D11Bridge_GetCpuMemoryBytes());
+    return static_cast<jfloat>(bytes / (1024.0 * 1024.0));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_makurisu_sgrb_MainActivity_nativeGetCpuTranslationStatus(
+    JNIEnv* env,
+    jclass /* clazz */,
+    jstring dataPath) {
+    std::string dir;
+    if (dataPath != nullptr) {
+        const char* raw = env->GetStringUTFChars(dataPath, nullptr);
+        if (raw != nullptr) {
+            dir = raw;
+            env->ReleaseStringUTFChars(dataPath, raw);
+        }
+    }
+    return static_cast<jint>(sgre::Arm64Box64Bridge::probeRuntime(dir));
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_makurisu_sgrb_MainActivity_nativePause(
     JNIEnv* /* env */,
     jclass /* clazz */) {
-    LOGI("Game loop paused");
+    AudioSink_SetLifecyclePaused(true);
+    XAudio2Bridge_SetLifecyclePaused(true);
+    Win32Bridge_PostMessage(0x001C /* WM_ACTIVATEAPP */, 0, 0);
+    LOGI("Đã tạm dừng âm thanh và gửi thông điệp WM_ACTIVATEAPP(0) khi ứng dụng xuống nền");
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_makurisu_sgrb_MainActivity_nativeResume(
     JNIEnv* /* env */,
     jclass /* clazz */) {
-    LOGI("Game loop resumed");
+    AudioSink_SetLifecyclePaused(false);
+    XAudio2Bridge_SetLifecyclePaused(false);
+    Win32Bridge_PostMessage(0x001C /* WM_ACTIVATEAPP */, 1, 0);
+    D3D11Bridge_WakeRenderThread();
+    LOGI("Đã khôi phục âm thanh và gửi thông điệp WM_ACTIVATEAPP(1) khi ứng dụng trở lại");
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -2245,8 +2487,10 @@ Java_com_makurisu_sgrb_MainActivity_nativeDestroy(
     JNIEnv* /* env */,
     jclass /* clazz */) {
 
+    std::lock_guard<std::mutex> lifecycleLock(gLifecycleMutex);
     if (gIsRunning.load()) {
         gIsRunning.store(false);
+        D3D11Bridge_WakeRenderThread();
         if (gRenderThread.joinable()) {
             gRenderThread.join();
         }

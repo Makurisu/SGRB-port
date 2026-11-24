@@ -16,9 +16,18 @@ public class TouchInputHandler {
     private static final int LONG_PRESS_THRESHOLD_MS = 450;
     private boolean isHandledGesture = false;
     private boolean isMultiTouch = false;
+    private volatile boolean maintainAspectRatio16x9 = true;
 
     public TouchInputHandler(TouchListener listener) {
         this.listener = listener;
+    }
+
+    public void setMaintainAspectRatio16x9(boolean maintainAspectRatio16x9) {
+        this.maintainAspectRatio16x9 = maintainAspectRatio16x9;
+    }
+
+    public boolean isMaintainAspectRatio16x9() {
+        return maintainAspectRatio16x9;
     }
 
     public boolean handleTouchEvent(MotionEvent event, int viewWidth, int viewHeight) {
@@ -33,8 +42,10 @@ public class TouchInputHandler {
             return false;
         }
 
-        float normalizedX = Math.max(0.0f, Math.min(1.0f, currentX / (float) viewWidth));
-        float normalizedY = Math.max(0.0f, Math.min(1.0f, currentY / (float) viewHeight));
+        ViewportLayoutCalculator.ViewportRect viewportRect =
+                ViewportLayoutCalculator.computeViewport(viewWidth, viewHeight, maintainAspectRatio16x9);
+        float normalizedX = ViewportLayoutCalculator.mapTouchX(currentX, viewportRect);
+        float normalizedY = ViewportLayoutCalculator.mapTouchY(currentY, viewportRect);
 
         switch (actionMasked) {
             case 0: // MotionEvent.ACTION_DOWN
